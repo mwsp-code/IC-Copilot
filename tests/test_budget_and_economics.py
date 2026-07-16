@@ -264,7 +264,7 @@ class BudgetAndEconomicsTests(unittest.TestCase):
 
     def test_demo_result_exposes_clusters_and_economics(self) -> None:
         result = demo_result("AAPL")
-        self.assertEqual(result.budget_policy.mode, "Lean")
+        self.assertEqual(result.budget_policy.mode, "Premium")
         self.assertTrue(result.company_economics.drivers)
         self.assertTrue(result.company_economics.playbook_quality)
         self.assertIn("Playbook quality checklist", result.memo_markdown)

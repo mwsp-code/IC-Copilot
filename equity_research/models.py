@@ -2258,6 +2258,10 @@ class DemoCase:
     screenshot_focus: str = ""
     content_version: str = ""
     refreshed_at: str = ""
+    research_profile: str = ""
+    budget_mode: str = ""
+    enabled_layers: tuple[str, ...] = ()
+    fixture_policy: str = "Sanitized deterministic fixture; no live provider call at demo load."
 
 
 @dataclass

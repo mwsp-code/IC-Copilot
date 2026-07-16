@@ -186,10 +186,12 @@ python server.py --port 8501
 
 Then open the URL printed in the terminal. If `8501` is already in use, the server automatically tries the next open port up to `8510`.
 
-Start with the built-in **Load Demo** gallery before configuring API keys. The versioned, no-network
-demos show AAPL source-backed thesis, NVDA neutral-first investment-cycle analysis, BABA ADR/FPI
-complexity, TSLA peer metric read-through, GS financial-sector playbook, and SPCX/SPXC
-entity-resolution warning. See [docs/quickstart.md](docs/quickstart.md).
+Start with the built-in **Load Demo** gallery before configuring API keys. The current AAPL, NVDA,
+BABA, TSLA, and GS showcases use sanitized **Deep Initiation** fixtures: 20 quarters, five annual
+reports, 20 calls, Premium-mode provider slots, official macro context, a bounded Wisburg research
+lens, market-implied expectations, and guardrailed LLM research metadata. They remain instant and
+no-network: no paid API is called and no licensed full-text payload is committed. SPCX/SPXC remains
+an entity-resolution guardrail demo. See [docs/quickstart.md](docs/quickstart.md).
 
 If `python` is not on PATH, use the Python executable available in your environment.
 

@@ -59,6 +59,12 @@ def main() -> None:
         st.session_state.result = None
     if "network_diagnostics" not in st.session_state:
         st.session_state.network_diagnostics = None
+    pending_demo_preset = st.session_state.pop("_pending_demo_preset", None)
+    if pending_demo_preset:
+        st.session_state.research_profile_selector = pending_demo_preset.get(
+            "research_profile", "deep_initiation"
+        )
+        st.session_state.budget_mode_selector = pending_demo_preset.get("budget_mode", "Premium")
 
     with st.sidebar:
         st.header("Research Run")
@@ -83,6 +89,13 @@ def main() -> None:
             if selected_case.content_version or selected_case.refreshed_at else ""
         )
         st.caption(f"{selected_case.lesson} {selected_case.badge}; {selected_case.expected_runtime}.{freshness}")
+        if selected_case.research_profile or selected_case.budget_mode:
+            st.caption(
+                f"Demo preset: {selected_case.research_profile or 'Current research profile'} | "
+                f"{selected_case.budget_mode or 'Current budget mode'}."
+            )
+        if selected_case.enabled_layers:
+            st.caption("Included layers: " + ", ".join(selected_case.enabled_layers) + ".")
         load_demo_clicked = st.button("Load Selected Demo", use_container_width=True)
         ticker = st.text_input("Ticker", value=selected_case.ticker or "AAPL").upper().strip()
         profile_options = research_profiles()
@@ -95,6 +108,7 @@ def main() -> None:
             index=profile_ids.index(default_profile),
             format_func=lambda value: profile_by_id[value].label,
             help="Fast screens one anomaly; Adaptive is the default analyst workflow; Deep builds a fuller initiation pack.",
+            key="research_profile_selector",
         )
         selected_profile = profile_by_id[selected_profile_id]
         st.caption(
@@ -125,6 +139,7 @@ def main() -> None:
                 "Free uses official/keyless and manual sources. Lean adds low-cost LLM synthesis. "
                 "Stable/Premium allow paid provider slots when keys are configured."
             ),
+            key="budget_mode_selector",
         )
         sec_user_agent = st.text_input(
             "SEC user agent",
@@ -509,6 +524,11 @@ def main() -> None:
 
     if load_demo_clicked:
         st.session_state.result = demo_result(selected_case.ticker)
+        st.session_state._pending_demo_preset = {
+            "research_profile": "deep_initiation" if selected_case.budget_mode == "Premium" else default_profile,
+            "budget_mode": selected_case.budget_mode or budget_mode,
+        }
+        st.rerun()
 
     if run_network_check:
         with st.spinner("Running network diagnostics from the Streamlit process..."):

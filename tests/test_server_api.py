@@ -251,7 +251,7 @@ class ServerApiTests(unittest.TestCase):
             "playbook_portfolio",
         ):
             self.assertIn(field, payload)
-        self.assertEqual(payload["llm_run_manifest"]["status"], "Disabled")
+        self.assertIn(payload["llm_run_manifest"]["status"], {"Available", "Skipped"})
         self.assertIn("guardrail_checks", payload["llm_run_manifest"])
         self.assertGreater(payload["llm_run_manifest"]["guardrail_score"], 0)
         self.assertIn("allowed_roles", payload["llm_research_manifest"])
@@ -339,16 +339,16 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(profiles["adaptive_ic"]["annual_depth"], 4)
         self.assertEqual(profiles["adaptive_ic"]["call_depth"], 12)
 
-    def test_wisburg_lens_routes_are_explicit_when_unavailable(self) -> None:
+    def test_wisburg_lens_routes_expose_sanitized_demo_coverage(self) -> None:
         external = self._request("/api/external-research?ticker=AAPL")
         self.assertEqual(external["ticker"], "AAPL")
-        self.assertEqual(external["wisburg_lens"]["status"], "Unavailable")
-        self.assertEqual(external["excerpts"], [])
+        self.assertTrue(external["wisburg_lens"]["status"].startswith("Available"))
+        self.assertTrue(external["excerpts"])
         self.assertEqual(external["wisburg_delta"]["status"], "Baseline")
 
         themes = self._request("/api/wisburg-themes?ticker=AAPL")
-        self.assertEqual(themes["themes"], [])
-        self.assertEqual(themes["caveats"], ["Demo workflow does not fetch Wisburg external research."])
+        self.assertTrue(themes["themes"])
+        self.assertTrue(any("Tier 3" in caveat for caveat in themes["caveats"]))
 
         delta = self._request("/api/wisburg-delta?ticker=AAPL")
         self.assertEqual(delta["wisburg_delta"]["summary"], "Fixture Wisburg baseline.")
@@ -369,7 +369,8 @@ class ServerApiTests(unittest.TestCase):
             self.assertIn(field, response)
 
         suggestions = self._request("/api/wisburg-source-suggestions?ticker=AAPL")
-        self.assertEqual(suggestions["source_suggestions"], [])
+        self.assertTrue(suggestions["source_suggestions"])
+        self.assertEqual(suggestions["source_suggestions"][0]["source_type"], "issuer_ir_report")
 
     def test_llm_profile_vault_routes_are_redacted(self) -> None:
         created = self._request(
@@ -530,7 +531,7 @@ class ServerApiTests(unittest.TestCase):
         peer_metrics = self._request("/api/peer-metrics?ticker=AAPL")
         self.assertEqual(peer_metrics["ticker"], "AAPL")
         llm_manifest = self._request("/api/llm-research-manifest?ticker=AAPL")
-        self.assertEqual(llm_manifest["llm_research_manifest"]["status"], "Not required")
+        self.assertTrue(llm_manifest["llm_research_manifest"]["status"].startswith("Available"))
         self.assertIn("allowed_roles", llm_manifest["llm_research_manifest"])
         self.assertIn("deterministic_executor", llm_manifest["llm_research_manifest"])
         self.assertIn("historical_references", historical)

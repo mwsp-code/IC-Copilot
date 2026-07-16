@@ -54,12 +54,12 @@ class ConvictionAuditTests(unittest.TestCase):
             for item in result.conviction_audit.items
         ))
 
-    def test_audit_discloses_disabled_llm_and_uncalibrated_history(self) -> None:
+    def test_audit_discloses_demo_llm_guardrail_and_uncalibrated_history(self) -> None:
         result = demo_result("AAPL")
         items = {item.name: item for item in result.conviction_audit.items}
 
-        self.assertEqual(items["LLM synthesis guardrails"].status, "Partial")
-        self.assertIn("Disabled", items["LLM synthesis guardrails"].evidence)
+        self.assertEqual(items["LLM synthesis guardrails"].status, "Pass")
+        self.assertIn(result.llm_run_manifest.status, items["LLM synthesis guardrails"].evidence)
         self.assertIn(items["Outcome calibration"].status, {"Fail", "Partial"})
         self.assertTrue(result.conviction_audit.data_gaps)
 

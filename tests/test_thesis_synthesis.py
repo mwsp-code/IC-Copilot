@@ -98,14 +98,27 @@ class ThesisSynthesisTests(unittest.TestCase):
 
     def test_disabled_mode_returns_deterministic_ic_brief(self) -> None:
         result = demo_result("AAPL")
-        self.assertEqual(result.thesis_brief.source, "deterministic")
-        self.assertIn(result.evidence_sufficiency.status, {
+        synthesized = synthesize_ic_thesis(
+            result.identity,
+            result.ideas,
+            result.evidence_ledger,
+            result.valuation,
+            result.data_quality,
+            result.management_credibility,
+            result.expectations_bridge,
+            result.management_sources,
+            result.external_evidence,
+            result.calibration,
+            provider=None,
+        )
+        self.assertEqual(synthesized.thesis_brief.source, "deterministic")
+        self.assertIn(synthesized.evidence_sufficiency.status, {
             "Convincing", "Promising but incomplete", "Weak", "No thesis",
         })
-        self.assertEqual(result.llm_run_manifest.status, "Disabled")
-        self.assertTrue(result.llm_run_manifest.guardrail_checks)
-        self.assertGreater(result.llm_run_manifest.guardrail_score, 0)
-        self.assertTrue(result.action_plan)
+        self.assertEqual(synthesized.llm_manifest.status, "Disabled")
+        self.assertTrue(synthesized.llm_manifest.guardrail_checks)
+        self.assertGreater(synthesized.llm_manifest.guardrail_score, 0)
+        self.assertTrue(synthesized.action_plan)
 
     def test_weak_candidate_is_presented_as_no_convincing_thesis(self) -> None:
         result = demo_result("AAPL")

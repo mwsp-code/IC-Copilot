@@ -480,6 +480,8 @@ HTML = r"""<!doctype html>
             <h3>${esc(item.title)}</h3>
             <p class="muted">${esc(item.lesson)}</p>
             <p><span class="pill">${esc(item.badge || "No API keys")}</span> <span class="pill warn">${esc(item.expected_runtime || "Instant")}</span> <span class="pill">${esc(item.content_version || "Current")}</span></p>
+            <p class="muted">${esc(item.research_profile || "Current profile")} · ${esc(item.budget_mode || "Current budget")}</p>
+            <p class="muted">${esc((item.enabled_layers || []).join(" · "))}</p>
             <p class="muted">Refreshed ${esc(item.refreshed_at || "Unknown")}</p>
             <button type="button" data-demo-ticker="${esc(item.ticker)}">Load demo</button>
           </article>

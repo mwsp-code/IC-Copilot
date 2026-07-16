@@ -17,8 +17,12 @@ def test_demo_gallery_cases_are_keyless_and_story_focused() -> None:
     assert all(case.network_required is False for case in cases)
     assert all(case.lesson for case in cases)
     assert all(case.screenshot_focus for case in cases)
-    assert all(case.content_version == "Adaptive IC 2026.07" for case in cases)
-    assert all(case.refreshed_at == "2026-07-15" for case in cases)
+    current_cases = [case for case in cases if case.ticker in {"AAPL", "NVDA", "BABA", "TSLA", "GS"}]
+    assert all(case.content_version == "Deep Initiation Premium 2026.07.16" for case in current_cases)
+    assert all(case.research_profile.startswith("Deep Initiation") for case in current_cases)
+    assert all(case.budget_mode == "Premium" for case in current_cases)
+    assert all("Wisburg research lens" in case.enabled_layers or "Wisburg bilingual research lens" in case.enabled_layers for case in current_cases)
+    assert all(case.refreshed_at == "2026-07-16" for case in cases)
 
 
 def test_nvda_demo_is_current_ticker_specific_and_has_peer_operating_evidence() -> None:
@@ -36,6 +40,30 @@ def test_nvda_demo_is_current_ticker_specific_and_has_peer_operating_evidence() 
     readthroughs = [row for rows in result.peer_metric_readthrough.values() for row in rows]
     assert {row.peer_ticker for row in readthroughs} == {"TSM", "AMD"}
     assert all(row.status == "available" and row.observations for row in readthroughs)
+
+
+def test_latest_showcase_demos_use_deep_premium_macro_and_wisburg_fixtures() -> None:
+    for ticker in ["NVDA", "BABA", "AAPL", "TSLA", "GS"]:
+        result = demo_result(ticker)
+
+        assert result.research_profile.profile_id == "deep_initiation", ticker
+        assert result.historical_research.status == "Available", ticker
+        assert result.historical_research.analyzed_quarters == 20, ticker
+        assert result.historical_research.analyzed_annual_reports == 5, ticker
+        assert result.historical_research.analyzed_calls == 20, ticker
+        assert result.budget_policy.mode == "Premium", ticker
+        assert result.budget_policy.allow_paid_data is True, ticker
+        assert result.budget_policy.allow_llm is True, ticker
+        assert any(item.official and item.source_type == "official_macro" for item in result.external_evidence.evidence), ticker
+        assert any(item.provider.startswith("Wisburg") for item in result.external_evidence.evidence), ticker
+        assert result.wisburg_lens.status.startswith("Available"), ticker
+        assert result.wisburg_lens.coverage_audit is not None, ticker
+        assert result.wisburg_lens.structured_claims, ticker
+        assert result.wisburg_lens.research_tasks, ticker
+        assert result.llm_research_manifest.status.startswith("Available"), ticker
+        assert result.llm_run_manifest.status != "Disabled", ticker
+        assert result.market_implied_expectations is not None, ticker
+        assert any(card.title == "What Price Appears to Assume" for card in result.story_cards), ticker
 
 
 def test_named_demos_do_not_reuse_aapl_financial_payload() -> None:

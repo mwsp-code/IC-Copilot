@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from .analysis import annotate_change_importance
 from .budget import build_budget_policy
 from .claim_validation import validate_events
@@ -25,6 +27,7 @@ from .market_implied import build_market_implied_expectations
 from .metric_intelligence import build_metric_change_assessments
 from .memo import build_dd_memo
 from .models import (
+    AnalystDebateMap,
     ConsensusPackage,
     CalibrationReport,
     ChangeEvent,
@@ -33,8 +36,11 @@ from .models import (
     EarningsSurprise,
     EstimatePoint,
     EntityResolution,
+    ExternalEvidence,
     ExpectationsBridge,
     ExternalEvidenceBundle,
+    ExternalNarrativeScore,
+    ExternalResearchExcerpt,
     FilingRecord,
     FinancialMetric,
     FinancialCoverage,
@@ -49,10 +55,20 @@ from .models import (
     ProfilingReport,
     PeerMetricReadthrough,
     PeerMetricReadthroughSummary,
+    ProviderStatus,
     RecommendationConsensus,
+    RevisionWindow,
     TargetConsensus,
     TranscriptTurn,
+    WisburgCorroborationDecision,
+    WisburgCoverageAudit,
+    WisburgReportRecord,
     WisburgResearchLens,
+    WisburgResearchTask,
+    WisburgSourceSuggestion,
+    WisburgStructuredClaim,
+    WisburgTheme,
+    WisburgToolEntitlement,
     WatchlistStatus,
 )
 from .peers import peer_universe_for
@@ -80,6 +96,7 @@ from .thesis_accountability import attach_thesis_audit_chains, build_event_workf
 from .thesis_clusters import build_thesis_clusters
 from .thesis_validation import build_thesis_validation_report
 from .valuation import build_valuation
+from .wisburg_lens import enrich_source_plan_with_wisburg
 from .company_model import build_company_model_workspace
 from .causal_thesis_graph import build_causal_thesis_graphs
 from .source_planner import build_source_plan
@@ -87,11 +104,47 @@ from .storytelling import build_story_presentation, demo_case_for
 
 
 class _DemoConsensus(ConsensusAdapter):
-    provider_name = "Demo"
+    provider_name = "Sanitized Premium demo fixture"
     official_for_conviction = True
 
     def revision_since(self, ticker, event_date):
         return 0.0
+
+
+class _DemoLlmProvider:
+    """No-network provider that exercises the current citation guardrails."""
+
+    provider_name = "sanitized_demo_llm"
+    model = "deepseek-pro-compatible-fixture"
+    timeout_seconds = 0
+
+    def complete_json(self, prompt_pack: dict) -> dict:
+        citation_id, citation = next(iter(prompt_pack.get("citations", {}).items()))
+        quoted_claim = str(
+            citation.get("snippet")
+            or citation.get("original_excerpt")
+            or citation.get("section")
+            or citation.get("source")
+        ).strip()
+        return {
+            "verdict": "Promising but incomplete",
+            "thesis": (
+                "Validated company evidence maps to a material operating driver, while the demo "
+                "keeps valuation, counter-evidence, and monitoring conditions explicit."
+            ),
+            "variant_perception": (
+                "The differentiated view depends on whether the observed operating change persists "
+                "and is stronger than the peer and macro context."
+            ),
+            "evidence_chain": [{"claim": quoted_claim, "citation_ids": [citation_id]}],
+            "strongest_counter_thesis": (
+                "The change may be cyclical, acquisition-related, or already reflected in price rather than durable."
+            ),
+            "key_uncertainties": ["Durability, peer confirmation, and valuation sensitivity remain under review."],
+            "missing_evidence": ["Refresh live primary and licensed sources before using the demo operationally."],
+            "what_would_falsify": ["The next reported period reverses the validated driver change."],
+            "action_plan": [],
+        }
 
 
 _DEMO_COMPANIES = {
@@ -295,6 +348,396 @@ def _demo_events(profile: dict[str, object], filing_url: str) -> list[ChangeEven
     return events
 
 
+_DEMO_RESEARCH_CONTEXT: dict[str, dict[str, str]] = {
+    "AAPL": {
+        "macro_title": "Rates, dollar, and consumer-demand context",
+        "macro_summary": "Official macro series frame discount-rate, FX, and discretionary-demand sensitivity around the filing event.",
+        "bull": "Outside research emphasizes services mix, installed-base monetization, and capital return as durable EPS supports.",
+        "bear": "Outside research questions hardware replacement cadence, China exposure, and whether richer mix is already reflected in valuation.",
+        "driver": "Services mix and capital return",
+    },
+    "NVDA": {
+        "macro_title": "Rates, power investment, and data-center cycle context",
+        "macro_summary": "Official rates and investment indicators frame the cost of capital and the durability of AI infrastructure spending.",
+        "bull": "Outside research emphasizes accelerated-computing demand, platform breadth, and supply conversion.",
+        "bear": "Outside research focuses on customer concentration, capex digestion, export controls, and acquisition integration risk.",
+        "driver": "AI infrastructure demand and investment-cycle durability",
+    },
+    "BABA": {
+        "macro_title": "China consumption, policy, FX, and global-liquidity context",
+        "macro_summary": "Official global and China-sensitive series frame consumption, RMB translation, policy, and cross-border valuation conditions.",
+        "bull": "外部研究关注云与AI商业化、核心电商变现改善及回购带来的每股价值提升。",
+        "bear": "外部研究担忧国内竞争、国际业务投入、政策风险及AI资本开支回报周期。",
+        "driver": "China commerce, cloud/AI, and normalized ADS capital return",
+    },
+    "TSLA": {
+        "macro_title": "Rates, vehicle affordability, energy, and labor context",
+        "macro_summary": "Official rates, labor, and energy indicators frame vehicle affordability, input costs, and demand sensitivity.",
+        "bull": "Outside research emphasizes manufacturing leverage, energy growth, software optionality, and lower input costs.",
+        "bear": "Outside research focuses on pricing pressure, incentives, product cadence, and sustained automotive margin compression.",
+        "driver": "Deliveries, ASP, automotive margin, and product cycle",
+    },
+    "GS": {
+        "macro_title": "Yield curve, credit stress, issuance, and market-activity context",
+        "macro_summary": "Official rates and financial-stress series frame advisory activity, trading conditions, funding costs, and credit risk.",
+        "bull": "Outside research emphasizes recovering advisory pipelines, trading resilience, and capital-efficient ROTCE improvement.",
+        "bear": "Outside research questions compensation operating leverage, private-credit exposure, and the durability of capital-markets activity.",
+        "driver": "Investment banking, trading, ROTCE, capital, and credit costs",
+    },
+}
+
+
+def _demo_historical_filings(
+    ticker: str,
+    profile: dict[str, object],
+    filing_url: str,
+    existing: list[FilingRecord],
+) -> list[FilingRecord]:
+    """Fill the frozen demo to the Deep Initiation 20Q/5Y discovery depth."""
+    rows = list(existing)
+    base_period = date.fromisoformat(str(profile["period_end"]))
+    base_filed = date.fromisoformat(str(profile["filed"]))
+    quarter_form = "6-K" if ticker == "BABA" else "10-Q"
+    annual_form = "20-F" if ticker == "BABA" else "10-K"
+    cik = _DEMO_COMPANIES.get(ticker, ("0000000000", "", ""))[0] or "0000000000"
+    existing_quarters = sum(
+        1 for item in rows
+        if item.form == "10-Q" or (item.form == "6-K" and "result" in (item.description or "").lower())
+    )
+    for index in range(existing_quarters, 20):
+        period = base_period - timedelta(days=91 * index)
+        filed = base_filed - timedelta(days=91 * index)
+        rows.append(FilingRecord(
+            form=quarter_form,
+            accession=f"{cik}-demo-q-{index + 1:02d}",
+            filing_date=filed.isoformat(),
+            report_date=period.isoformat(),
+            primary_doc=f"{ticker.lower()}-demo-quarter-{index + 1:02d}.htm",
+            description="Quarterly results furnished report" if ticker == "BABA" else "Quarterly report",
+            url=filing_url,
+        ))
+    existing_annuals = sum(1 for item in rows if item.form in {"10-K", "20-F", "40-F"})
+    for index in range(existing_annuals, 5):
+        year = base_period.year - index
+        report_date = date(year, base_period.month, min(base_period.day, 28))
+        filed_date = report_date + timedelta(days=50)
+        rows.append(FilingRecord(
+            form=annual_form,
+            accession=f"{cik}-demo-y-{index + 1:02d}",
+            filing_date=filed_date.isoformat(),
+            report_date=report_date.isoformat(),
+            primary_doc=f"{ticker.lower()}-demo-annual-{index + 1:02d}.htm",
+            description="Annual report",
+            url=filing_url,
+        ))
+    return sorted(rows, key=lambda item: (item.report_date or "", item.filing_date), reverse=True)
+
+
+def _extend_demo_call_history(
+    ticker: str,
+    profile: dict[str, object],
+    filing_url: str,
+    package: ManagementSourcePackage,
+) -> None:
+    base_filed = date.fromisoformat(str(profile["filed"]))
+    for index in range(1, 20):
+        event_date = (base_filed - timedelta(days=91 * index)).isoformat()
+        document_id = f"demo-mgmt-{ticker}-history-{index:02d}"
+        historical_text = (
+            f"Historical call {index}: management discussed {profile['management']} "
+            "This sanitized fixture preserves trend coverage without retaining licensed transcript text."
+        )
+        package.documents.append(ManagementDocument(
+            document_id=document_id,
+            ticker=ticker,
+            source_type="earnings_call_transcript",
+            provider="Sanitized demo transcript fixture",
+            title=f"{ticker} historical call {index}",
+            url=filing_url,
+            event_date=event_date,
+            fiscal_period=f"Historical quarter {index}",
+            source_tier=2,
+            observed_at="2026-07-16T00:00:00+00:00",
+            excerpt=historical_text,
+        ))
+        package.transcript_turns.append(TranscriptTurn(
+            turn_id=f"demo-turn-{ticker}-history-{index:02d}",
+            document_id=document_id,
+            speaker="Management",
+            role="Management team",
+            section="prepared_remarks",
+            text=historical_text,
+            turn_index=index,
+        ))
+
+
+def _demo_external_research(
+    identity: CompanyIdentity,
+    *,
+    observed_at: str,
+    event_date: str,
+) -> tuple[ExternalEvidenceBundle, WisburgResearchLens]:
+    context = _DEMO_RESEARCH_CONTEXT.get(identity.ticker, _DEMO_RESEARCH_CONTEXT["AAPL"])
+    macro_citation = Citation(
+        source="Official macro provider registry (sanitized demo)",
+        url="https://fred.stlouisfed.org/docs/api/fred/",
+        filed=event_date,
+        form="official_macro",
+        section="event-window macro context",
+        snippet=context["macro_summary"],
+        source_tier=2,
+    )
+    wisburg_citation = Citation(
+        source="Wisburg sanitized demo metadata",
+        url="https://mcp.wisburg.com/mcp",
+        filed=event_date,
+        form="external_research",
+        section="outside analyst debate",
+        snippet="Sanitized fixture paraphrase; no licensed full report text is retained.",
+        source_tier=3,
+    )
+    macro = ExternalEvidence(
+        provider="FRED / official macro sanitized fixture",
+        source_type="official_macro",
+        title=context["macro_title"],
+        summary=context["macro_summary"],
+        observed_at=observed_at,
+        source_as_of=event_date,
+        source_tier=2,
+        official=True,
+        confidence="Medium",
+        release_date=event_date,
+        event_date=event_date,
+        citation=macro_citation,
+        tags=["macro", "official", "sanitized_demo"],
+        disqualifies_high_conviction=True,
+    )
+    external_items = [macro]
+    excerpts: list[ExternalResearchExcerpt] = []
+    themes: list[WisburgTheme] = []
+    reports: list[WisburgReportRecord] = []
+    claims: list[WisburgStructuredClaim] = []
+    for side, stance in (("bull", "bullish"), ("bear", "bearish")):
+        excerpt_id = f"demo-wisburg-{identity.ticker}-{side}"
+        text = context[side]
+        language = "zh" if identity.ticker == "BABA" else "en"
+        excerpt = ExternalResearchExcerpt(
+            excerpt_id=excerpt_id,
+            ticker=identity.ticker,
+            provider="Wisburg sanitized fixture",
+            category="institutional_report",
+            report_id=f"demo-report-{identity.ticker}-{side}",
+            title=f"{identity.ticker} outside debate: {side} case",
+            source_as_of=event_date,
+            observed_at=observed_at,
+            source_language=language,
+            original_excerpt=text,
+            translated_summary=(
+                "External research debates cloud/AI monetization, commerce competition, buybacks, and investment returns."
+                if language == "zh" else text
+            ),
+            generated_summary=text,
+            theme_tags=[context["driver"], side],
+            citation=wisburg_citation,
+            source_tier=3,
+            confidence="Medium",
+        )
+        excerpts.append(excerpt)
+        theme = WisburgTheme(
+            theme_id=f"demo-theme-{identity.ticker}-{side}",
+            label=f"{side.title()} case: {context['driver']}",
+            stance=stance,
+            driver=context["driver"],
+            summary=text,
+            evidence_count=1,
+            source_excerpt_ids=[excerpt_id],
+            source_language_mix=[language],
+            confidence="Medium",
+        )
+        themes.append(theme)
+        reports.append(WisburgReportRecord(
+            report_key=f"demo-report-key-{identity.ticker}-{side}",
+            ticker=identity.ticker,
+            report_id=excerpt.report_id,
+            category="institutional_report",
+            title=excerpt.title,
+            published_at=event_date,
+            observed_at=observed_at,
+            source_language=language,
+            source_tier=3,
+            publisher="Sanitized demo research source",
+            detail_status="structured_fixture",
+            content_scope="metadata_and_capped_paraphrase_only",
+            sections_found=["thesis", "risks", "monitoring"],
+            capped_excerpt=text,
+            citation=wisburg_citation,
+        ))
+        corroborated = side == "bull"
+        claims.append(WisburgStructuredClaim(
+            claim_id=f"demo-wisburg-claim-{identity.ticker}-{side}",
+            report_key=reports[-1].report_key,
+            ticker=identity.ticker,
+            claim_type="outside_analyst_theme",
+            statement=text,
+            driver=context["driver"],
+            direction="positive" if side == "bull" else "negative",
+            source_as_of=event_date,
+            source_tier=3,
+            confidence="Medium",
+            citation=wisburg_citation,
+            corroboration_status=(
+                "Partially corroborated by the demo Tier 1 operating change"
+                if corroborated else "External counter-thesis retained for falsification"
+            ),
+            primary_evidence_ids=[f"demo-primary-{identity.ticker}"] if corroborated else [],
+            corroboration_explanation=(
+                "The external theme points in the same direction as a cited filing metric, but remains Tier 3 context."
+                if corroborated else "No primary contradiction is asserted; the claim remains a bounded external challenge."
+            ),
+            allowed_stage="Candidate",
+        ))
+        external_items.append(ExternalEvidence(
+            provider="Wisburg sanitized fixture",
+            source_type="external_research",
+            title=excerpt.title,
+            summary=text,
+            observed_at=observed_at,
+            source_as_of=event_date,
+            source_tier=3,
+            official=False,
+            confidence="Medium",
+            licensing_policy="metadata_and_sanitized_paraphrase_only",
+            direction="positive" if side == "bull" else "negative",
+            event_date=event_date,
+            citation=wisburg_citation,
+            tags=["wisburg", language, side, "sanitized_demo"],
+            disqualifies_high_conviction=True,
+            metadata={"demo_fixture": True, "licensed_full_text_retained": False},
+        ))
+    lens = WisburgResearchLens(
+        ticker=identity.ticker,
+        status="Available (sanitized fixture)",
+        observed_at=observed_at,
+        excerpts=excerpts,
+        themes=themes,
+        debate_map=AnalystDebateMap(
+            status="Balanced external debate",
+            bullish_themes=[themes[0]],
+            bearish_themes=[themes[1]],
+            strongest_bull_case=context["bull"],
+            strongest_bear_case=context["bear"],
+            caveats=["Sanitized demo paraphrases are not a substitute for licensed reports or primary evidence."],
+        ),
+        narrative_score=ExternalNarrativeScore(
+            status="Available (fixture)",
+            score=50.0,
+            label="Balanced / contested",
+            item_count=2,
+            repeated_topics=[context["driver"]],
+            caveats=["Fixture score demonstrates workflow behavior; it is not a live crowding measure."],
+        ),
+        source_suggestions=[WisburgSourceSuggestion(
+            suggestion_id=f"demo-wisburg-source-{identity.ticker}",
+            source_type="issuer_ir_report",
+            title=f"Confirm {context['driver']} in issuer results and the latest call",
+            reason_to_inspect="External bull and bear narratives disagree on durability.",
+            expected_evidence_type="Period-aligned KPI, management explanation, and falsification evidence",
+            priority="High",
+            confirms_or_disproves=context["driver"],
+            linked_theme_id=themes[0].theme_id,
+        )],
+        caveats=[
+            "Wisburg is Tier 3 context and cannot independently support promotion.",
+            "This no-network demo stores sanitized paraphrases, not licensed full report payloads.",
+        ],
+        provider_status="Available (sanitized fixture)",
+        coverage_audit=WisburgCoverageAudit(
+            ticker=identity.ticker,
+            status="Fixture coverage complete",
+            observed_at=observed_at,
+            endpoint="https://mcp.wisburg.com/mcp",
+            authentication_status="not_required_for_sanitized_demo",
+            tool_discovery_status="registered_fixture_tools",
+            tools=[
+                WisburgToolEntitlement("company_reports", "fixture_available", "company_report", query_count=1, item_count=1, detail_success_count=1),
+                WisburgToolEntitlement("institutional_reports", "fixture_available", "institutional_report", query_count=1, item_count=2, detail_success_count=2),
+                WisburgToolEntitlement("earnings_calls", "fixture_available", "earnings_call", query_count=1, item_count=1, detail_success_count=1),
+            ],
+            query_variants=[identity.ticker, identity.name],
+            total_items=2,
+            detailed_items=2,
+            source_classes_covered=["company_report", "institutional_report", "earnings_call"],
+            data_gaps=["Run a live entitled refresh before relying on external report coverage."],
+        ),
+        reports=reports,
+        structured_claims=claims,
+        corroboration=[
+            WisburgCorroborationDecision(
+                claim_id=claims[0].claim_id,
+                status="Partially corroborated",
+                explanation="A Tier 1 demo metric supports the operating direction; external interpretation remains Tier 3.",
+                matched_primary_evidence_ids=[f"demo-primary-{identity.ticker}"],
+                required_primary_sources=["latest filing", "issuer results deck", "earnings call"],
+                observed_at=observed_at,
+            ),
+            WisburgCorroborationDecision(
+                claim_id=claims[1].claim_id,
+                status="Retained counter-thesis",
+                explanation="The adverse interpretation remains an explicit monitor and falsification path.",
+                required_primary_sources=["next filing", "segment KPI table", "management call"],
+                observed_at=observed_at,
+            ),
+        ],
+        research_tasks=[
+            WisburgResearchTask(
+                task_id=f"demo-wisburg-task-{identity.ticker}-1",
+                claim_id=claims[0].claim_id,
+                priority="High",
+                source_type="issuer_ir_report",
+                action=f"Validate {context['driver']} against the period-aligned issuer KPI bridge.",
+                expected_evidence="Cited current/prior metric and management explanation",
+                confirms_or_disproves=context["driver"],
+                status="resolved_by_fixture_primary_evidence",
+            ),
+            WisburgResearchTask(
+                task_id=f"demo-wisburg-task-{identity.ticker}-2",
+                claim_id=claims[1].claim_id,
+                priority="Medium",
+                source_type="earnings_call_transcript",
+                action="Test the strongest external counter-thesis against the next management update.",
+                expected_evidence="Cited KPI, guidance, and Q&A response",
+                confirms_or_disproves=context["bear"],
+                status="monitoring",
+            ),
+        ],
+    )
+    bundle = ExternalEvidenceBundle(
+        ticker=identity.ticker,
+        status="Available (sanitized Premium fixture)",
+        evidence=external_items,
+        provider_statuses=[
+            ProviderStatus(
+                "Official macro fixture",
+                "Available (sanitized fixture)",
+                True,
+                "fixture_available",
+                observed_at,
+                "Frozen official-source integration example; no live call at demo load.",
+            ),
+            ProviderStatus(
+                "Wisburg",
+                "Available (sanitized fixture)",
+                False,
+                "fixture_available",
+                observed_at,
+                "Capped paraphrases only; Tier 3 context, not official consensus.",
+            ),
+        ],
+        data_gaps=["Refresh live providers before making an investment decision."],
+    )
+    return bundle, lens
+
+
 _DEMO_PEER_METRICS: dict[str, tuple[str, list[tuple[str, list[tuple[str, float, float, float, str]]]]]] = {
     "AAPL": ("financial_kpi", [
         ("MSFT", [("Revenue", 82_900_000_000, 70_100_000_000, 18.3, "USD"), ("Gross Profit", 56_100_000_000, 48_200_000_000, 16.4, "USD"), ("Operating Cash Flow", 46_700_000_000, 37_100_000_000, 25.9, "USD")]),
@@ -407,6 +850,7 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
     profile = _demo_profile(ticker)
     is_baba = ticker == "BABA"
     demo_case = demo_case_for(ticker)
+    observed_at = "2026-07-16T00:00:00+00:00"
     cik, company_name, listing_status = _DEMO_COMPANIES.get(
         ticker,
         ("0000320193", f"{ticker} Demo Company", "Demo US-listed reporting issuer"),
@@ -455,6 +899,7 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
             url=filing_url,
         ),
     ]
+    filings = _demo_historical_filings(ticker, profile, filing_url, filings)
     metrics = _demo_metrics(profile)
     events = _demo_events(profile, filing_url)
     events = annotate_change_importance(events)
@@ -482,7 +927,7 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
     target_mean, target_median, target_high, target_low, analyst_count = profile["targets"]
     target = TargetConsensus(
         ticker=ticker,
-        as_of="2026-07-15",
+        as_of="2026-07-16",
         target_mean=target_mean,
         target_median=target_median,
         target_high=target_high,
@@ -491,41 +936,70 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         current_price=latest_price,
         implied_upside_pct=round((target_mean / latest_price - 1.0) * 100.0, 1),
         dispersion_pct=round((target_high - target_low) / target_mean * 100.0, 1),
-        provider_timestamp="2026-07-15",
+        provider_timestamp="2026-07-16",
         freshness_days=0,
-        source="Demo",
+        source="Sanitized Premium consensus fixture",
+        observed_at=observed_at,
+        source_as_of="2026-07-16",
+        provenance="Frozen no-network demo observation; not a live vendor payload.",
     )
     consensus = ConsensusPackage(
         ticker=ticker,
-        provider="Demo",
+        provider="Sanitized Premium consensus fixture",
         status="Available",
         target=target,
         recommendations=RecommendationConsensus(
-            ticker=ticker, as_of="2026-07-15", strong_buy=12, buy=14,
-            hold=7, sell=1, strong_sell=0, consensus_label="Buy", source="Demo",
+            ticker=ticker, as_of="2026-07-16", strong_buy=12, buy=14,
+            hold=7, sell=1, strong_sell=0, consensus_label="Buy",
+            source="Sanitized Premium consensus fixture",
+            observed_at=observed_at,
+            source_as_of="2026-07-16",
+            provenance="Frozen point-in-time demo observation.",
         ),
         estimates=[
             EstimatePoint(
-                ticker, "2026-07-15", "EPS", "2027-03-31", "annual",
-                8.4, 9.2, 7.5, 28, "USD", "Demo",
+                ticker, "2026-07-16", "EPS", "2027-03-31", "annual",
+                8.4, 9.2, 7.5, 28, "USD", "Sanitized Premium consensus fixture",
+                observed_at, "2026-07-16", provenance="Frozen point-in-time demo observation.",
             ),
             EstimatePoint(
-                ticker, "2026-07-15", "Revenue", "2027-03-31", "annual",
+                ticker, "2026-07-16", "Revenue", "2027-03-31", "annual",
                 next(metric.value for metric in metrics if metric.name == "Revenue")
                 * (1.1 if str(profile["fiscal_period"]) == "FY" else 4.4),
                 next(metric.value for metric in metrics if metric.name == "Revenue")
                 * (1.2 if str(profile["fiscal_period"]) == "FY" else 4.8),
                 next(metric.value for metric in metrics if metric.name == "Revenue")
                 * (1.0 if str(profile["fiscal_period"]) == "FY" else 4.0),
-                25, currency, "Demo",
+                25, currency, "Sanitized Premium consensus fixture",
+                observed_at, "2026-07-16", provenance="Frozen point-in-time demo observation.",
             ),
         ],
-        surprises=[EarningsSurprise(ticker, period_end, 2.05, 1.92, 6.8, "Demo")],
+        surprises=[EarningsSurprise(
+            ticker, period_end, 2.05, 1.92, 6.8,
+            "Sanitized Premium consensus fixture", observed_at, filed,
+            "Frozen pre-event estimate paired with the demo actual.",
+        )],
+        revisions=[
+            RevisionWindow("EPS", 7, "2026-07-09", "2026-07-16", 8.25, 8.40, 1.82, "Sanitized Premium consensus fixture"),
+            RevisionWindow("EPS", 30, "2026-06-16", "2026-07-16", 8.05, 8.40, 4.35, "Sanitized Premium consensus fixture"),
+            RevisionWindow("Revenue", 90, "2026-04-17", "2026-07-16", 100.0, 103.0, 3.0, "Sanitized Premium consensus fixture"),
+        ],
+        provider_statuses=[ProviderStatus(
+            "Sanitized Premium consensus fixture",
+            "Available",
+            True,
+            "fixture_available",
+            observed_at,
+            "Frozen point-in-time example; live provider refresh is required before use.",
+        )],
+        provider_targets=[target],
     )
     expectations = ExpectationsBridge(
         status="Available",
         headline="EPS beat expectations by 6.8%.",
-        point_in_time_note="Demo uses a point-in-time pre-event estimate.",
+        point_in_time_note=(
+            "Sanitized demo uses a frozen point-in-time pre-event estimate and never substitutes a current value for history."
+        ),
     )
     valuation = build_valuation(identity, metrics, consensus, price.latest_price)
     ideas = generate_trade_ideas(
@@ -546,7 +1020,6 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
     data_quality = build_data_quality_report(events, ideas, consensus)
     historical_references = build_historical_references(ideas, ResearchStore())
     management = build_management_credibility(expectations, metrics, [])
-    observed_at = "2026-07-15T00:00:00+00:00"
     management_doc = ManagementDocument(
         document_id=f"demo-mgmt-{ticker}",
         ticker=ticker,
@@ -626,6 +1099,7 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         ],
         cross_checks=[management_check],
     )
+    _extend_demo_call_history(ticker, profile, filing_url, management_sources)
     calibration = CalibrationReport(
         status="Uncalibrated",
         sample_size=0,
@@ -663,19 +1137,10 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         periodic_forms=sorted({annual_form}),
         metrics_count=len(metrics),
     )
-    external_evidence = ExternalEvidenceBundle(
-        ticker=ticker,
-        status="Unavailable",
-        evidence=[],
-        provider_statuses=[],
-        data_gaps=["Demo workflow does not fetch external evidence providers."],
-    )
-    wisburg_lens = WisburgResearchLens(
-        ticker=ticker,
-        status="Unavailable",
-        observed_at=manifest.generated_at,
-        caveats=["Demo workflow does not fetch Wisburg external research."],
-        provider_status="Unavailable",
+    external_evidence, wisburg_lens = _demo_external_research(
+        identity,
+        observed_at=observed_at,
+        event_date=filed,
     )
     thesis_validation = build_thesis_validation_report(
         ideas,
@@ -686,7 +1151,10 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         external_evidence,
         historical_references,
     )
-    source_plan = build_source_plan(identity, events, validated_claims, management_sources)
+    source_plan = enrich_source_plan_with_wisburg(
+        build_source_plan(identity, events, validated_claims, management_sources),
+        wisburg_lens,
+    )
     research_questions = build_research_questions(ideas, thesis_clusters, company_economics, source_plan)
     market_capture_readiness = build_market_capture_readiness(
         ticker,
@@ -749,7 +1217,7 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
     research_modes = build_research_mode_suite(
         ticker, metrics, events, ideas, management_sources, evidence_closure,
     )
-    selected_profile = resolve_research_profile("adaptive_ic")
+    selected_profile = resolve_research_profile("deep_initiation")
     for event in events:
         event.metrics["event_id"] = event_identifier(event)
     historical_research = build_historical_research_pack(
@@ -758,11 +1226,15 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         filings,
         management_sources,
         events,
-        parsed_filing_accessions={
-            citation.accession
-            for event in events for citation in event.citations
-            if citation.accession
-        },
+        parsed_filing_accessions={filing.accession for filing in filings},
+        historical_trend_summaries=[
+            f"Deep Initiation fixture reviewed {len(filings)} registered filing records and "
+            f"{len(management_sources.transcript_turns)} sanitized management-call turns.",
+            *[
+                f"{event.title}: {event.summary}"
+                for event in events[:5]
+            ],
+        ],
     )
     metric_assessments = build_metric_change_assessments(
         events, metrics, historical_research.selected_event_ids,
@@ -783,13 +1255,16 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
     )
     event_workflow = build_event_workflow(ticker, filings, ideas, source_plan, consensus)
     llm_research_manifest = LlmResearchAgentManifest(
-        provider="deterministic",
-        model="none",
+        provider="sanitized_demo_llm",
+        model="deepseek-pro-compatible-fixture",
         prompt_version="global-peer-research-agent-v1",
         generated_at=manifest.generated_at,
-        status="Not required",
-        messages=["Demo run did not require global peer LLM-assistant lanes."],
-        redacted_config={"llm_used": "false"},
+        status="Available (sanitized fixture)",
+        messages=[
+            "The frozen demo exercises registered-source planning, document triage, trend synthesis, and citation guardrails.",
+            "No live LLM request or API key is used when loading the demo.",
+        ],
+        redacted_config={"llm_used": "fixture", "api_key": "[not required]", "network_call": "false"},
         allowed_roles=[
             "source_planning_from_registered_source_types",
             "official_document_triage",
@@ -830,12 +1305,23 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
     for idea in ideas:
         idea.llm_contribution = {
             "source_planning": llm_research_manifest.status,
-            "document_triage": "not_required",
-            "metric_extraction": "not_required",
+            "document_triage": "available_sanitized_fixture",
+            "metric_extraction": "drafts_validated_deterministically",
             "trend_analysis": llm_trend_analysis.status,
             "final_synthesis": "guardrailed_by_evidence_sufficiency",
         }
-    budget_policy = build_budget_policy("Lean", consensus, external_evidence, llm_enabled=False)
+    budget_policy = build_budget_policy("Premium", consensus, external_evidence, llm_enabled=True)
+    budget_policy.warnings = [
+        item for item in budget_policy.warnings
+        if "FMP is not configured" not in item
+    ] + [
+        "Demo uses sanitized Premium fixtures; no paid API is called and no licensed raw payload is retained."
+    ]
+    budget_policy.enabled_sources.extend([
+        "Sanitized point-in-time Premium consensus fixture",
+        "Sanitized Wisburg external-research lens",
+        "Deep Initiation 20-quarter / 5-annual / 20-call history",
+    ])
     thesis_synthesis = synthesize_ic_thesis(
         identity,
         ideas,
@@ -849,7 +1335,8 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         calibration,
         historical_references=historical_references,
         thesis_validation=thesis_validation,
-        provider=None,
+        provider=_DemoLlmProvider(),
+        enable_secondary=False,
         budget_policy=budget_policy,
         manual_data_status=manual_data_status,
         company_economics=company_economics,
@@ -1049,5 +1536,6 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
             entity_resolution=demo_resolution,
             financial_coverage=demo_coverage,
             demo_case=demo_case,
+            market_implied=market_implied_expectations,
         ),
     )
