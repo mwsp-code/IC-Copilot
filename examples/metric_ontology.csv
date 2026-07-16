@@ -1,0 +1,13 @@
+metric,family,unit_type,aliases,formula,required_for_drivers,sector_templates,preferred_sources
+Revenue,core_financials,currency,RevenueFromContractWithCustomerExcludingAssessedTax|Revenues|SalesRevenueNet|Revenue,,revenue_demand|gross_margin_mix,,xbrl|issuer_report
+Cost of Revenue,core_financials,currency,CostOfRevenue|CostOfGoodsAndServicesSold|CostOfSales,,gross_margin_mix,,xbrl|issuer_report
+Gross Profit,core_financials,currency,GrossProfit|GrossIncome,Revenue - Cost of Revenue,gross_margin_mix,,xbrl|issuer_report|derived
+Gross Margin,core_financials,percent,GrossMargin,Gross Profit / Revenue,gross_margin_mix,,derived
+Operating Income,core_financials,currency,OperatingIncomeLoss|OperatingProfitLoss,,operating_expense|margin,,xbrl|issuer_report
+Net Income,core_financials,currency,NetIncomeLoss|ProfitLoss,,eps,,xbrl|issuer_report
+Free Cash Flow,core_financials,currency,FreeCashFlow,Operating Cash Flow - Capital Expenditure,cash_generation|valuation,,derived
+Net Debt,core_financials,currency,NetDebt,Long-term Debt + Current Debt - Cash,leverage_refinancing,,derived
+CET1 Ratio,bank_kpi,percent,CommonEquityTier1CapitalRatio,,bank_credit_cycle,Bank,issuer_report|regulator_bank
+Combined Ratio,insurance_kpi,percent,CombinedRatio,,insurance_reserve_shock,Insurer,issuer_report
+FFO,reit_kpi,currency,FundsFromOperations,,reit_occupancy_rate,REIT,issuer_report
+Deliveries,auto_kpi,units,VehicleDeliveries|Deliveries,,gross_margin_mix|revenue_demand,Automobiles,issuer_report

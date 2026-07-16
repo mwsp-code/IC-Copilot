@@ -1,0 +1,54 @@
+{
+  "modes": {
+    "Free": {
+      "max_monthly_budget_usd": 0,
+      "allow_llm": false,
+      "allow_paid_data": false,
+      "provider_policy": {
+        "company_evidence": ["SEC EDGAR", "issuer filings", "manual imports"],
+        "consensus": ["Alpha Vantage if keyed", "Finnhub recommendations if keyed", "CSV/manual"],
+        "prices": ["Stooq", "Yahoo price fallback", "CSV/manual"],
+        "macro": ["BLS no-key", "Treasury/Fiscal Data"],
+        "llm": []
+      }
+    },
+    "Lean": {
+      "max_monthly_budget_usd": 30,
+      "allow_llm": true,
+      "allow_paid_data": false,
+      "primary_llm_profile": "deepseek",
+      "secondary_llm_profile": "optional_openai_mini",
+      "secondary_llm_enabled": true,
+      "provider_policy": {
+        "company_evidence": ["SEC EDGAR", "issuer filings", "issuer IR/manual imports"],
+        "consensus": ["Alpha Vantage if keyed", "Finnhub recommendations if keyed", "CSV/manual"],
+        "prices": ["Stooq", "Yahoo price fallback", "CSV/manual"],
+        "macro": ["BLS no-key", "Treasury/Fiscal Data", "configured FRED/BEA/Census"],
+        "llm": ["low-cost primary synthesis", "secondary review for Research-Ready+"]
+      }
+    },
+    "Stable": {
+      "max_monthly_budget_usd": 80,
+      "allow_llm": true,
+      "allow_paid_data": true,
+      "provider_policy": {
+        "company_evidence": ["SEC EDGAR", "issuer filings", "issuer IR/manual imports"],
+        "consensus": ["FMP or Tiingo if configured", "Alpha Vantage/Finnhub", "CSV/manual"],
+        "prices": ["Tiingo or Polygon if configured", "Stooq", "Yahoo price fallback", "CSV/manual"],
+        "macro": ["official macro default policy", "global macro for ADR/FPI"],
+        "llm": ["primary synthesis", "secondary review for top thesis clusters"]
+      }
+    },
+    "Premium": {
+      "allow_llm": true,
+      "allow_paid_data": true,
+      "provider_policy": {
+        "company_evidence": ["SEC EDGAR", "issuer filings", "licensed report excerpts"],
+        "consensus": ["FMP/Intrinio/Visible Alpha/FactSet/LSEG if configured", "CSV/manual"],
+        "prices": ["Polygon/Tiingo/institutional market data if configured", "fallback free providers"],
+        "macro": ["official macro", "global macro", "factor/positioning data"],
+        "llm": ["strong primary synthesis", "independent secondary read", "bilingual audit"]
+      }
+    }
+  }
+}

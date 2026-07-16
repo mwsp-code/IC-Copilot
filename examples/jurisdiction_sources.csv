@@ -1,0 +1,10 @@
+source_type,label,jurisdiction,source_family,priority,official,source_tier,access_mode,licensing_policy,url,supports_xbrl,supports_ixbrl,supports_pdf,supports_html,notes
+sec_edgar,SEC EDGAR submissions and companyfacts,US,official_filings,High,true,1,keyless_api,public_metadata_and_filings,https://www.sec.gov/search-filings/edgar-application-programming-interfaces,true,true,false,true,Gold-standard US listed company source
+issuer_ir,Issuer investor relations documents,global,issuer_documents,High,true,1,registered_seed_or_manual,metadata_excerpt_or_user_supplied,,false,false,true,true,Official releases decks transcripts and reports
+hkex_document,HKEXnews announcements and reports,HK,official_filings,High,true,1,registered_adapter_or_manual,metadata_excerpt_only,https://www.hkexnews.hk/index.htm,false,false,true,true,Hong Kong listed issuer filings
+cninfo_document,CNInfo official China filings,CN,official_filings,High,true,1,registered_adapter_or_manual,metadata_excerpt_only,https://www.cninfo.com.cn/new/index,true,false,true,true,Mainland China announcements and reports
+edinet_document,Japan EDINET/JFSA filings,JP,official_filings,High,true,1,api_or_manual,official_filings_metadata_excerpt,,true,true,true,true,Japan official filing source
+esef_repository,ESEF iXBRL repository or national OAM,EU,official_filings,High,true,1,jurisdiction_adapter_or_manual,official_filings_metadata_excerpt,,false,true,false,true,European structured filings
+openfigi,OpenFIGI security identifier mapping,global,entity_mapping,Medium,true,2,api,identifier_mapping,https://www.openfigi.com/api,false,false,false,true,Security identity context only
+gleif_lei,GLEIF LEI legal entity lookup,global,entity_mapping,Medium,true,2,api,identifier_mapping,https://www.gleif.org/en/lei-data/gleif-api,false,false,false,true,Legal entity identity context only
+manual_csv,Bring-your-own-data CSV import,global,manual_import,Medium,true,2,local_file,user_supplied,,false,false,false,false,Manual licensed or official data extracts

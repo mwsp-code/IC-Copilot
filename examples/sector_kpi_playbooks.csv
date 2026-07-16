@@ -1,0 +1,7 @@
+sector_template,key_kpis,driver_families,primary_sources
+Bank,NIM|CET1 Ratio|Provisions|ROTCE|Deposits|Tangible Book,bank_credit_cycle|leverage_refinancing,issuer_report|regulator_bank|sec_edgar
+Insurer,Combined Ratio|Reserve Development|Premium Growth|Investment Yield,insurance_reserve_shock|margin,issuer_report|regulator_insurance|sec_edgar
+REIT,FFO|AFFO|Occupancy|Same-store NOI|Debt Maturity,reit_occupancy_rate|leverage_refinancing,issuer_report|sec_edgar
+Automobiles,Deliveries|ASP|COGS|Gross Margin|Incentives|Warranty,gross_margin_mix|revenue_demand,issuer_report|exchange_announcement
+Energy,Production|Realized Price|Reserves|Lifting Cost|Capex,commodity_sensitivity|cash_generation,issuer_report|commodity_data|sec_edgar
+Software,ARR|RPO|NRR|Churn|Cloud Revenue,revenue_demand|margin,issuer_report|sec_edgar

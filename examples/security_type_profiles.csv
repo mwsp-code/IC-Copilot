@@ -1,0 +1,7 @@
+security_type,description,required_identity_checks,normalization_rules,data_gaps
+common_stock,Ordinary listed equity,ticker|exchange|fiscal year-end,Use local reporting currency unless ADR/FPI overlay applies,
+ADR,US-listed American depositary receipt,ADR ratio|home ticker|ordinary-share basis|reporting currency,Normalize ordinary shares vs ADS|Translate home reporting currency separately from ADR price currency,
+ADR/FPI,Foreign private issuer with US listing,20-F/40-F/6-K availability|home exchange|reporting standard,Use SEC FPI filings plus home-market official documents where needed,
+OTC ADR / foreign ordinary,OTC-traded foreign security,home listing|issuer official reports|security basis,Do not expect SEC companyfacts|Use official home-market filings and manual imports,
+reit,Real estate investment trust,REIT status|property type|FFO/AFFO basis,Require FFO/AFFO and occupancy metrics before valuation,
+bank,Bank equity or ADR,bank regulator|capital ratio basis|loan/provision definitions,Use CET1 NIM provisions deposits tangible book and ROTCE,

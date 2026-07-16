@@ -1,0 +1,26 @@
+metric,family,unit_type,aliases,formula,required_for_drivers,sector_templates,preferred_sources
+Revenue,core_financials,currency,RevenueFromContractWithCustomerExcludingAssessedTax|Revenues|SalesRevenueNet|Revenue,,revenue_demand|gross_margin_mix,,xbrl|issuer_report
+Cost of Revenue,core_financials,currency,CostOfRevenue|CostOfGoodsAndServicesSold|CostOfSales,,gross_margin_mix,,xbrl|issuer_report
+Gross Profit,core_financials,currency,GrossProfit|GrossIncome,Revenue - Cost of Revenue,gross_margin_mix,,xbrl|issuer_report|derived
+Gross Margin,core_financials,percent,GrossMargin,Gross Profit / Revenue,gross_margin_mix,,derived|issuer_report
+Operating Income,core_financials,currency,OperatingIncomeLoss|OperatingProfitLoss,,operating_expense|margin,,xbrl|issuer_report
+Net Income,core_financials,currency,NetIncomeLoss|ProfitLoss,,eps|financial_kpi,,xbrl|issuer_report
+Operating Cash Flow,core_financials,currency,NetCashProvidedByUsedInOperatingActivities|CashFlowsFromUsedInOperatingActivities,,cash_generation|cash_credit,,xbrl|issuer_report
+Capital Expenditure,core_financials,currency,PaymentsToAcquirePropertyPlantAndEquipment|CapitalExpenditures,,cash_generation|cash_credit,,xbrl|issuer_report
+Free Cash Flow,core_financials,currency,FreeCashFlow,Operating Cash Flow - Capital Expenditure,cash_generation|valuation,,derived
+Cash,core_financials,currency,CashAndCashEquivalentsAtCarryingValue|CashAndCashEquivalents,,cash_credit,,xbrl|issuer_report
+Long-term Debt,core_financials,currency,LongTermDebtNoncurrent|LongTermDebt|NoncurrentBorrowings,,leverage_refinancing|cash_credit,,xbrl|issuer_report
+Current Debt,core_financials,currency,DebtCurrent|ShortTermDebt|CurrentPortionOfLongTermDebt,,leverage_refinancing|cash_credit,,xbrl|issuer_report
+Net Debt,core_financials,currency,NetDebt,Long-term Debt + Current Debt - Cash,leverage_refinancing|cash_credit,,derived
+Interest Expense,core_financials,currency,InterestExpenseNonOperating|InterestExpense|FinanceCosts,,cash_credit|credit,,xbrl|issuer_report
+R&D Expense,core_financials,currency,ResearchAndDevelopmentExpense|ResearchAndDevelopmentExpenses,,operating_expense,,xbrl|issuer_report
+SG&A Expense,core_financials,currency,SellingGeneralAndAdministrativeExpense|GeneralAndAdministrativeExpense,,operating_expense,,xbrl|issuer_report
+Sales and Marketing Expense,core_financials,currency,SellingAndMarketingExpense|MarketingExpense|AdvertisingExpense,,operating_expense,,xbrl|issuer_report
+Shares,core_financials,shares,EntityCommonStockSharesOutstanding|NumberOfSharesOutstanding|OrdinarySharesNumber,,share_count,,xbrl|issuer_report
+Dividends Paid,core_financials,currency,PaymentsOfDividendsCommonStock|PaymentsOfDividends,,capital_return|share_count,,xbrl|issuer_report
+Share Repurchases,core_financials,currency,PaymentsForRepurchaseOfCommonStock|ShareRepurchases,,capital_return|share_count,,xbrl|issuer_report
+Goodwill,core_financials,currency,Goodwill,,acquisition_accounting,,xbrl|issuer_report
+CET1 Ratio,bank_kpi,percent,CommonEquityTier1CapitalRatio,,bank_credit_cycle,Bank,xbrl|issuer_report
+Combined Ratio,insurance_kpi,percent,CombinedRatio,,insurance_reserve_shock,Insurer,xbrl|issuer_report
+FFO,reit_kpi,currency,FundsFromOperations,,reit_occupancy_rate,REIT,xbrl|issuer_report
+Deliveries,auto_kpi,units,VehicleDeliveries|Deliveries,,gross_margin_mix|revenue_demand,Automobiles,issuer_report|presentation
