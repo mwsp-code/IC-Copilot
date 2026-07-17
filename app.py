@@ -53,6 +53,17 @@ st.set_page_config(
 )
 
 
+def _demo_case_runtime_metadata(case) -> dict[str, object]:
+    """Normalize demo metadata across Streamlit hot-reload schema versions."""
+    return {
+        "content_version": getattr(case, "content_version", "") or "",
+        "refreshed_at": getattr(case, "refreshed_at", "") or "",
+        "research_profile": getattr(case, "research_profile", "") or "",
+        "budget_mode": getattr(case, "budget_mode", "") or "",
+        "enabled_layers": tuple(getattr(case, "enabled_layers", ()) or ()),
+    }
+
+
 def main() -> None:
     st.title("US Equity Research Radar")
     if "result" not in st.session_state:
@@ -84,18 +95,24 @@ def main() -> None:
         st.subheader("Load Demo Gallery")
         selected_demo = st.selectbox("Demo case", demo_labels, index=0)
         selected_case = cases[demo_labels.index(selected_demo)]
+        case_metadata = _demo_case_runtime_metadata(selected_case)
+        case_content_version = str(case_metadata["content_version"])
+        case_refreshed_at = str(case_metadata["refreshed_at"])
+        case_research_profile = str(case_metadata["research_profile"])
+        case_budget_mode = str(case_metadata["budget_mode"])
+        case_enabled_layers = tuple(case_metadata["enabled_layers"])
         freshness = (
-            f" Version: {selected_case.content_version}; refreshed {selected_case.refreshed_at}."
-            if selected_case.content_version or selected_case.refreshed_at else ""
+            f" Version: {case_content_version}; refreshed {case_refreshed_at}."
+            if case_content_version or case_refreshed_at else ""
         )
         st.caption(f"{selected_case.lesson} {selected_case.badge}; {selected_case.expected_runtime}.{freshness}")
-        if selected_case.research_profile or selected_case.budget_mode:
+        if case_research_profile or case_budget_mode:
             st.caption(
-                f"Demo preset: {selected_case.research_profile or 'Current research profile'} | "
-                f"{selected_case.budget_mode or 'Current budget mode'}."
+                f"Demo preset: {case_research_profile or 'Current research profile'} | "
+                f"{case_budget_mode or 'Current budget mode'}."
             )
-        if selected_case.enabled_layers:
-            st.caption("Included layers: " + ", ".join(selected_case.enabled_layers) + ".")
+        if case_enabled_layers:
+            st.caption("Included layers: " + ", ".join(case_enabled_layers) + ".")
         load_demo_clicked = st.button("Load Selected Demo", use_container_width=True)
         ticker = st.text_input("Ticker", value=selected_case.ticker or "AAPL").upper().strip()
         profile_options = research_profiles()
@@ -525,8 +542,8 @@ def main() -> None:
     if load_demo_clicked:
         st.session_state.result = demo_result(selected_case.ticker)
         st.session_state._pending_demo_preset = {
-            "research_profile": "deep_initiation" if selected_case.budget_mode == "Premium" else default_profile,
-            "budget_mode": selected_case.budget_mode or budget_mode,
+            "research_profile": "deep_initiation" if case_budget_mode == "Premium" else default_profile,
+            "budget_mode": case_budget_mode or budget_mode,
         }
         st.rerun()
 
