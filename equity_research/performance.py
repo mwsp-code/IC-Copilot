@@ -91,7 +91,9 @@ def _treatment_for_step(name: str) -> str:
     if "memo" in normalized or "render" in normalized:
         return "UI/memo: cache memo markdown by run hash, render summaries first, and lazy-load raw detail tables."
     if "persistence" in normalized:
-        return "Persistence: SQLite WAL mode is initialized once and saved idea assumptions are loaded in one bulk query; normalized artifacts still commit through durable tables."
+        return "Persistence: unchanged normalized management evidence is content-addressed, historical analogs use compact projections, and every changed artifact still commits through durable SQLite tables."
+    if "evidence" in normalized or "decision" in normalized or "calibration" in normalized:
+        return "Evidence/decision models: historical analog matching reads only normalized comparison fields and resolved outcomes; evidence gates, no-lookahead rules, and calibration thresholds remain unchanged."
     return "General: inspect this stage before optimizing; do not skip evidence gates or accept stale/missing data for speed."
 
 

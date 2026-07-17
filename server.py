@@ -751,6 +751,7 @@ HTML = r"""<!doctype html>
       if (activeTab === "Work Orders") target.innerHTML = evidenceClosurePanel() + thesisMonitor();
       if (activeTab === "Raw Data") target.innerHTML = memoPack();
       if (activeTab === "Causal Bridge") bindOutcomeForms();
+      if (activeTab === "Causal Bridge") bindPayoffAssumptionActions();
       if (activeTab === "Work Orders") bindMonitorActions();
       if (activeTab === "Market & Expectations") bindMarketImpliedActions();
     }
@@ -966,7 +967,9 @@ HTML = r"""<!doctype html>
           <div class="metric"><span>Current FCF yield</span><strong>${fcfYield && fcfYield.implied_value != null ? `${number(fcfYield.implied_value)} ${esc(fcfYield.unit)}` : "Unavailable"}</strong></div>
           <div class="metric"><span>Price-implied FCF growth</span><strong>${reverseGrowth && reverseGrowth.implied_value != null ? `${number(reverseGrowth.implied_value)} ${esc(reverseGrowth.unit)}` : "Unavailable"}</strong></div>
           <div class="metric"><span>Confidence</span><strong>${esc(reverseGrowth ? reverseGrowth.confidence : "Unavailable")}</strong></div>
-        </div><p class="muted">${esc(reverseGrowth ? reverseGrowth.interpretation : "Open Market & Expectations for exact missing reverse-DCF inputs.")}</p>` : "";
+        </div>
+        <p class="muted">${esc(reverseGrowth ? reverseGrowth.interpretation : "Open Market & Expectations for exact missing reverse-DCF inputs.")}</p>
+        ${reverseBase ? '<p class="muted"><strong>FCF basis:</strong> ' + esc(reverseBase.status) + '. ' + esc(reverseBase.formula) + '. ' + esc(reverseBase.interpretation) + '</p>' : ""}` : "";
       return `${demoBanner}<h2>IC Story</h2>
         <div class="summary">
           <div class="metric"><span>Verdict</span><strong>${esc(onePager.verdict || brief.verdict || "n/a")}</strong></div>
@@ -1894,6 +1897,26 @@ HTML = r"""<!doctype html>
       })) : [];
       const model = top && top.payoff_model ? top.payoff_model : null;
       const ev = model ? model.expected_value_pct : expectedValue(top ? top.scenarios : []);
+      const savedAssumptions = top && top.user_assumptions ? top.user_assumptions : {};
+      const selectedMode = savedAssumptions.assumption_mode || "Model-derived";
+      const scenarioMap = Object.fromEntries((top ? top.scenarios : []).map(item => [item.name, item]));
+      const modeOptions = ["Automatic", "Model-derived", "Market-implied", "Illustrative", "Custom"];
+      const assumptionEditor = top && model ? `<details><summary>Edit scenario assumptions</summary>
+        <p class="muted">Model-derived is the default and uses internal fair-value cases. If the model is unavailable, the app shows a labelled market-range or illustrative fallback. Defaults remain uncalibrated and excluded from EV ranking.</p>
+        <div class="form-grid">
+          <label>Scenario basis<select id="payoff-mode">${modeOptions.map(mode => `<option value="${esc(mode)}" ${mode === selectedMode ? "selected" : ""}>${esc(mode)}</option>`).join("")}</select></label>
+          <label>Entry price<input id="payoff-entry" type="number" min="0" step="0.01" value="${Number(savedAssumptions.entry_price ?? model.entry_price ?? 0)}"></label>
+          ${["Bear", "Base", "Bull"].map(name => `<label>${name} exit<input class="payoff-exit" data-case="${name.toLowerCase()}" type="number" min="0" step="0.01" value="${Number(savedAssumptions[`${name.toLowerCase()}_exit`] ?? (scenarioMap[name] ? scenarioMap[name].exit_value : 0) ?? 0)}"></label>`).join("")}
+          ${["Bear", "Base", "Bull"].map(name => `<label>${name} probability %<input class="payoff-probability" data-case="${name.toLowerCase()}" type="number" min="0" max="100" step="5" value="${Number(savedAssumptions[`${name.toLowerCase()}_probability_pct`] ?? (scenarioMap[name] ? scenarioMap[name].probability * 100 : ({Bear:25,Base:50,Bull:25})[name]))}"></label>`).join("")}
+          <label>Transaction cost %<input id="payoff-transaction" type="number" min="0" step="0.05" value="${Number(savedAssumptions.transaction_cost_pct ?? model.transaction_cost_pct ?? 0.1)}"></label>
+          <label>Dividend return %<input id="payoff-dividend" type="number" step="0.1" value="${Number(savedAssumptions.dividend_return_pct ?? model.dividend_return_pct ?? 0)}"></label>
+          <label>Borrow cost %<input id="payoff-borrow" type="number" min="0" step="0.25" value="${Number(savedAssumptions.borrow_cost_pct ?? model.borrow_cost_pct ?? 0)}"></label>
+          <label>Hedge ratio<input id="payoff-hedge" type="number" min="0" step="0.05" value="${Number(savedAssumptions.hedge_ratio ?? model.hedge_ratio ?? 0)}"></label>
+        </div>
+        <p class="muted">Current basis: ${esc(model.assumption_mode || "Unknown")} (${esc(model.assumption_quality || "Unknown")} confidence). Entry source: ${esc(model.entry_price_source || "Unknown")}; as of ${esc(model.entry_price_as_of || "Unknown")}.</p>
+        <button id="payoff-save" type="button">Save assumptions</button> <button id="payoff-reset" type="button" class="secondary">Reset to Model-derived</button>
+        <span id="payoff-assumption-status" class="muted"></span>
+      </details>` : "";
       const managementRows = current.ideas.flatMap(idea => {
         const event = (idea.source_events || [])[0] || {};
         const metrics = event.metrics || {};
@@ -1916,7 +1939,47 @@ HTML = r"""<!doctype html>
         : "<p class='muted'>Scenario labels describe the stock outcome; position payoff applies dividends and transaction costs.</p>";
       return `${valuationPanel()}<h2>Idea Quality Scores</h2>${table(rows, [["Idea", "idea"], ["Stage", "stage"], ["Total", "total"], ["Research", "research"], ["Evidence Strength", "evidenceScore"], ["Valuation Completeness", "valuationComplete"], ["Market-Capture Confidence", "marketConfidence"], ["Actionability", "actionability"], ["Evidence /25", "evidence"], ["Novelty /15", "novelty"], ["Valuation /20", "payoff"], ["Specificity /15", "specificity"], ["Timing /10", "timing"], ["Reproducibility /5", "reproducibility"], ["Capture", "capture"], ["Price Status", "priceStatus"], ["Consensus Status", "consensusStatus"], ["Diagnosis", "diagnosis"]])}
         <h2>Management Signal Quality</h2>${table(managementRows, [["Idea", "idea"], ["Signal", "signal"], ["Sentiment", "sentiment"], ["Score", "score"], ["Specificity", "specificity"], ["Cross-check", "cross"], ["Evasion", "evasion"], ["Uncertainty", "uncertainty"]])}
-        <h2>Scenario + Payoff</h2>${payoffNote}${scenarioConvention}${table(scenarios, [["Scenario", "name"], ["Probability", "probability"], ["Status", "status"], ["Entry", "entry"], ["Exit", "exit"], ["Stock move", "stockMove"], ["Position before costs", "positionBeforeCosts"], ["Net position payoff", "payoff"], ["Assumptions", "assumptions"]])}`;
+        <h2>Scenario + Payoff</h2>${payoffNote}${assumptionEditor}${scenarioConvention}${table(scenarios, [["Scenario", "name"], ["Probability", "probability"], ["Status", "status"], ["Entry", "entry"], ["Exit", "exit"], ["Stock move", "stockMove"], ["Position before costs", "positionBeforeCosts"], ["Net position payoff", "payoff"], ["Assumptions", "assumptions"]])}`;
+    }
+
+    function bindPayoffAssumptionActions() {
+      const top = current.ideas && current.ideas[0];
+      if (!top) return;
+      const mode = document.getElementById("payoff-mode");
+      const status = document.getElementById("payoff-assumption-status");
+      const setExitState = () => {
+        document.querySelectorAll(".payoff-exit").forEach(input => {
+          input.disabled = !mode || mode.value !== "Custom";
+        });
+      };
+      setExitState();
+      if (mode) mode.addEventListener("change", setExitState);
+      const save = document.getElementById("payoff-save");
+      if (save) save.addEventListener("click", async () => {
+        const payload = {
+          assumption_mode: mode ? mode.value : "Model-derived",
+          entry_price: Number(document.getElementById("payoff-entry").value),
+          transaction_cost_pct: Number(document.getElementById("payoff-transaction").value),
+          dividend_return_pct: Number(document.getElementById("payoff-dividend").value),
+          borrow_cost_pct: Number(document.getElementById("payoff-borrow").value),
+          hedge_ratio: Number(document.getElementById("payoff-hedge").value)
+        };
+        document.querySelectorAll(".payoff-probability").forEach(input => payload[`${input.dataset.case}_probability_pct`] = Number(input.value));
+        if (payload.assumption_mode === "Custom") {
+          document.querySelectorAll(".payoff-exit").forEach(input => payload[`${input.dataset.case}_exit`] = Number(input.value));
+        }
+        const response = await fetch(`/api/ideas/${encodeURIComponent(top.idea_id)}/assumptions`, {
+          method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)
+        });
+        if (status) status.textContent = response.ok ? "Saved. Run research again to rebuild the payoff." : "Could not save assumptions.";
+      });
+      const reset = document.getElementById("payoff-reset");
+      if (reset) reset.addEventListener("click", async () => {
+        const response = await fetch(`/api/ideas/${encodeURIComponent(top.idea_id)}/assumptions`, {
+          method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({})
+        });
+        if (status) status.textContent = response.ok ? "Model-derived defaults restored. Run research again to refresh." : "Could not reset assumptions.";
+      });
     }
 
     function priceMoveAttribution() {
@@ -2196,7 +2259,7 @@ HTML = r"""<!doctype html>
       if (reset) reset.addEventListener("click", async () => {
         const response = await fetch(`/api/market-implied-assumptions?ticker=${encodeURIComponent(ticker)}`, {method: "DELETE"});
         if (status) status.textContent = response.ok
-          ? "Defaults restored. Run research again to recalculate."
+          ? "Model-derived defaults restored. Run research again to recalculate."
           : "Could not reset assumptions.";
       });
     }

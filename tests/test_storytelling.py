@@ -42,6 +42,46 @@ def test_nvda_demo_is_current_ticker_specific_and_has_peer_operating_evidence() 
     assert all(row.status == "available" and row.observations for row in readthroughs)
 
 
+def test_aapl_demo_contains_one_convincing_citation_bound_showcase_thesis() -> None:
+    result = demo_result("AAPL")
+    top = result.ideas[0]
+    event = top.source_events[0]
+
+    assert top.stage in {"Research-Ready", "High-Conviction"}
+    assert top.direction == "Long"
+    assert top.thesis_grade_status == "Thesis-grade"
+    assert top.gate_result is not None
+    assert top.gate_result.research_ready_failed == []
+    assert result.thesis_brief.verdict != "No convincing thesis yet"
+    assert result.thesis_brief.source == "llm"
+    assert result.llm_run_manifest.status == "Available"
+    assert result.ic_one_pager.status == "IC-ready draft"
+    assert event.metrics["current_value"] == 49.27
+    assert event.metrics["previous_value"] == 47.05
+    assert event.metrics["current_period"] == "2026-03-28"
+    assert event.metrics["previous_period"] == "2025-03-29"
+    assert event.citations[0].url.endswith("FY26_Q2_Consolidated_Financial_Statements.pdf")
+    assert "R&D grew faster than revenue" in top.strongest_counter_thesis
+    assert top.payoff_model is not None
+    assert top.payoff_model.payoff_completeness is not None
+    assert top.payoff_model.payoff_completeness.status == "Complete"
+    assert top.market_capture is not None
+    assert top.market_capture.capture_mode == "Price-only"
+    assert top.market_capture.consensus_revision_pct is None
+
+
+def test_demo_stage_remains_authoritative_after_work_order_closure() -> None:
+    result = demo_result("AAPL")
+
+    assert any(
+        item.blocks_research_ready and item.status == "resolved"
+        for item in result.evidence_work_order.items
+    )
+    assert result.ideas[0].gate_result is not None
+    assert result.ideas[0].gate_result.research_ready is True
+    assert result.ic_one_pager.status != "Needs Research-Ready evidence"
+
+
 def test_latest_showcase_demos_use_deep_premium_macro_and_wisburg_fixtures() -> None:
     for ticker in ["NVDA", "BABA", "AAPL", "TSLA", "GS"]:
         result = demo_result(ticker)

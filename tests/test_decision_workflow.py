@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from equity_research.analysis import build_financial_metrics
 from equity_research.causal_thesis_graph import build_causal_thesis_graphs
 from equity_research.company_model import build_company_model_workspace
 from equity_research.evidence_closure import execute_evidence_work_order
@@ -60,6 +61,18 @@ def _metrics():
         _metric("Interest Expense", 12.0),
         _metric("Shares", 100.0, "shares"),
     ]
+
+
+def _fact_row(start, end, value, form, fiscal_period, fiscal_year, filed):
+    return {
+        "start": start,
+        "end": end,
+        "val": value,
+        "form": form,
+        "fp": fiscal_period,
+        "fy": fiscal_year,
+        "filed": filed,
+    }
 
 
 def _identity():
@@ -154,6 +167,59 @@ def test_market_implied_quarterly_flow_basis_is_disclosed_and_confidence_reduced
     assert base_fcf.status == "Annualized screening estimate"
     assert "x 2" in base_fcf.formula
     assert any("trailing-twelve-month" in gap for gap in implied.data_gaps)
+
+
+def test_market_implied_prefers_sec_ttm_bridge_over_interim_annualization():
+    facts = {"facts": {"us-gaap": {
+        "NetCashProvidedByUsedInOperatingActivities": {"units": {"USD": [
+            _fact_row("2024-09-29", "2025-09-27", 133.0, "10-K", "FY", 2025, "2025-10-31"),
+            _fact_row("2024-09-29", "2025-03-29", 53.0, "10-Q", "Q2", 2025, "2025-05-02"),
+            _fact_row("2025-09-28", "2026-03-28", 81.0, "10-Q", "Q2", 2026, "2026-05-01"),
+        ]}},
+        "PaymentsToAcquirePropertyPlantAndEquipment": {"units": {"USD": [
+            _fact_row("2024-09-29", "2025-09-27", 12.7, "10-K", "FY", 2025, "2025-10-31"),
+            _fact_row("2024-09-29", "2025-03-29", 6.1, "10-Q", "Q2", 2025, "2025-05-02"),
+            _fact_row("2025-09-28", "2026-03-28", 5.1, "10-Q", "Q2", 2026, "2026-05-01"),
+        ]}},
+    }}}
+    ttm_metrics = build_financial_metrics(facts)
+    metrics = [
+        metric for metric in _metrics()
+        if metric.name not in {"Operating Cash Flow", "Capital Expenditure"}
+    ] + ttm_metrics
+    model = build_company_model_workspace(_identity(), metrics, _valuation())
+
+    implied = build_market_implied_expectations(_identity(), metrics, 100.0, _valuation(), model)
+
+    base_fcf = next(row for row in implied.expectations if row.metric == "Reverse DCF base FCF")
+    cash_flow = next(row for row in metrics if row.name == "Operating Cash Flow")
+    capex = next(row for row in metrics if row.name == "Capital Expenditure")
+    assert cash_flow.trailing_twelve_month_value == 161.0
+    assert round(capex.trailing_twelve_month_value, 6) == 11.7
+    assert round(base_fcf.implied_value, 6) == 149.3
+    assert base_fcf.status == "TTM normalized"
+    assert "Trailing-twelve-month" in base_fcf.formula
+    assert "latest fiscal year plus current YTD" in base_fcf.interpretation
+    assert implied.financial_basis == "Trailing-twelve-month filing cash-flow facts"
+    assert not any("annualized screening run-rate" in gap for gap in implied.data_gaps)
+
+
+def test_financial_metric_ttm_can_sum_four_non_overlapping_quarters():
+    facts = {"facts": {"us-gaap": {
+        "NetCashProvidedByUsedInOperatingActivities": {"units": {"USD": [
+            _fact_row("2025-04-01", "2025-06-30", 20.0, "10-Q", "Q2", 2025, "2025-08-01"),
+            _fact_row("2025-07-01", "2025-09-30", 25.0, "10-Q", "Q3", 2025, "2025-11-01"),
+            _fact_row("2025-10-01", "2025-12-31", 30.0, "10-Q", "Q4", 2025, "2026-02-01"),
+            _fact_row("2026-01-01", "2026-03-31", 35.0, "10-Q", "Q1", 2026, "2026-05-01"),
+        ]}},
+    }}}
+
+    metric = build_financial_metrics(facts)[0]
+
+    assert metric.trailing_twelve_month_value == 110.0
+    assert metric.trailing_method == "sum_of_four_standalone_quarters"
+    assert metric.trailing_period_start == "2025-04-01"
+    assert metric.trailing_period_end == "2026-03-31"
 
 
 def test_market_implied_user_assumptions_recalculate_and_preserve_provenance():

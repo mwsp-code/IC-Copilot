@@ -8,7 +8,7 @@ import re
 from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from statistics import median
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .models import (
     ChangeEvent,
@@ -398,6 +398,21 @@ FINANCIAL_CONCEPTS = {
 }
 
 SUPPORTED_FINANCIAL_FORMS = {"10-K", "10-Q", "20-F", "40-F", "6-K"}
+TRAILING_FLOW_METRICS = {
+    "Revenue",
+    "Cost of Revenue",
+    "Gross Profit",
+    "Operating Income",
+    "Net Income",
+    "Operating Cash Flow",
+    "Capital Expenditure",
+    "Interest Expense",
+    "Income Tax Expense",
+    "R&D Expense",
+    "Sales and Marketing Expense",
+    "Dividends Paid",
+    "Share Repurchases",
+}
 FACT_TAXONOMY_ORDER = ("us-gaap", "ifrs-full", "dei")
 
 
@@ -1435,6 +1450,7 @@ def build_financial_metrics(company_facts: dict) -> list[FinancialMetric]:
         previous = _previous_comparable(latest, observations[:-1])
         previous_value = float(previous["val"]) if previous else None
         value = float(latest["val"])
+        trailing = _trailing_twelve_month_basis(metric_name, observations)
         yoy = None
         if previous_value not in (None, 0):
             yoy = (value / previous_value - 1.0) * 100
@@ -1450,6 +1466,12 @@ def build_financial_metrics(company_facts: dict) -> list[FinancialMetric]:
                 filed=latest.get("filed"),
                 previous_value=previous_value,
                 yoy_change_pct=yoy,
+                previous_period_end=previous.get("end") if previous else None,
+                trailing_twelve_month_value=trailing.get("value"),
+                trailing_period_start=trailing.get("start"),
+                trailing_period_end=trailing.get("end"),
+                trailing_method=str(trailing.get("method") or ""),
+                trailing_confidence=str(trailing.get("confidence") or "Unknown"),
             )
         )
     return _with_derived_financial_metrics(metrics)
@@ -1534,6 +1556,7 @@ def build_registration_financial_metrics(
         rows.sort(key=lambda row: (str(row["end"]), str(row.get("fp") or "")))
         latest = rows[-1]
         previous = _previous_comparable(latest, rows[:-1])
+        trailing = _trailing_twelve_month_basis(metric_name, rows)
         value = float(latest["val"])
         previous_value = float(previous["val"]) if previous else None
         yoy = None
@@ -1554,6 +1577,12 @@ def build_registration_financial_metrics(
                 source_url=filing.url,
                 accession=filing.accession,
                 source_kind=source_kind,
+                previous_period_end=str(previous.get("end") or "") or None if previous else None,
+                trailing_twelve_month_value=trailing.get("value"),
+                trailing_period_start=trailing.get("start"),
+                trailing_period_end=trailing.get("end"),
+                trailing_method=str(trailing.get("method") or ""),
+                trailing_confidence=str(trailing.get("confidence") or "Unknown"),
             )
         )
     return _with_derived_financial_metrics(sorted(metrics, key=lambda item: item.name))
@@ -1621,13 +1650,19 @@ def _select_inline_metric_period(
 
 def _with_derived_financial_metrics(metrics: list[FinancialMetric]) -> list[FinancialMetric]:
     by_name = {metric.name: metric for metric in metrics}
-    additions: list[FinancialMetric] = []
+    derived: dict[str, FinancialMetric] = {}
     revenue = by_name.get("Revenue")
     cost = by_name.get("Cost of Revenue")
     gross_profit = by_name.get("Gross Profit")
-    if not gross_profit and revenue and cost and _same_metric_basis(revenue, cost):
+    if (
+        revenue and cost and _same_metric_basis(revenue, cost)
+        and (not gross_profit or not _same_metric_basis(revenue, gross_profit))
+    ):
         previous_value = None
-        if revenue.previous_value is not None and cost.previous_value is not None:
+        if (
+            revenue.previous_value is not None and cost.previous_value is not None
+            and _same_previous_metric_basis(revenue, cost)
+        ):
             previous_value = revenue.previous_value - abs(cost.previous_value)
         value = revenue.value - abs(cost.value)
         yoy = (value / previous_value - 1.0) * 100 if previous_value not in (None, 0) else None
@@ -1645,14 +1680,28 @@ def _with_derived_financial_metrics(metrics: list[FinancialMetric]) -> list[Fina
             source_url=revenue.source_url or cost.source_url,
             accession=revenue.accession or cost.accession,
             source_kind="derived_companyfacts",
+            previous_period_end=(
+                revenue.previous_period_end
+                if revenue.previous_period_end == cost.previous_period_end
+                else None
+            ),
         )
-        additions.append(gross_profit)
-    if revenue and gross_profit and revenue.value and _same_metric_basis(revenue, gross_profit) and "Gross Margin" not in by_name:
+        derived["Gross Profit"] = gross_profit
+    existing_margin = by_name.get("Gross Margin")
+    if (
+        revenue and gross_profit and revenue.value
+        and _same_metric_basis(revenue, gross_profit)
+        and (not existing_margin or existing_margin.period_end != revenue.period_end)
+    ):
         previous_value = None
-        if revenue.previous_value not in (None, 0) and gross_profit.previous_value is not None:
+        if (
+            revenue.previous_value not in (None, 0)
+            and gross_profit.previous_value is not None
+            and _same_previous_metric_basis(revenue, gross_profit)
+        ):
             previous_value = gross_profit.previous_value / revenue.previous_value * 100
         value = gross_profit.value / revenue.value * 100
-        additions.append(FinancialMetric(
+        derived["Gross Margin"] = FinancialMetric(
             name="Gross Margin",
             value=value,
             unit="%",
@@ -1666,14 +1715,34 @@ def _with_derived_financial_metrics(metrics: list[FinancialMetric]) -> list[Fina
             source_url=revenue.source_url or gross_profit.source_url,
             accession=revenue.accession or gross_profit.accession,
             source_kind="derived_companyfacts",
-        ))
-    if not additions:
+            previous_period_end=(
+                revenue.previous_period_end
+                if revenue.previous_period_end == gross_profit.previous_period_end
+                else None
+            ),
+        )
+    if not derived:
         return metrics
-    return sorted(metrics + additions, key=lambda item: item.name)
+    return sorted(
+        [metric for metric in metrics if metric.name not in derived] + list(derived.values()),
+        key=lambda item: item.name,
+    )
 
 
 def _same_metric_basis(left: FinancialMetric, right: FinancialMetric) -> bool:
     return left.unit == right.unit and left.period_end == right.period_end
+
+
+def _same_previous_metric_basis(left: FinancialMetric, right: FinancialMetric) -> bool:
+    if left.previous_value is None or right.previous_value is None:
+        return False
+    if left.previous_period_end or right.previous_period_end:
+        return bool(
+            left.previous_period_end
+            and right.previous_period_end
+            and left.previous_period_end == right.previous_period_end
+        )
+    return True
 
 
 def financial_change_events(metrics: list[FinancialMetric], facts_url: str) -> list[ChangeEvent]:
@@ -1744,6 +1813,8 @@ def financial_change_events(metrics: list[FinancialMetric], facts_url: str) -> l
                     "value": metric.value,
                     "current_value": metric.value,
                     "previous_value": metric.previous_value,
+                    "current_period": metric.period_end,
+                    "previous_period": metric.previous_period_end,
                     "unit": metric.unit,
                     "metric_policy_key": policy.metric_key,
                     "driver_family": policy.driver_family,
@@ -1769,7 +1840,10 @@ def financial_change_events(metrics: list[FinancialMetric], facts_url: str) -> l
     if revenue and gross_profit and revenue.value:
         gross_margin = gross_profit.value / revenue.value * 100
         prev_margin = None
-        if revenue.previous_value and gross_profit.previous_value:
+        if (
+            revenue.previous_value and gross_profit.previous_value
+            and _same_previous_metric_basis(revenue, gross_profit)
+        ):
             prev_margin = gross_profit.previous_value / revenue.previous_value * 100
         if prev_margin is not None and abs(gross_margin - prev_margin) >= 2:
             events.append(
@@ -1802,7 +1876,17 @@ def financial_change_events(metrics: list[FinancialMetric], facts_url: str) -> l
                         "previous_gross_margin": prev_margin,
                         "current_value": gross_margin,
                         "previous_value": prev_margin,
-                        "unit": "percentage points",
+                        "change_value": gross_margin - prev_margin,
+                        "unit": "%",
+                        "current_period": revenue.period_end,
+                        "previous_period": (
+                            revenue.previous_period_end
+                            if revenue.previous_period_end == gross_profit.previous_period_end
+                            else None
+                        ),
+                        "driver_family": "margin",
+                        "metric_policy_key": "Gross Profit",
+                        "default_polarity": "directional",
                     },
                 )
             )
@@ -2141,6 +2225,7 @@ def _dedupe_fact_observations(observations: list[dict]) -> list[dict]:
         key = (
             row.get("_concept"),
             row.get("_unit"),
+            row.get("start"),
             row.get("end"),
             row.get("filed"),
             row.get("form"),
@@ -2202,6 +2287,167 @@ def _find_concept_data(fact_taxonomies: dict, concept: str) -> dict | None:
             if matched:
                 return matched
     return None
+
+
+def _trailing_twelve_month_basis(metric_name: str, observations: list[dict]) -> dict[str, object]:
+    if metric_name not in TRAILING_FLOW_METRICS:
+        return {}
+    by_concept: dict[str, list[dict]] = {}
+    for row in observations:
+        if row.get("val") is None or not row.get("start") or not row.get("end"):
+            continue
+        concept = str(row.get("_concept") or metric_name)
+        by_concept.setdefault(concept, []).append(row)
+    candidates = [
+        candidate
+        for rows in by_concept.values()
+        for candidate in [_ttm_candidate_for_concept(rows)]
+        if candidate
+    ]
+    if not candidates:
+        return {}
+    latest_observation_end = max(
+        (str(row.get("end") or "") for row in observations if row.get("start") and row.get("end")),
+        default="",
+    )
+    candidates = [
+        candidate for candidate in candidates
+        if str(candidate.get("end") or "") == latest_observation_end
+    ]
+    if not candidates:
+        return {}
+    confidence_rank = {"High": 3, "Medium": 2, "Low": 1}
+    return max(
+        candidates,
+        key=lambda item: (
+            str(item.get("end") or ""),
+            confidence_rank.get(str(item.get("confidence") or ""), 0),
+        ),
+    )
+
+
+def _ttm_candidate_for_concept(rows: list[dict]) -> dict[str, object]:
+    period_rows: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        start = str(row.get("start") or "")
+        end = str(row.get("end") or "")
+        duration = _inline_duration_days(start, end)
+        if duration is None or duration < 60 or duration > 400:
+            continue
+        key = (start, end)
+        prior = period_rows.get(key)
+        if prior is None or str(row.get("filed") or "") >= str(prior.get("filed") or ""):
+            copied = dict(row)
+            copied["_duration_days"] = duration
+            period_rows[key] = copied
+    normalized = list(period_rows.values())
+    if not normalized:
+        return {}
+    latest_end = max(str(row.get("end") or "") for row in normalized)
+
+    annual_at_latest = [
+        row for row in normalized
+        if str(row.get("end") or "") == latest_end and int(row.get("_duration_days") or 0) >= 300
+    ]
+    if annual_at_latest:
+        row = max(annual_at_latest, key=lambda item: int(item.get("_duration_days") or 0))
+        return _ttm_result(
+            float(row["val"]), row, row,
+            "reported_annual",
+            "High",
+        )
+
+    standalone_quarters = sorted(
+        [row for row in normalized if 70 <= int(row.get("_duration_days") or 0) <= 110],
+        key=lambda item: str(item.get("end") or ""),
+    )
+    last_four = standalone_quarters[-4:]
+    if len(last_four) == 4 and str(last_four[-1].get("end") or "") == latest_end:
+        end_dates = [_parsed_date(str(row.get("end") or "")) for row in last_four]
+        start_date = _parsed_date(str(last_four[0].get("start") or ""))
+        if (
+            start_date and all(end_dates)
+            and 300 <= (end_dates[-1] - start_date).days <= 400
+            and all(60 <= (right - left).days <= 120 for left, right in zip(end_dates, end_dates[1:]))
+        ):
+            return {
+                "value": sum(float(row["val"]) for row in last_four),
+                "start": str(last_four[0].get("start") or "") or None,
+                "end": latest_end,
+                "method": "sum_of_four_standalone_quarters",
+                "confidence": "High",
+            }
+
+    current_ytd_rows = [
+        row for row in normalized
+        if str(row.get("end") or "") == latest_end and 60 <= int(row.get("_duration_days") or 0) < 300
+    ]
+    if not current_ytd_rows:
+        return {}
+    current_ytd = max(current_ytd_rows, key=lambda item: int(item.get("_duration_days") or 0))
+    current_duration = int(current_ytd.get("_duration_days") or 0)
+    current_end_date = _parsed_date(latest_end)
+    annual_rows = sorted(
+        [
+            row for row in normalized
+            if int(row.get("_duration_days") or 0) >= 300 and str(row.get("end") or "") < latest_end
+        ],
+        key=lambda item: str(item.get("end") or ""),
+    )
+    if not annual_rows or not current_end_date:
+        return {}
+    latest_annual = annual_rows[-1]
+    annual_end_date = _parsed_date(str(latest_annual.get("end") or ""))
+    prior_ytd_candidates = []
+    for row in normalized:
+        row_end_date = _parsed_date(str(row.get("end") or ""))
+        if not row_end_date or not annual_end_date:
+            continue
+        duration = int(row.get("_duration_days") or 0)
+        year_gap = (current_end_date - row_end_date).days
+        if (
+            320 <= year_gap <= 410
+            and abs(duration - current_duration) <= 20
+            and row_end_date < annual_end_date < current_end_date
+        ):
+            prior_ytd_candidates.append(row)
+    if not prior_ytd_candidates:
+        return {}
+    prior_ytd = min(
+        prior_ytd_candidates,
+        key=lambda item: abs((current_end_date - _parsed_date(str(item.get("end") or ""))).days - 365),
+    )
+    prior_end = _parsed_date(str(prior_ytd.get("end") or ""))
+    return {
+        "value": float(latest_annual["val"]) + float(current_ytd["val"]) - float(prior_ytd["val"]),
+        "start": (prior_end + timedelta(days=1)).isoformat() if prior_end else None,
+        "end": latest_end,
+        "method": "latest_annual_plus_current_ytd_minus_prior_ytd",
+        "confidence": "High",
+    }
+
+
+def _ttm_result(
+    value: float,
+    first_row: dict,
+    last_row: dict,
+    method: str,
+    confidence: str,
+) -> dict[str, object]:
+    return {
+        "value": value,
+        "start": str(first_row.get("start") or "") or None,
+        "end": str(last_row.get("end") or "") or None,
+        "method": method,
+        "confidence": confidence,
+    }
+
+
+def _parsed_date(value: str):
+    try:
+        return datetime.fromisoformat(value).date()
+    except (TypeError, ValueError):
+        return None
 
 
 def _case_insensitive_concept_lookup(taxonomy_facts: dict, concept: str) -> dict | None:

@@ -44,6 +44,46 @@ TEMPLATES: dict[str, DriverExplanationTemplate] = {
         "Cash generation, refinancing, or debt reduction neutralizes the balance-sheet risk.",
         "Debt footnote, liquidity section, maturity table, rating action, or credit spread data.",
     ),
+    "liquidity": DriverExplanationTemplate(
+        "liquidity",
+        "Cash generation / liquidity",
+        "Cash-flow conversion matters when operating cash, reinvestment, financing, and capital returns reconcile to durable free cash flow.",
+        "Operating cash flow, capex, dividends, repurchases, debt flows, restricted cash, and working-capital movements reconcile the change.",
+        "Cash growth is explained by debt issuance, asset sales, working-capital timing, restricted cash, or weaker reinvestment rather than durable FCF.",
+        "Cash-flow statement, liquidity footnote, capital-allocation disclosure, and debt financing table.",
+    ),
+    "operating": DriverExplanationTemplate(
+        "operating",
+        "Operating leverage / profitability",
+        "Operating profit changes matter when revenue, gross margin, and opex scale on a comparable basis.",
+        "Revenue, gross profit, major opex lines, and segment operating income explain the operating-income change.",
+        "Restructuring, reclassification, capitalization, or temporary cost timing explains the apparent leverage.",
+        "Income statement, opex footnotes, segment table, cost-action disclosure, and transcript Q&A.",
+    ),
+    "net_income": DriverExplanationTemplate(
+        "net_income",
+        "Net income / EPS bridge",
+        "Per-share earnings require an explicit bridge from operating profit through interest, tax, other items, and share count.",
+        "Operating income, interest, tax, other income, cash flow, and share-count reconciliation support recurring EPS.",
+        "Tax, FX, investment gains, one-time items, or share-basis changes explain the result.",
+        "Income statement, below-the-line footnotes, EPS note, cash-flow statement, and share reconciliation.",
+    ),
+    "acquisition_accounting": DriverExplanationTemplate(
+        "acquisition_accounting",
+        "Acquisition accounting / capital allocation",
+        "Goodwill and acquired intangibles matter through purchase economics, integration, ROIC, and impairment risk, not through the balance change alone.",
+        "Transaction documents, purchase-price allocation, acquired earnings, synergy targets, funding, and post-deal KPIs support the mechanism.",
+        "The purchase premium, integration costs, weak acquired performance, or impairment indicators undermine expected returns.",
+        "Acquisition agreement, closing release, purchase-price allocation, segment results, and impairment footnote.",
+    ),
+    "investment_cycle": DriverExplanationTemplate(
+        "investment_cycle",
+        "Investment cycle / capital intensity",
+        "Capex can create value only when capacity, utilization, demand, and incremental returns justify the near-term FCF cost.",
+        "Project purpose, capacity, utilization, demand, depreciation, and return targets support the investment case.",
+        "Capex remains elevated without utilization, revenue, margin, or strategic payoff.",
+        "Capex footnote, project/capacity disclosure, segment demand KPIs, depreciation, and peer investment plans.",
+    ),
     "guidance": DriverExplanationTemplate(
         "guidance",
         "Guidance / expectations",
@@ -110,6 +150,23 @@ def _best_request_for_idea(idea: TradeIdea, source_plan: ResearchSourcePlan | No
 
 
 def _template_key(event: ChangeEvent) -> str:
+    explicit_family = str(event.metrics.get("driver_family") or "").strip().lower()
+    family_aliases = {
+        "margin": "margin",
+        "revenue": "revenue",
+        "operating": "operating",
+        "net_income": "net_income",
+        "liquidity": "liquidity",
+        "debt": "debt",
+        "share_count": "share_count",
+        "guidance": "guidance",
+        "regulation": "regulation",
+        "management": "management",
+        "acquisition_accounting": "acquisition_accounting",
+        "investment_cycle": "investment_cycle",
+    }
+    if explicit_family in family_aliases:
+        return family_aliases[explicit_family]
     text = f"{event.category} {event.title} {event.metrics.get('metric_name', '')} {event.metrics.get('economic_driver', '')}".lower()
     if any(token in text for token in ("share", "buyback", "dilution")):
         return "share_count"
@@ -117,9 +174,11 @@ def _template_key(event: ChangeEvent) -> str:
         return "guidance"
     if any(token in text for token in ("margin", "gross")):
         return "margin"
+    if any(token in text for token in ("cash", "liquidity", "free cash flow", "operating cash flow")):
+        return "liquidity"
     if any(token in text for token in ("expense", "opex", "sga", "r&d", "marketing", "operating leverage")):
         return "opex"
-    if any(token in text for token in ("debt", "liquidity", "cash", "borrow", "leverage")):
+    if any(token in text for token in ("debt", "borrow", "leverage")):
         return "debt"
     if any(token in text for token in ("risk", "litigation", "regulation", "policy", "legal")):
         return "regulation"

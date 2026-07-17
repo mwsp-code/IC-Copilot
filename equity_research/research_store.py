@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
@@ -210,6 +211,8 @@ class ResearchStore:
                     operator TEXT,
                     confirm_threshold REAL,
                     break_threshold REAL,
+                    confirm_value TEXT,
+                    break_value TEXT,
                     deadline TEXT,
                     source_field TEXT,
                     status TEXT NOT NULL,
@@ -605,6 +608,11 @@ class ResearchStore:
                     status TEXT NOT NULL,
                     payload_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS management_package_state (
+                    ticker TEXT PRIMARY KEY,
+                    content_hash TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS llm_provider_profiles (
                     profile_id TEXT PRIMARY KEY,
                     display_name TEXT NOT NULL,
@@ -663,6 +671,8 @@ class ResearchStore:
             _ensure_column(db, "llm_provider_profiles", "last_test_status", "TEXT NOT NULL DEFAULT 'not_tested'")
             _ensure_column(db, "llm_provider_profiles", "last_test_message", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(db, "llm_provider_profiles", "last_test_at", "TEXT")
+            _ensure_column(db, "thesis_checks", "confirm_value", "TEXT")
+            _ensure_column(db, "thesis_checks", "break_value", "TEXT")
             db.execute(
                 "UPDATE idea_records SET status='legacy_candidate' "
                 "WHERE status NOT IN ('Candidate','Research-Ready','High-Conviction','Investable','legacy_candidate')"
@@ -2152,23 +2162,50 @@ class ResearchStore:
         return list(unique.values())
 
     def save_management_sources(self, run_id: str, package: ManagementSourcePackage) -> None:
+        checked_at = _utc_now()
+        artifact_payload = {
+            "documents": [_stable_artifact_payload(asdict(item)) for item in package.documents],
+            "transcript_turns": [_stable_artifact_payload(asdict(item)) for item in package.transcript_turns],
+            "claims": [_stable_artifact_payload(asdict(item)) for item in package.claims],
+            "meeting_events": [_stable_artifact_payload(asdict(item)) for item in package.meeting_events],
+            "cross_checks": [_stable_artifact_payload(asdict(item)) for item in package.cross_checks],
+        }
+        content_hash = hashlib.sha256(
+            json.dumps(
+                artifact_payload, sort_keys=True, separators=(",", ":"), default=str,
+            ).encode("utf-8")
+        ).hexdigest()
         with self.connect() as db:
-            for status in package.provider_statuses:
-                db.execute(
-                    """INSERT OR REPLACE INTO provider_health
-                    (provider,status,checked_at,message) VALUES (?,?,?,?)""",
+            db.executemany(
+                """INSERT OR REPLACE INTO provider_health
+                (provider,status,checked_at,message) VALUES (?,?,?,?)""",
+                [
                     (
-                        status.provider, status.status, _utc_now(),
+                        status.provider, status.status, checked_at,
                         status.message or status.entitlement_status,
-                    ),
-                )
-            for document in package.documents:
+                    )
+                    for status in package.provider_statuses
+                ],
+            )
+            cached = db.execute(
+                "SELECT content_hash FROM management_package_state WHERE ticker=?",
+                (package.ticker.upper(),),
+            ).fetchone()
+            if cached and cached["content_hash"] == content_hash:
+                # The normalized evidence is identical. Preserve its original
+                # retrieval timestamps and provenance instead of rewriting it.
                 db.execute(
-                    """INSERT OR REPLACE INTO management_documents
-                    (document_id,run_id,ticker,source_type,provider,title,url,event_date,
-                     fiscal_period,source_tier,observed_at,entitlement_status,
-                     raw_payload_policy,excerpt)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    "UPDATE management_package_state SET updated_at=? WHERE ticker=?",
+                    (checked_at, package.ticker.upper()),
+                )
+                return
+            db.executemany(
+                """INSERT OR REPLACE INTO management_documents
+                (document_id,run_id,ticker,source_type,provider,title,url,event_date,
+                 fiscal_period,source_tier,observed_at,entitlement_status,
+                 raw_payload_policy,excerpt)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [
                     (
                         document.document_id, run_id, document.ticker.upper(),
                         document.source_type, document.provider, document.title,
@@ -2176,15 +2213,17 @@ class ResearchStore:
                         document.source_tier, document.observed_at,
                         document.entitlement_status, document.raw_payload_policy,
                         document.excerpt,
-                    ),
-                )
-            for turn in package.transcript_turns:
-                db.execute(
-                    """INSERT OR REPLACE INTO transcript_turns
-                    (turn_id,document_id,speaker,role,section,text,turn_index,sentiment,
-                     sentiment_label,sentiment_score,sentiment_confidence,sentiment_source,
-                     positive_terms,negative_terms,uncertainty_terms,evasion_terms,specificity_score)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    )
+                    for document in package.documents
+                ],
+            )
+            db.executemany(
+                """INSERT OR REPLACE INTO transcript_turns
+                (turn_id,document_id,speaker,role,section,text,turn_index,sentiment,
+                 sentiment_label,sentiment_score,sentiment_confidence,sentiment_source,
+                 positive_terms,negative_terms,uncertainty_terms,evasion_terms,specificity_score)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [
                     (
                         turn.turn_id, turn.document_id, turn.speaker, turn.role,
                         turn.section, turn.text, turn.turn_index, turn.sentiment,
@@ -2195,38 +2234,53 @@ class ResearchStore:
                         json.dumps(turn.uncertainty_terms),
                         json.dumps(turn.evasion_terms),
                         turn.specificity_score,
-                    ),
-                )
-            for claim in package.claims:
-                db.execute(
-                    """INSERT OR REPLACE INTO management_claims
-                    (claim_id,run_id,ticker,document_id,claim_type,status,payload_json)
-                    VALUES (?,?,?,?,?,?,?)""",
+                    )
+                    for turn in package.transcript_turns
+                ],
+            )
+            db.executemany(
+                """INSERT OR REPLACE INTO management_claims
+                (claim_id,run_id,ticker,document_id,claim_type,status,payload_json)
+                VALUES (?,?,?,?,?,?,?)""",
+                [
                     (
                         claim.claim_id, run_id, claim.ticker.upper(), claim.document_id,
                         claim.claim_type, claim.status, json.dumps(asdict(claim)),
-                    ),
-                )
-            for event in package.meeting_events:
-                db.execute(
-                    """INSERT OR REPLACE INTO meeting_events
-                    (event_id,run_id,ticker,document_id,event_type,status,payload_json)
-                    VALUES (?,?,?,?,?,?,?)""",
+                    )
+                    for claim in package.claims
+                ],
+            )
+            db.executemany(
+                """INSERT OR REPLACE INTO meeting_events
+                (event_id,run_id,ticker,document_id,event_type,status,payload_json)
+                VALUES (?,?,?,?,?,?,?)""",
+                [
                     (
                         event.event_id, run_id, event.ticker.upper(), event.document_id,
                         event.event_type, event.status, json.dumps(asdict(event)),
-                    ),
-                )
-            for check in package.cross_checks:
-                db.execute(
-                    """INSERT OR REPLACE INTO management_cross_checks
-                    (check_id,run_id,ticker,claim_id,status,check_type,payload_json)
-                    VALUES (?,?,?,?,?,?,?)""",
+                    )
+                    for event in package.meeting_events
+                ],
+            )
+            db.executemany(
+                """INSERT OR REPLACE INTO management_cross_checks
+                (check_id,run_id,ticker,claim_id,status,check_type,payload_json)
+                VALUES (?,?,?,?,?,?,?)""",
+                [
                     (
                         check.check_id, run_id, check.ticker.upper(), check.claim_id,
                         check.status, check.check_type, json.dumps(asdict(check)),
-                    ),
-                )
+                    )
+                    for check in package.cross_checks
+                ],
+            )
+            db.execute(
+                """INSERT INTO management_package_state (ticker,content_hash,updated_at)
+                VALUES (?,?,?)
+                ON CONFLICT(ticker) DO UPDATE SET
+                content_hash=excluded.content_hash,updated_at=excluded.updated_at""",
+                (package.ticker.upper(), content_hash, checked_at),
+            )
 
     def latest_management_sources(self, ticker: str) -> dict:
         ticker = ticker.upper()
@@ -2729,11 +2783,12 @@ class ResearchStore:
                     db.execute(
                         """INSERT OR REPLACE INTO thesis_checks
                         (idea_id,ticker,criterion,metric,operator,confirm_threshold,break_threshold,
-                         deadline,source_field,status,observed_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                         confirm_value,break_value,deadline,source_field,status,observed_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             idea.idea_id, ticker.upper(), item.criterion, item.metric, item.operator,
-                            item.confirm_threshold, item.break_threshold, item.deadline,
+                            item.confirm_threshold, item.break_threshold,
+                            _monitor_value(item.confirm_value), _monitor_value(item.break_value), item.deadline,
                             item.source_field, item.status, observed_at,
                         ),
                     )
@@ -2823,19 +2878,43 @@ class ResearchStore:
 
     def historical_idea_rows(self, limit: int = 250) -> list[dict]:
         with self.connect() as db:
-            rows = db.execute(
-                """SELECT rowid AS storage_order, idea_id, version, run_id, ticker, stage, signal_family, horizon,
-                   created_at, payload_json
-                   FROM idea_versions
-                   ORDER BY created_at DESC, rowid DESC LIMIT ?""",
-                (limit,),
-            ).fetchall()
+            try:
+                rows = db.execute(
+                    """SELECT rowid AS storage_order, idea_id, version, run_id, ticker, stage,
+                       signal_family, horizon, created_at,
+                       json_extract(payload_json, '$.title') AS payload_title,
+                       json_extract(payload_json, '$.direction') AS payload_direction,
+                       json_extract(payload_json, '$.stage') AS payload_stage,
+                       json_extract(payload_json, '$.score.total') AS payload_score_total,
+                       json_extract(payload_json, '$.market_capture.category') AS payload_capture_category,
+                       json_extract(payload_json, '$.source_events[0].category') AS payload_event_category,
+                       json_extract(payload_json, '$.source_events[0].event_date') AS payload_event_date
+                       FROM idea_versions
+                       ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+                compact_payloads = True
+            except sqlite3.OperationalError:
+                # Older SQLite builds may omit JSON1. Retain the compatible path,
+                # while modern builds avoid decoding deeply nested idea payloads.
+                rows = db.execute(
+                    """SELECT rowid AS storage_order, idea_id, version, run_id, ticker, stage,
+                       signal_family, horizon, created_at, payload_json
+                       FROM idea_versions
+                       ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+                compact_payloads = False
+            idea_ids = list(dict.fromkeys(str(row["idea_id"]) for row in rows))
+            placeholders = ",".join("?" for _ in idea_ids)
             outcomes = db.execute(
-                """SELECT idea_id, version, horizon, realized_return_pct,
+                f"""SELECT idea_id, version, horizon, realized_return_pct,
                    max_adverse_excursion_pct, max_favorable_excursion_pct,
                    thesis_outcome, closure_reason, evidence_valid, what_worked,
                    what_failed, lessons, next_process_change, observed_at
-                   FROM realized_outcomes"""
+                   FROM realized_outcomes
+                   {f'WHERE idea_id IN ({placeholders})' if idea_ids else 'WHERE 0'}""",
+                idea_ids,
             ).fetchall()
             signals = db.execute(
                 """SELECT signal_id, ticker, signal_type, event_date, direction,
@@ -2854,7 +2933,24 @@ class ResearchStore:
                 signals_by_idea.setdefault(parts[1], []).append(dict(row))
         result = []
         for row in rows:
-            payload = json.loads(row["payload_json"])
+            if compact_payloads:
+                payload = {
+                    "title": row["payload_title"],
+                    "direction": row["payload_direction"],
+                    "stage": row["payload_stage"] or row["stage"],
+                    "signal_family": row["signal_family"],
+                    "horizon": row["horizon"],
+                    "score": {"total": row["payload_score_total"] or 0},
+                    "market_capture": {
+                        "category": row["payload_capture_category"] or "Unknown",
+                    },
+                    "source_events": [{
+                        "category": row["payload_event_category"] or "",
+                        "event_date": row["payload_event_date"],
+                    }] if row["payload_event_category"] or row["payload_event_date"] else [],
+                }
+            else:
+                payload = json.loads(row["payload_json"])
             key = (row["idea_id"], row["version"], row["horizon"])
             result.append(
                 dict(row)
@@ -3152,6 +3248,14 @@ def _ensure_column(
         db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def _monitor_value(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def _estimate_from_row(row: sqlite3.Row) -> EstimatePoint:
     return EstimatePoint(
         ticker=row["ticker"], as_of=row["as_of"], metric=row["metric"],
@@ -3378,6 +3482,19 @@ def _pct_change(start: float | None, end: float | None) -> float | None:
 
 def _parse_date(value: str) -> date:
     return date.fromisoformat(value[:10])
+
+
+def _stable_artifact_payload(value):
+    """Remove retrieval-time fields while retaining source/event dates."""
+    if isinstance(value, dict):
+        return {
+            key: _stable_artifact_payload(item)
+            for key, item in value.items()
+            if key not in {"observed_at", "retrieved_at"}
+        }
+    if isinstance(value, list):
+        return [_stable_artifact_payload(item) for item in value]
+    return value
 
 
 def _utc_now() -> str:

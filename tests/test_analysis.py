@@ -129,6 +129,34 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(by_name["Gross Profit"].value, 40)
         self.assertEqual(by_name["Gross Margin"].value, 40)
 
+    def test_period_aligned_revenue_and_cost_replace_stale_gross_profit_tag(self) -> None:
+        facts = {
+            "facts": {"us-gaap": {
+                "Revenues": {"units": {"USD": [
+                    {"val": 80, "end": "2025-03-31", "filed": "2025-04-25", "form": "10-Q", "fp": "Q1", "fy": 2025},
+                    {"val": 100, "end": "2026-03-31", "filed": "2026-04-25", "form": "10-Q", "fp": "Q1", "fy": 2026},
+                ]}},
+                "CostOfRevenue": {"units": {"USD": [
+                    {"val": 50, "end": "2025-03-31", "filed": "2025-04-25", "form": "10-Q", "fp": "Q1", "fy": 2025},
+                    {"val": 60, "end": "2026-03-31", "filed": "2026-04-25", "form": "10-Q", "fp": "Q1", "fy": 2026},
+                ]}},
+                "GrossProfit": {"units": {"USD": [
+                    {"val": 10, "end": "2022-03-31", "filed": "2022-04-25", "form": "10-Q", "fp": "Q1", "fy": 2022},
+                    {"val": 12, "end": "2023-03-31", "filed": "2023-04-25", "form": "10-Q", "fp": "Q1", "fy": 2023},
+                ]}},
+            }}
+        }
+
+        metrics = build_financial_metrics(facts)
+        by_name = {metric.name: metric for metric in metrics}
+
+        self.assertEqual(by_name["Gross Profit"].period_end, "2026-03-31")
+        self.assertEqual(by_name["Gross Profit"].previous_period_end, "2025-03-31")
+        self.assertEqual(by_name["Gross Profit"].value, 40)
+        self.assertEqual(by_name["Gross Profit"].previous_value, 30)
+        self.assertAlmostEqual(by_name["Gross Margin"].value, 40.0)
+        self.assertAlmostEqual(by_name["Gross Margin"].previous_value, 37.5)
+
     def test_build_financial_metrics_uses_fresh_alias_when_first_concept_is_stale(self) -> None:
         facts = {
             "facts": {

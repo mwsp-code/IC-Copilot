@@ -810,10 +810,10 @@ def _driver_name_for_metric(metric_name: str) -> str:
         return "Revenue growth / demand"
     if "gross" in lower or "margin" in lower:
         return "Gross margin / mix"
+    if "cash" in lower or "free cash" in lower:
+        return "Cash generation / liquidity"
     if "operating" in lower or "income" in lower or "ebit" in lower:
         return "Operating leverage / profitability"
-    if "cash" in lower or "free cash" in lower:
-        return "Cash generation"
     if "debt" in lower or "borrow" in lower or "liabil" in lower:
         return "Balance sheet / liquidity"
     if "share" in lower:

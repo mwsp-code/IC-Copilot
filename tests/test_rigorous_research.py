@@ -25,6 +25,7 @@ from equity_research.models import (
     CompanyIdentity,
     FilingRecord,
     FinancialCoverage,
+    MarketCapture,
     PeerUniverse,
     PriceProviderStatus,
     ScoreBreakdown,
@@ -35,6 +36,7 @@ from equity_research.models import (
 )
 from equity_research.peers import FINANCIAL_METRICS, peer_universe_for
 from equity_research.providers import ConsensusAdapter, PriceReaction, StooqPriceClient, _DailyRowsResult
+from equity_research.pipeline import _market_capture_lens_summary, _payoff_lens_summary
 from equity_research.research_store import ResearchStore
 from equity_research.rigor import build_calibration_report, build_evidence_ledger
 
@@ -396,6 +398,103 @@ class RigorousResearchTests(unittest.TestCase):
         self.assertEqual([round(item.probability, 2) for item in payoff.scenarios], [0.2, 0.5, 0.3])
         self.assertFalse(payoff.rank_eligible)
 
+    def test_automatic_payoff_prefers_internal_model_and_records_price_source(self) -> None:
+        payoff = build_payoff_model(
+            _idea("Long"),
+            _valuation(),
+            100,
+            annualized_volatility_pct=40.0,
+            entry_price_source="Tiingo EOD prices",
+            entry_price_as_of="2026-07-15",
+        )
+
+        self.assertEqual(payoff.assumption_mode, "Model-derived")
+        self.assertEqual(payoff.assumption_quality, "High")
+        self.assertEqual(payoff.status, "Available")
+        self.assertEqual(payoff.entry_price_source, "Tiingo EOD prices")
+        self.assertTrue(payoff.assumptions)
+        self.assertFalse(payoff.rank_eligible)
+
+    def test_automatic_payoff_uses_market_range_before_illustrative_envelope(self) -> None:
+        insufficient = ValuationResult(
+            template="Non-financial",
+            status="Insufficient data",
+            currency="USD",
+            missing_data=["No valuation fields."],
+        )
+        payoff = build_payoff_model(
+            _idea("Long"),
+            insufficient,
+            100,
+            annualized_volatility_pct=40.0,
+            entry_price_source="EODHD EOD prices",
+            entry_price_as_of="2026-07-15",
+        )
+
+        self.assertEqual(payoff.assumption_mode, "Market-implied")
+        self.assertEqual(payoff.assumption_quality, "Medium")
+        self.assertEqual(payoff.status, "Envelope")
+        self.assertEqual(payoff.payoff_completeness.status, "Complete")
+        self.assertEqual(payoff.assumptions, [])
+        self.assertTrue(any("not fundamental fair value" in item.lower() for item in payoff.limitations))
+        self.assertFalse(payoff.rank_eligible)
+        self.assertIn("Scenario bridge is ready", _payoff_lens_summary(_idea_with_payoff(payoff)))
+
+    def test_invalid_custom_scenario_order_is_rejected(self) -> None:
+        payoff = build_payoff_model(
+            _idea("Long"),
+            _valuation(),
+            100,
+            scenario_mode="Custom",
+            scenario_exit_values={"Bear": 130, "Base": 100, "Bull": 80},
+        )
+
+        self.assertEqual(payoff.status, "Insufficient data")
+        self.assertEqual(payoff.payoff_completeness.status, "Incomplete")
+        self.assertIsNone(payoff.expected_value_pct)
+        self.assertIn("Bear <= Base <= Bull", payoff.validation_errors[0])
+
+    def test_price_only_lens_does_not_treat_missing_consensus_as_thesis_failure(self) -> None:
+        idea = _idea("Long")
+        idea.market_capture = MarketCapture(
+            category="Price-only",
+            price_reaction_pct=4.7,
+            consensus_revision_pct=None,
+            narrative_saturation="Unknown",
+            explanation="Consensus history is unavailable.",
+            capture_mode="Price-only",
+        )
+
+        summary = _market_capture_lens_summary(idea)
+
+        self.assertIn("analyst-expectation response remains unverified", summary)
+        self.assertIn("not treated as a thesis-validity failure", summary)
+
+    def test_incomplete_payoff_lens_names_blocker_and_exact_controls(self) -> None:
+        insufficient = ValuationResult(
+            template="Non-financial",
+            status="Insufficient data",
+            currency="USD",
+            missing_data=["No valuation fields."],
+        )
+        payoff = build_payoff_model(_idea("Long"), insufficient, None)
+        idea = _idea_with_payoff(payoff)
+
+        summary = _payoff_lens_summary(idea)
+
+        self.assertIn("Exact blocker: A current entry price is required", summary)
+        self.assertIn("Idea Scorer > Scenario + Payoff", summary)
+        self.assertIn("Scenario basis = Model-derived", summary)
+        self.assertIn("Save Assumptions", summary)
+
+    def test_watch_idea_does_not_request_payoff_inputs_before_direction(self) -> None:
+        idea = _idea("Watch")
+
+        summary = _payoff_lens_summary(idea)
+
+        self.assertIn("idea is still neutral", summary)
+        self.assertIn("validate a Long or Short mechanism first", summary)
+
     def test_high_conviction_gate_requires_complete_primary_evidence_and_payoff(self) -> None:
         event = ChangeEvent(
             category="margin",
@@ -579,6 +678,12 @@ def _idea(direction: str) -> TradeIdea:
         score=ScoreBreakdown(90, 25, 15, 20, 10, 10, 5),
         signal_family="margin",
     )
+
+
+def _idea_with_payoff(payoff) -> TradeIdea:
+    idea = _idea("Long")
+    idea.payoff_model = payoff
+    return idea
 
 
 def _trading_dates(start: date, count: int) -> list[date]:

@@ -216,3 +216,40 @@ def test_normalized_management_inputs_can_be_reused_when_live_provider_is_partia
         documents, turns = store.cached_management_inputs("AAPL")
     assert documents == [document]
     assert turns == [turn]
+
+
+def test_unchanged_management_evidence_ignores_retrieval_time_for_persistence_cache() -> None:
+    first_document = ManagementDocument(
+        document_id="aapl-call-stable",
+        ticker="AAPL",
+        source_type="earnings_call_transcript",
+        provider="Licensed transcript fixture",
+        title="AAPL call",
+        url="https://example.test/aapl-call-stable",
+        event_date="2026-05-01",
+        fiscal_period="2026-Q2",
+        source_tier=2,
+        observed_at="2026-05-01T22:00:00+00:00",
+        excerpt="Demand remained resilient.",
+    )
+    later_document = ManagementDocument(
+        **(
+            {
+                key: value
+                for key, value in first_document.__dict__.items()
+                if key != "observed_at"
+            }
+            | {"observed_at": "2026-05-02T22:00:00+00:00"}
+        )
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ResearchStore(Path(tmp) / "research.db")
+        store.save_management_sources(
+            "run-1", ManagementSourcePackage("AAPL", "Available", [first_document]),
+        )
+        store.save_management_sources(
+            "run-2", ManagementSourcePackage("AAPL", "Available", [later_document]),
+        )
+        payload = store.latest_management_sources("AAPL")
+
+    assert payload["documents"][0]["observed_at"] == first_document.observed_at

@@ -287,6 +287,19 @@ def _market_capture_workflow_item(
             readiness.data_gaps[:4],
             source_type="market capture",
         )
+    if readiness.status == "Price-only ready":
+        return _item(
+            "Market-capture workflow",
+            "Partial",
+            "Event-specific price evidence is ready; analyst-expectation capture remains unclassified.",
+            (
+                f"Price-only market capture; price {readiness.price_coverage}; "
+                f"consensus {readiness.consensus_coverage}; classified "
+                f"{readiness.classified_ideas}/{readiness.total_ideas}."
+            ),
+            [action.action for action in readiness.actions[:4]] + readiness.data_gaps[:4],
+            source_type="market capture",
+        )
     if readiness.status.startswith("Blocked") or readiness.status == "Partial":
         return _item(
             "Market-capture workflow",
@@ -695,7 +708,10 @@ def _llm_guardrail_item(
             "LLM synthesis guardrails",
             "Pass",
             "Primary LLM synthesis was accepted and challenged by a secondary reader.",
-            f"{llm_manifest.provider}/{llm_manifest.model}; comparison {llm_comparison.status}.",
+            (
+                f"LLM status {llm_manifest.status}; {llm_manifest.provider}/{llm_manifest.model}; "
+                f"comparison {llm_comparison.status}."
+            ),
             [],
             source_type="LLM synthesis",
         )

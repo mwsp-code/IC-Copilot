@@ -1065,6 +1065,7 @@ class FmpConsensusProvider(ConsensusAdapter):
         self.api_key = (api_key if api_key is not None else config.FMP_API_KEY).strip()
         self.base_url = (base_url or config.FMP_BASE_URL).rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self._estimate_period_statuses: dict[str, tuple[str, str]] = {}
 
     def fetch_targets(self, ticker: str) -> TargetConsensus | None:
         rows = self._get("price-target-consensus", {"symbol": ticker.upper()})
@@ -1093,6 +1094,7 @@ class FmpConsensusProvider(ConsensusAdapter):
 
     def fetch_estimates(self, ticker: str) -> list[EstimatePoint]:
         estimates: list[EstimatePoint] = []
+        self._estimate_period_statuses = {}
         periods = ("annual", "quarter")
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = {
@@ -1105,10 +1107,32 @@ class FmpConsensusProvider(ConsensusAdapter):
             }
             for future in as_completed(futures):
                 period_type = futures[future]
-                for row in _rows(future.result()):
+                try:
+                    rows = future.result()
+                except ProviderError as exc:
+                    message = _redact_provider_message(str(exc))
+                    self._estimate_period_statuses[period_type] = (
+                        _provider_failure_class(message), message,
+                    )
+                    continue
+                normalized_rows = _rows(rows)
+                before = len(estimates)
+                for row in normalized_rows:
                     period_end = _string(row, "date", "periodEndDate", "fiscalDateEnding")
                     if period_end:
                         estimates.extend(_fmp_estimate_points(ticker, row, period_end, period_type))
+                if len(estimates) > before:
+                    self._estimate_period_statuses[period_type] = (
+                        "available", f"Normalized {len(estimates) - before} {period_type} estimate point(s).",
+                    )
+                elif normalized_rows:
+                    self._estimate_period_statuses[period_type] = (
+                        "malformed_response", "Rows were returned but no supported estimate fields could be normalized.",
+                    )
+                else:
+                    self._estimate_period_statuses[period_type] = (
+                        "no_data", f"FMP returned no {period_type} analyst estimates.",
+                    )
         estimates.sort(key=lambda item: (item.period_end, item.period_type, item.metric))
         return estimates
 
@@ -1136,14 +1160,32 @@ class FmpConsensusProvider(ConsensusAdapter):
         return recommendation
 
     def fetch_surprises(self, ticker: str) -> list[EarningsSurprise]:
-        rows = self._get("earnings-surprises", {"symbol": ticker.upper()})
+        # The stable API exposes ticker-level actual/estimate history through
+        # /earnings. Keep the legacy route only as a compatibility fallback for
+        # older installations and fixtures.
+        stable_error: ProviderError | None = None
+        try:
+            rows = self._get("earnings", {"symbol": ticker.upper()})
+        except ProviderError as exc:
+            stable_error = exc
+            rows = []
+        if stable_error is not None:
+            try:
+                legacy_rows = self._get("earnings-surprises", {"symbol": ticker.upper()})
+            except ProviderError as legacy_error:
+                if stable_error:
+                    raise ProviderError(
+                        f"stable earnings endpoint: {stable_error}; legacy fallback: {legacy_error}"
+                    ) from legacy_error
+                raise
+            rows = legacy_rows
         surprises: list[EarningsSurprise] = []
         for row in _rows(rows):
-            period_end = _string(row, "date", "periodEndDate", "fiscalDateEnding")
+            period_end = _string(row, "fiscalDateEnding", "date", "periodEndDate")
             if not period_end:
                 continue
-            actual = _number(row, "actualEarningResult", "actualEps", "actualEPS")
-            estimate = _number(row, "estimatedEarning", "estimatedEps", "estimatedEPS")
+            actual = _number(row, "epsActual", "actualEarningResult", "actualEps", "actualEPS")
+            estimate = _number(row, "epsEstimated", "estimatedEarning", "estimatedEps", "estimatedEPS")
             surprise = _number(row, "surprisePercentage", "surprisePct")
             if surprise is None:
                 surprise = _pct_change(estimate, actual)
@@ -1156,11 +1198,18 @@ class FmpConsensusProvider(ConsensusAdapter):
 
     def fetch_package(self, ticker: str, current_price: float | None = None) -> ConsensusPackage:
         if not self.api_key:
-            return ConsensusPackage(
+            package = ConsensusPackage(
                 ticker=ticker.upper(), provider=self.provider_name, status="Unavailable",
                 data_gaps=["FMP_API_KEY is not configured."],
             )
+            package.provider_statuses = [ProviderStatus(
+                self.provider_name, "Unavailable", True, "not_configured", _now(),
+                "FMP_API_KEY is not configured.",
+            )]
+            return package
         gaps: list[str] = []
+        endpoint_statuses: list[ProviderStatus] = []
+        self._estimate_period_statuses = {}
         target = None
         recommendations = None
         estimates: list[EstimatePoint] = []
@@ -1178,10 +1227,24 @@ class FmpConsensusProvider(ConsensusAdapter):
                 try:
                     value = future.result()
                 except ProviderError as exc:
-                    gaps.append(f"{label}: {exc}")
+                    message = _redact_provider_message(str(exc))
+                    failure_class = _provider_failure_class(message)
+                    fallback = _fmp_endpoint_fallback(label, failure_class)
+                    detail = f"{label}: {message} {fallback}".strip()
+                    gaps.append(detail)
+                    endpoint_statuses.append(ProviderStatus(
+                        f"FMP {label}", "Unavailable", True, failure_class, _now(), detail,
+                    ))
                     continue
                 except Exception as exc:  # Defensive: vendor schemas can drift independently by endpoint.
-                    gaps.append(f"{label}: malformed response ({_safe_provider_message(str(exc))})")
+                    detail = (
+                        f"{label}: malformed response ({_safe_provider_message(str(exc))}). "
+                        f"{_fmp_endpoint_fallback(label, 'malformed_response')}"
+                    )
+                    gaps.append(detail)
+                    endpoint_statuses.append(ProviderStatus(
+                        f"FMP {label}", "Unavailable", True, "malformed_response", _now(), detail,
+                    ))
                     continue
                 if label == "price targets":
                     target = value
@@ -1189,10 +1252,38 @@ class FmpConsensusProvider(ConsensusAdapter):
                     recommendations = value
                 elif label == "analyst estimates":
                     estimates = value or []
+                    for period, (period_status, period_message) in sorted(self._estimate_period_statuses.items()):
+                        provider_label = f"FMP analyst estimates {period}"
+                        detail = period_message
+                        if period_status != "available":
+                            detail = (
+                                f"{period_message} "
+                                f"{_fmp_endpoint_fallback('analyst estimates', period_status)}"
+                            ).strip()
+                            gaps.append(f"analyst estimates {period}: {detail}")
+                        endpoint_statuses.append(ProviderStatus(
+                            provider_label,
+                            "Available" if period_status == "available" else "Unavailable",
+                            True,
+                            period_status,
+                            _now(),
+                            detail,
+                        ))
                 else:
                     surprises = value or []
                 if value in (None, []):
-                    gaps.append(f"FMP returned no {label}.")
+                    if label == "analyst estimates" and self._estimate_period_statuses:
+                        continue
+                    detail = f"FMP returned no {label}. {_fmp_endpoint_fallback(label, 'no_data')}"
+                    gaps.append(detail)
+                    endpoint_statuses.append(ProviderStatus(
+                        f"FMP {label}", "Unavailable", True, "no_data", _now(), detail,
+                    ))
+                elif not (label == "analyst estimates" and self._estimate_period_statuses):
+                    endpoint_statuses.append(ProviderStatus(
+                        f"FMP {label}", "Available", True, "available", _now(),
+                        f"FMP {label} endpoint returned normalized data.",
+                    ))
         if target:
             target.current_price = current_price
             target.observed_at = _now()
@@ -1207,7 +1298,13 @@ class FmpConsensusProvider(ConsensusAdapter):
             surprises=surprises, data_gaps=gaps,
         )
         package.observations = _package_observations(package)
-        package.provider_statuses = [_provider_status(package, official=True)]
+        overall_status = _provider_status(package, official=True)
+        if package.status == "Partial":
+            overall_status.message = (
+                "FMP returned usable official data, with one or more endpoint or period-level gaps. "
+                "See the FMP endpoint rows for the exact entitlement and fallback."
+            )
+        package.provider_statuses = [overall_status] + endpoint_statuses
         return package
 
     def _get(self, endpoint: str, params: dict) -> object:
@@ -2025,10 +2122,12 @@ def _string(row: dict, *keys: str) -> str | None:
 
 def _fmp_estimate_points(ticker: str, row: dict, period_end: str, period_type: str) -> list[EstimatePoint]:
     definitions = (
-        ("EPS", ("estimatedEpsAvg", "estimatedEPSAvg"), ("estimatedEpsHigh",), ("estimatedEpsLow",), ("numberAnalystEstimatedEps", "numberAnalystsEstimatedEps")),
-        ("Revenue", ("estimatedRevenueAvg",), ("estimatedRevenueHigh",), ("estimatedRevenueLow",), ("numberAnalystEstimatedRevenue", "numberAnalystsEstimatedRevenue")),
-        ("EBITDA", ("estimatedEbitdaAvg",), ("estimatedEbitdaHigh",), ("estimatedEbitdaLow",), ("numberAnalystEstimatedEbitda",)),
-        ("Net Income", ("estimatedNetIncomeAvg",), ("estimatedNetIncomeHigh",), ("estimatedNetIncomeLow",), ("numberAnalystEstimatedNetIncome",)),
+        ("EPS", ("epsAvg", "estimatedEpsAvg", "estimatedEPSAvg"), ("epsHigh", "estimatedEpsHigh"), ("epsLow", "estimatedEpsLow"), ("numAnalystsEps", "numberAnalystEstimatedEps", "numberAnalystsEstimatedEps")),
+        ("Revenue", ("revenueAvg", "estimatedRevenueAvg"), ("revenueHigh", "estimatedRevenueHigh"), ("revenueLow", "estimatedRevenueLow"), ("numAnalystsRevenue", "numberAnalystEstimatedRevenue", "numberAnalystsEstimatedRevenue")),
+        ("EBITDA", ("ebitdaAvg", "estimatedEbitdaAvg"), ("ebitdaHigh", "estimatedEbitdaHigh"), ("ebitdaLow", "estimatedEbitdaLow"), ("numAnalystsEbitda", "numberAnalystEstimatedEbitda")),
+        ("EBIT", ("ebitAvg", "estimatedEbitAvg"), ("ebitHigh", "estimatedEbitHigh"), ("ebitLow", "estimatedEbitLow"), ("numAnalystsEbit", "numberAnalystEstimatedEbit")),
+        ("Net Income", ("netIncomeAvg", "estimatedNetIncomeAvg"), ("netIncomeHigh", "estimatedNetIncomeHigh"), ("netIncomeLow", "estimatedNetIncomeLow"), ("numAnalystsNetIncome", "numberAnalystEstimatedNetIncome")),
+        ("SG&A Expense", ("sgaExpenseAvg", "estimatedSgaExpenseAvg"), ("sgaExpenseHigh", "estimatedSgaExpenseHigh"), ("sgaExpenseLow", "estimatedSgaExpenseLow"), ("numAnalystsSgaExpense", "numberAnalystEstimatedSgaExpense")),
     )
     points: list[EstimatePoint] = []
     for metric, average_keys, high_keys, low_keys, analyst_keys in definitions:
@@ -2066,12 +2165,60 @@ def _enrich_target(target: TargetConsensus) -> None:
 def _safe_provider_message(body: str) -> str:
     try:
         payload = json.loads(body)
-        message = payload.get("Error Message") or payload.get("error") or payload.get("message")
+        message = None
+        if isinstance(payload, dict):
+            message = payload.get("Error Message") or payload.get("error") or payload.get("message")
+        elif isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict):
+                    message = item.get("Error Message") or item.get("error") or item.get("message")
+                    if message:
+                        break
+                elif isinstance(item, str) and item.strip():
+                    message = item
+                    break
         if message:
             return _redact_provider_message(str(message))[:300]
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         pass
     return _redact_provider_message(body)[:300]
+
+
+def _provider_failure_class(message: str) -> str:
+    lowered = str(message or "").lower()
+    if "http 404" in lowered and ("[]" in lowered or "no data" in lowered or "not found" in lowered):
+        return "no_data"
+    if any(token in lowered for token in ("http 401", "invalid api", "invalid key", "api key is invalid")):
+        return "invalid_key"
+    if any(token in lowered for token in (
+        "http 402", "http 403", "subscription", "not available under your current",
+        "upgrade your plan", "entitlement", "payment required",
+    )):
+        return "entitlement_error"
+    if any(token in lowered for token in ("http 429", "rate limit", "too many requests", "limit reach")):
+        return "rate_limited"
+    if "timed out" in lowered or "timeout" in lowered:
+        return "timeout"
+    if any(token in lowered for token in ("urlopen error", "connection", "network", "dns", "ssl")):
+        return "network_error"
+    if any(token in lowered for token in ("malformed", "json", "list' object", "schema")):
+        return "malformed_response"
+    return "unavailable"
+
+
+def _fmp_endpoint_fallback(label: str, failure_class: str) -> str:
+    options = {
+        "price targets": "Fallback: Alpha Vantage aggregate target, TradingView distribution (unofficial), or target CSV import.",
+        "recommendations": "Fallback: Finnhub recommendation trends, Alpha Vantage rating counts, or recommendation CSV import.",
+        "analyst estimates": "Fallback: Nasdaq estimates (unofficial) or point-in-time estimates CSV import.",
+        "earnings surprises": "Fallback: SEC/issuer reported actuals plus a stored pre-event estimate, or surprises CSV import.",
+    }
+    prefix = (
+        "The configured FMP plan does not entitle this endpoint. "
+        if failure_class == "entitlement_error"
+        else ""
+    )
+    return prefix + options.get(label, "Fallback: use a registered provider or point-in-time CSV import.")
 
 
 def _redact_provider_message(message: str) -> str:

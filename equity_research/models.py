@@ -175,6 +175,12 @@ class FinancialMetric:
     source_url: str | None = None
     accession: str | None = None
     source_kind: str = "companyfacts"
+    previous_period_end: str | None = None
+    trailing_twelve_month_value: float | None = None
+    trailing_period_start: str | None = None
+    trailing_period_end: str | None = None
+    trailing_method: str = ""
+    trailing_confidence: str = "Unknown"
 
 
 @dataclass
@@ -1168,6 +1174,12 @@ class PayoffModel:
     data_gaps: list[str] = field(default_factory=list)
     payoff_completeness: PayoffCompleteness | None = None
     assumption_provenance: list[AssumptionProvenance] = field(default_factory=list)
+    assumption_mode: str = "Model-derived"
+    assumption_quality: str = "Unknown"
+    entry_price_source: str = ""
+    entry_price_as_of: str | None = None
+    limitations: list[str] = field(default_factory=list)
+    validation_errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1219,6 +1231,8 @@ class MonitorItem:
     operator: str | None = None
     confirm_threshold: float | None = None
     break_threshold: float | None = None
+    confirm_value: str | bool | None = None
+    break_value: str | bool | None = None
     deadline: str | None = None
     source_field: str | None = None
 

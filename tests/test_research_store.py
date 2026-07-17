@@ -10,12 +10,15 @@ from pathlib import Path
 from equity_research.alerts import generate_consensus_alerts
 from equity_research.expectations import build_expectations_bridge
 from equity_research.models import (
+    ChangeEvent,
     ConsensusPackage,
     EstimatePoint,
     FinancialMetric,
     IdeaGateResult,
+    MonitorItem,
     RecommendationConsensus,
     TargetConsensus,
+    TradeIdea,
 )
 from equity_research.research_store import ResearchStore
 from equity_research.sample_data import demo_result
@@ -75,6 +78,29 @@ class ResearchStoreTests(unittest.TestCase):
         self.assertIn("earliest local snapshot", revisions[7].reason)
         self.assertEqual(revisions[7].end_date, today.isoformat())
         self.assertIsNone(revisions[7].start_date)
+
+    def test_categorical_thesis_monitor_values_round_trip(self) -> None:
+        event = ChangeEvent(
+            "financial_kpi", "Cash changed", "Cash changed.", 4, "neutral",
+            date.today().isoformat(), "SEC",
+        )
+        idea = TradeIdea(
+            "idea-categorical", "Watch AAPL", "Watch", "Watch", "Thesis", "1 quarter",
+            "Next filing", "Unknown", [event],
+            monitor_items=[MonitorItem(
+                "Claim validation", "SEC", "Each refresh", "Validated", "Rejected",
+                metric="thesis_grade_status", operator="==",
+                confirm_value="Thesis-grade", break_value="Not thesis-grade",
+                deadline=(date.today() + timedelta(days=90)).isoformat(),
+                source_field="validated_claims.status",
+            )],
+        )
+
+        self.store.save_thesis_checks("AAPL", [idea])
+        row = self.store.list_thesis_checks("AAPL")[0]
+
+        self.assertEqual(row["confirm_value"], "Thesis-grade")
+        self.assertEqual(row["break_value"], "Not thesis-grade")
 
     def test_future_estimate_cannot_leak_into_historical_actual(self) -> None:
         prior = _package(date(2026, 2, 20), target=100)

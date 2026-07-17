@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
@@ -12,7 +13,9 @@ from .models import (
     CompanyIdentity,
     DriverAnalysis,
     DriverFactor,
+    EvidenceClosureReport,
     EvidenceLedger,
+    EvidenceWorkOrder,
     FinancialMetric,
     IdeaGateResult,
     MarketCapture,
@@ -445,6 +448,10 @@ def build_payoff_model(
     scenario_probabilities: dict[str, float] | None = None,
     calibrated_probability: float | None = None,
     calibration_sample_size: int = 0,
+    scenario_mode: str = "Model-derived",
+    annualized_volatility_pct: float | None = None,
+    entry_price_source: str = "",
+    entry_price_as_of: str | None = None,
 ) -> PayoffModel:
     if idea.direction == "Short" and borrow_cost_pct is None:
         borrow_cost_pct = 1.0
@@ -465,6 +472,8 @@ def build_payoff_model(
         ),
     )
     gaps: list[str] = []
+    limitations: list[str] = []
+    validation_errors: list[str] = []
     if entry_price is None or entry_price <= 0:
         gaps.append("A current entry price is required.")
     if idea.direction == "Relative Value" and hedge_ratio is None:
@@ -472,10 +481,19 @@ def build_payoff_model(
 
     case_probabilities = user_probabilities or {"Bear": 0.25, "Base": 0.50, "Bull": 0.25}
     scenarios: list[Scenario] = []
-    valuation_available = valuation.status == "Available"
-    valuation_cases = valuation.cases if valuation_available else _payoff_envelope_cases(idea, entry_price)
-    if not valuation_available:
-        gaps.append("Internal valuation does not provide scenario fair values; using labelled payoff-envelope assumptions only.")
+    valuation_available = valuation.status == "Available" and bool(valuation.cases)
+    actual_mode, valuation_cases, mode_limitations = _payoff_cases_for_mode(
+        idea,
+        valuation,
+        entry_price,
+        scenario_mode,
+        annualized_volatility_pct,
+    )
+    if scenario_exit_values:
+        actual_mode = "Custom"
+    elif str(scenario_mode or "").strip().lower() == "custom":
+        gaps.append("Custom mode requires explicit Bear, Base, and Bull exit anchors.")
+    limitations.extend(mode_limitations)
     for valuation_case in valuation_cases:
         override_exit = _scenario_exit_override(scenario_exit_values, valuation_case.name)
         exit_value = override_exit if override_exit is not None else valuation_case.fair_value
@@ -504,13 +522,34 @@ def build_payoff_model(
         ))
     if calibrated:
         _apply_calibrated_probability(scenarios, calibrated_probability)
+    ordered_exits = {
+        scenario.name: scenario.exit_value
+        for scenario in scenarios
+        if scenario.exit_value is not None
+    }
+    if len(ordered_exits) == 3 and not (
+        ordered_exits["Bear"] <= ordered_exits["Base"] <= ordered_exits["Bull"]
+    ):
+        validation_errors.append(
+            "Scenario exits must satisfy Bear <= Base <= Bull because scenario labels describe stock outcomes."
+        )
     assumptions = [
         ScenarioAssumption(
             step.case, step.metric, step.value, step.unit, step.source, step.formula,
         )
         for step in valuation.bridge
-    ]
+    ] if actual_mode == "Model-derived" else []
     assumption_provenance = [
+        AssumptionProvenance(
+            "entry_price", entry_price, entry_price_source or "Configured price provider",
+            status="Source fact" if entry_price is not None else "Missing",
+            note=f"Latest adjusted listed-security price as of {entry_price_as_of or 'date unavailable'}.",
+        ),
+        AssumptionProvenance(
+            "scenario_mode", actual_mode, _scenario_mode_source(actual_mode),
+            status="Model-derived" if actual_mode == "Model-derived" else "Illustrative",
+            note=_scenario_mode_note(actual_mode, annualized_volatility_pct),
+        ),
         AssumptionProvenance(
             "transaction_cost_pct", transaction_cost_pct, "Default app assumption",
             note="Editable estimate of entry/exit transaction friction.",
@@ -533,6 +572,15 @@ def build_payoff_model(
                 f"{case_name}_exit", exit_value, "User supplied assumption",
                 note="Editable exit anchor used to compute illustrative scenario net return.",
             ))
+    else:
+        for scenario in scenarios:
+            assumption_provenance.append(AssumptionProvenance(
+                f"{scenario.name.lower()}_exit",
+                scenario.exit_value,
+                _scenario_mode_source(actual_mode),
+                status="Model-derived" if actual_mode == "Model-derived" else "Illustrative",
+                note="Editable default exit anchor; see scenario assumptions for the formula.",
+            ))
     if idea.direction == "Short":
         assumption_provenance.append(AssumptionProvenance(
             "borrow_cost_pct", borrow_cost_pct, "Default app assumption",
@@ -543,9 +591,13 @@ def build_payoff_model(
             "hedge_ratio", hedge_ratio, "User override or pre-event return estimate required",
             status="Missing" if hedge_ratio is None else "Estimated",
         ))
-    ev = expected_value(scenarios)
-    complete = bool(scenarios and ev is not None and not any(scenario.net_return_pct is None for scenario in scenarios))
-    if valuation_available and complete and not gaps:
+    ev = None if validation_errors else expected_value(scenarios)
+    complete = bool(
+        scenarios and ev is not None and not validation_errors
+        and not any(scenario.net_return_pct is None for scenario in scenarios)
+    )
+    valuation_anchored = actual_mode == "Model-derived" and valuation_available and not scenario_exit_values
+    if valuation_anchored and complete and not gaps:
         status = "Available"
     elif complete and entry_price and entry_price > 0 and idea.direction in {"Long", "Short"}:
         status = "Envelope"
@@ -553,10 +605,10 @@ def build_payoff_model(
         status = "Insufficient data"
     payoff_completeness = PayoffCompleteness(
         "Complete" if complete else "Incomplete",
-        missing_inputs=list(gaps) if not complete else [],
+        missing_inputs=list(gaps + validation_errors) if not complete else [],
         note=(
             "Scenario returns are valuation-anchored."
-            if valuation_available and complete
+            if valuation_anchored and complete
             else "Scenario returns use a labelled payoff envelope, not internal fair value."
             if complete else "Expected value is unavailable until scenario net returns are complete."
         ),
@@ -578,6 +630,12 @@ def build_payoff_model(
         data_gaps=gaps,
         payoff_completeness=payoff_completeness,
         assumption_provenance=assumption_provenance,
+        assumption_mode=actual_mode,
+        assumption_quality=_scenario_mode_quality(actual_mode),
+        entry_price_source=entry_price_source,
+        entry_price_as_of=entry_price_as_of,
+        limitations=limitations,
+        validation_errors=validation_errors,
     )
 
 
@@ -607,6 +665,8 @@ def build_monitor_items(idea: TradeIdea) -> list[MonitorItem]:
                 operator="==",
                 confirm_threshold=None,
                 break_threshold=None,
+                confirm_value="Thesis-grade",
+                break_value="Not thesis-grade",
                 deadline=deadline,
                 source_field="validated_claims.status",
             ),
@@ -620,6 +680,8 @@ def build_monitor_items(idea: TradeIdea) -> list[MonitorItem]:
                 operator="==",
                 confirm_threshold=None,
                 break_threshold=None,
+                confirm_value="resolved",
+                break_value="contradicted",
                 deadline=deadline,
                 source_field="source_plan.requests",
             ),
@@ -787,6 +849,160 @@ def build_driver_analysis(event: ChangeEvent, metrics: list[FinancialMetric]) ->
         + "."
     )
     return _driver_analysis(headline, factors[:5], template, event, metric_name)
+
+
+def refresh_ideas_after_investigation(
+    identity: CompanyIdentity,
+    ideas: list[TradeIdea],
+    metrics: list[FinancialMetric],
+    evidence_closure: EvidenceClosureReport | None = None,
+    evidence_work_order: EvidenceWorkOrder | None = None,
+) -> None:
+    """Feed causal investigation and evidence closure back into the idea state.
+
+    Initial idea generation is intentionally neutral-first. This pass is the
+    controlled feedback loop that may validate a direction only after the app
+    has built the causal bridge and attempted the related evidence work orders.
+    Final scoring, payoff construction, and promotion must run after this pass.
+    """
+    outcomes = {
+        outcome.work_id: outcome
+        for outcome in (evidence_closure.outcomes if evidence_closure else [])
+    }
+    work_ids_by_idea: dict[str, list[str]] = {}
+    for item in evidence_work_order.items if evidence_work_order else []:
+        for idea_id in item.related_idea_ids:
+            work_ids_by_idea.setdefault(idea_id, []).append(item.work_id)
+
+    for idea in ideas:
+        if not idea.source_events:
+            continue
+        event = idea.source_events[0]
+        analysis = build_driver_analysis(event, metrics)
+        idea.driver_analysis = analysis
+        related = [
+            outcomes[work_id]
+            for work_id in work_ids_by_idea.get(idea.idea_id, [])
+            if work_id in outcomes
+        ]
+        contradicted = [row for row in related if row.status == "contradicted"]
+        resolved = [row for row in related if row.status == "resolved"]
+        new_direction, rationale = _post_investigation_direction(
+            event,
+            analysis,
+            has_resolved_evidence=bool(resolved),
+            has_contradiction=bool(contradicted),
+        )
+        if analysis.primary_driver:
+            event.metrics["economic_driver"] = analysis.primary_driver
+            event.metrics["driver_materiality"] = (
+                "High" if analysis.bridge_status == "Substantive causal bridge" else "Medium"
+            )
+        event.metrics["causal_bridge_status"] = analysis.bridge_status
+        event.metrics["post_investigation_direction"] = new_direction
+        event.metrics["post_investigation_direction_rationale"] = rationale
+        event.metrics["direction_validation_required"] = new_direction == "Watch"
+        if new_direction in {"Long", "Short"}:
+            event.direction = "positive" if new_direction == "Long" else "negative"
+            event.metrics["validated_direction"] = event.direction
+
+        idea.direction = new_direction
+        idea.structure = _idea_structure(new_direction)
+        idea.title = _idea_title(identity.ticker, event, new_direction)
+        idea.thesis = _idea_thesis(identity, event, new_direction)
+        idea.direction_rationale = rationale
+        idea.driver_template_summary = _driver_template_summary(event)
+        idea.strongest_counter_thesis = _post_investigation_counter_thesis(
+            idea,
+            analysis,
+            contradicted,
+        )
+        idea.monitor_items = build_monitor_items(idea)
+
+
+def _post_investigation_direction(
+    event: ChangeEvent,
+    analysis: DriverAnalysis,
+    *,
+    has_resolved_evidence: bool,
+    has_contradiction: bool,
+) -> tuple[str, str]:
+    if event.metrics.get("normalization_required"):
+        return "Watch", "Direction remains neutral until the metric basis is normalized."
+    if has_contradiction:
+        return "Watch", "A related evidence-closure task contradicted the proposed causal mechanism."
+
+    positive, negative, positive_high, negative_high = _directional_factor_scores(analysis.factors)
+    decisive_positive = positive - negative >= 3 and positive_high
+    decisive_negative = negative - positive >= 3 and negative_high
+    validation_required = bool(
+        event.metrics.get("direction_validation_required")
+        or event.metrics.get("default_polarity") == "neutral"
+        or event.direction == "neutral"
+    )
+    if validation_required:
+        if not has_resolved_evidence:
+            return (
+                "Watch",
+                "Neutral-first signal remains under investigation because no related evidence work order has been resolved.",
+            )
+        if decisive_positive:
+            return (
+                "Long",
+                f"Post-investigation causal evidence is constructively skewed ({positive} vs {negative}) and includes a high-confidence positive factor.",
+            )
+        if decisive_negative:
+            return (
+                "Short",
+                f"Post-investigation causal evidence is adversely skewed ({negative} vs {positive}) and includes a high-confidence negative factor.",
+            )
+        return (
+            "Watch",
+            f"Constructive and adverse causal evidence is not decisive ({positive} vs {negative}); keep both hypotheses open.",
+        )
+
+    existing = "Long" if event.direction == "positive" else "Short" if event.direction == "negative" else "Watch"
+    if existing == "Long" and decisive_negative:
+        return "Watch", "Causal investigation conflicts with the initially positive metric direction; resolve the contradiction before trading."
+    if existing == "Short" and decisive_positive:
+        return "Watch", "Causal investigation conflicts with the initially negative metric direction; resolve the contradiction before trading."
+    if existing in {"Long", "Short"}:
+        return existing, f"Causal investigation is consistent with the validated {existing.lower()} direction."
+    return "Watch", "No validated directional mechanism was identified."
+
+
+def _directional_factor_scores(factors: list[DriverFactor]) -> tuple[int, int, bool, bool]:
+    weights = {"High": 3, "Medium": 2, "Low": 1}
+    positive = sum(weights.get(item.confidence, 1) for item in factors if item.direction == "positive")
+    negative = sum(weights.get(item.confidence, 1) for item in factors if item.direction == "negative")
+    positive_high = any(item.direction == "positive" and item.confidence == "High" for item in factors)
+    negative_high = any(item.direction == "negative" and item.confidence == "High" for item in factors)
+    return positive, negative, positive_high, negative_high
+
+
+def _post_investigation_counter_thesis(
+    idea: TradeIdea,
+    analysis: DriverAnalysis,
+    contradicted: list[object],
+) -> str:
+    if contradicted:
+        evidence = list(getattr(contradicted[0], "contradiction_evidence", []) or [])
+        return evidence[0] if evidence else str(getattr(contradicted[0], "summary", "Contradictory evidence found."))
+    opposite = "negative" if idea.direction == "Long" else "positive" if idea.direction == "Short" else ""
+    factor = next((item for item in analysis.factors if item.direction == opposite), None)
+    if factor:
+        return f"{factor.cause}: {factor.explanation}"
+    event = idea.source_events[0]
+    mechanisms = (
+        event.metrics.get("adverse_mechanisms")
+        if idea.direction == "Long"
+        else event.metrics.get("constructive_mechanisms")
+        if idea.direction == "Short"
+        else event.metrics.get("adverse_mechanisms")
+    )
+    if isinstance(mechanisms, list) and mechanisms:
+        return f"Counter-hypothesis: {mechanisms[0]}"
+    return idea.strongest_counter_thesis
 
 
 def _driver_analysis(
@@ -1247,6 +1463,9 @@ def finalize_idea_research(
     entry_price: float | None,
     calibration_lookup: Callable[[str, str], tuple[float | None, int]] | None = None,
     promotion_bundles: dict[str, PromotionEvidenceBundle] | None = None,
+    annualized_volatility_pct: float | None = None,
+    entry_price_source: str = "",
+    entry_price_as_of: str | None = None,
 ) -> list[IdeaGateResult]:
     claims_by_idea = {claim.idea_id: claim for claim in evidence.claims}
     items_by_claim = {
@@ -1257,10 +1476,11 @@ def finalize_idea_research(
     for idea in ideas:
         claim = claims_by_idea.get(idea.idea_id)
         items = items_by_claim.get(claim.claim_id, []) if claim else []
-        idea.strongest_counter_thesis = (
-            claim.strongest_counter if claim and claim.strongest_counter
-            else "No material counter-evidence identified in the current run."
-        )
+        ledger_counter = claim.strongest_counter if claim and claim.strongest_counter else ""
+        if _is_documented_counter(ledger_counter):
+            idea.strongest_counter_thesis = ledger_counter
+        elif not _is_documented_counter(idea.strongest_counter_thesis):
+            idea.strongest_counter_thesis = "No material counter-evidence identified in the current run."
         idea.promotion_decision = decide_promotion((promotion_bundles or {}).get(idea.idea_id))
         idea.promotion_label = idea.promotion_decision.label if idea.promotion_decision.eligible else ""
         probability, sample_size = (
@@ -1268,6 +1488,7 @@ def finalize_idea_research(
             if calibration_lookup else (None, 0)
         )
         user_assumptions = getattr(idea, "user_assumptions", {}) or {}
+        scenario_mode = str(user_assumptions.get("assumption_mode") or "Model-derived")
         assumed_entry_price = _assumption_float(user_assumptions, "entry_price", entry_price)
         assumed_transaction_cost = _assumption_float(user_assumptions, "transaction_cost_pct", 0.10)
         assumed_dividend_return = _assumption_float(user_assumptions, "dividend_return_pct", 0.0)
@@ -1283,6 +1504,10 @@ def finalize_idea_research(
             scenario_probabilities=_assumption_probabilities(user_assumptions),
             calibrated_probability=probability,
             calibration_sample_size=sample_size,
+            scenario_mode=scenario_mode,
+            annualized_volatility_pct=annualized_volatility_pct,
+            entry_price_source=entry_price_source,
+            entry_price_as_of=entry_price_as_of,
         )
         idea.scenarios = idea.payoff_model.scenarios
         idea.probability_provenance = idea.payoff_model.probability_provenance
@@ -1301,11 +1526,7 @@ def finalize_idea_research(
             idea.payoff_model.payoff_completeness
             and idea.payoff_model.payoff_completeness.status == "Complete"
         )
-        checks_complete = any(
-            item.metric and item.operator and item.deadline
-            and item.confirm_threshold is not None and item.break_threshold is not None
-            for item in idea.monitor_items
-        )
+        checks_complete = any(_monitor_is_machine_readable(item) for item in idea.monitor_items)
         economic_context_present = bool(event and "economic_driver" in event.metrics)
         economic_driver_mapped = bool(
             not economic_context_present
@@ -1585,6 +1806,29 @@ def _attach_gate_next_source(idea: TradeIdea, result: IdeaGateResult) -> None:
     )
 
 
+def _monitor_is_machine_readable(item: MonitorItem) -> bool:
+    if not (item.metric and item.operator and item.deadline and item.source_field):
+        return False
+    numeric = item.confirm_threshold is not None and item.break_threshold is not None
+    categorical = item.confirm_value is not None and item.break_value is not None
+    return bool(numeric or categorical)
+
+
+def _is_documented_counter(value: str | None) -> bool:
+    text = str(value or "").strip()
+    if not text or text == "Not yet evaluated.":
+        return False
+    lowered = text.lower()
+    return not any(
+        phrase in lowered
+        for phrase in (
+            "no material counter-evidence identified",
+            "no counter-thesis",
+            "none found",
+        )
+    )
+
+
 def _attach_counter_thesis_work_order(idea: TradeIdea) -> None:
     action = "Build a source-backed counter-thesis from peer metrics, segment KPIs, management commentary, valuation sensitivity, or primary-source contradictions."
     existing = idea.next_source_to_check.strip()
@@ -1761,6 +2005,141 @@ def _payoff_envelope_cases(idea: TradeIdea, entry_price: float | None) -> list[V
             ],
         ))
     return cases
+
+
+def _payoff_cases_for_mode(
+    idea: TradeIdea,
+    valuation: ValuationResult,
+    entry_price: float | None,
+    requested_mode: str,
+    annualized_volatility_pct: float | None,
+) -> tuple[str, list[ValuationCase], list[str]]:
+    normalized = str(requested_mode or "Model-derived").strip().lower().replace("_", "-")
+    valuation_available = valuation.status == "Available" and bool(valuation.cases)
+    limitations: list[str] = []
+    if normalized in {"automatic", "auto", ""}:
+        if valuation_available:
+            return "Model-derived", list(valuation.cases), limitations
+        if annualized_volatility_pct and annualized_volatility_pct > 0:
+            return (
+                "Market-implied",
+                _market_implied_range_cases(idea, entry_price, annualized_volatility_pct),
+                [
+                    "Exit anchors are a horizon-scaled market-price range using realized volatility; "
+                    "they are not fundamental fair values or options-implied probabilities."
+                ],
+            )
+        return (
+            "Illustrative",
+            _payoff_envelope_cases(idea, entry_price),
+            ["Internal valuation and volatility inputs are unavailable; fixed illustrative stock-move anchors are used."],
+        )
+    if normalized in {"model-derived", "model derived", "model"}:
+        if valuation_available:
+            return "Model-derived", list(valuation.cases), limitations
+        if annualized_volatility_pct and annualized_volatility_pct > 0:
+            limitations.append(
+                "Model-derived mode is the default, but internal valuation cases are unavailable; "
+                "a horizon-scaled market range is shown as the transparent fallback, not fundamental fair value."
+            )
+            return (
+                "Market-implied",
+                _market_implied_range_cases(idea, entry_price, annualized_volatility_pct),
+                limitations,
+            )
+        limitations.append(
+            "Model-derived mode is the default, but internal valuation and realized-volatility inputs are unavailable; "
+            "illustrative anchors are shown as the final fallback."
+        )
+        return "Illustrative", _payoff_envelope_cases(idea, entry_price), limitations
+    if normalized in {"market-implied", "market implied", "market"}:
+        if annualized_volatility_pct and annualized_volatility_pct > 0:
+            return (
+                "Market-implied",
+                _market_implied_range_cases(idea, entry_price, annualized_volatility_pct),
+                [
+                    "The base anchor is the current market price and Bear/Bull anchors use horizon-scaled realized volatility; "
+                    "this is a market range, not fair value."
+                ],
+            )
+        limitations.append("Realized volatility is unavailable; fixed illustrative anchors replace the requested market-implied range.")
+        return "Illustrative", _payoff_envelope_cases(idea, entry_price), limitations
+    if normalized == "custom":
+        if valuation_available:
+            return "Custom", list(valuation.cases), limitations
+        if annualized_volatility_pct and annualized_volatility_pct > 0:
+            return "Custom", _market_implied_range_cases(idea, entry_price, annualized_volatility_pct), limitations
+        return "Custom", _payoff_envelope_cases(idea, entry_price), limitations
+    return (
+        "Illustrative",
+        _payoff_envelope_cases(idea, entry_price),
+        [f"Unknown scenario mode '{requested_mode}' was replaced with the illustrative preset."],
+    )
+
+
+def _market_implied_range_cases(
+    idea: TradeIdea,
+    entry_price: float | None,
+    annualized_volatility_pct: float,
+) -> list[ValuationCase]:
+    if entry_price is None or entry_price <= 0 or idea.direction not in {"Long", "Short"}:
+        return []
+    horizon_years = _horizon_year_fraction(idea.horizon)
+    range_pct = min(60.0, max(10.0, annualized_volatility_pct * math.sqrt(horizon_years)))
+    moves = {"Bear": -range_pct, "Base": 0.0, "Bull": range_pct}
+    cases: list[ValuationCase] = []
+    for name, move in moves.items():
+        cases.append(ValuationCase(
+            name=name,
+            probability={"Bear": 0.25, "Base": 0.50, "Bull": 0.25}[name],
+            fair_value=entry_price * (1 + move / 100),
+            method="Market-implied range",
+            assumptions=[
+                "Current market price is the base anchor; this is not an internally calculated fair value.",
+                f"{name} uses a {move:+.1f}% stock-price move from {annualized_volatility_pct:.1f}% annualized realized volatility over {horizon_years:.2f} years.",
+            ],
+        ))
+    return cases
+
+
+def _horizon_year_fraction(horizon: str) -> float:
+    normalized = str(horizon or "").lower()
+    if "1-2 quarter" in normalized:
+        return 0.50
+    if "1-3 quarter" in normalized:
+        return 0.75
+    if "3-12 month" in normalized:
+        return 1.0
+    if "quarter" in normalized:
+        return 0.50
+    return 1.0
+
+
+def _scenario_mode_source(mode: str) -> str:
+    return {
+        "Model-derived": "Internal valuation model",
+        "Market-implied": "Current market price and realized-volatility range",
+        "Custom": "User supplied assumptions",
+    }.get(mode, "Application illustrative defaults")
+
+
+def _scenario_mode_note(mode: str, annualized_volatility_pct: float | None) -> str:
+    if mode == "Model-derived":
+        return "Exit anchors come from the internal Bear/Base/Bull valuation cases."
+    if mode == "Market-implied":
+        return f"Current price plus horizon-scaled {annualized_volatility_pct or 0:.1f}% realized volatility; not fair value."
+    if mode == "Custom":
+        return "Exit anchors are editable user overrides and are not source facts."
+    return "Fixed payoff-envelope anchors; not internally calculated fair value."
+
+
+def _scenario_mode_quality(mode: str) -> str:
+    return {
+        "Model-derived": "High",
+        "Market-implied": "Medium",
+        "Custom": "User-defined",
+        "Illustrative": "Low",
+    }.get(mode, "Unknown")
 
 
 def _apply_calibrated_probability(

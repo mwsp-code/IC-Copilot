@@ -50,7 +50,8 @@ class ConvictionAuditTests(unittest.TestCase):
         }
         self.assertTrue(expected.issubset(names))
         self.assertTrue(any(
-            item.name == "Market-capture workflow" and "classified" in item.evidence.lower()
+            item.name == "Market-capture workflow"
+            and ("classified" in item.evidence.lower() or "price-only" in item.evidence.lower())
             for item in result.conviction_audit.items
         ))
 

@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from equity_research.providers import CsvConsensusProvider, FmpConsensusProvider, ProviderError
+from equity_research.providers import (
+    CsvConsensusProvider,
+    FmpConsensusProvider,
+    ProviderError,
+    _safe_provider_message,
+)
 
 
 class FixtureFmpProvider(FmpConsensusProvider):
@@ -42,9 +47,9 @@ class ConsensusProviderTests(unittest.TestCase):
                 "strongBuy": 10, "buy": 20, "hold": 8, "sell": 2,
                 "strongSell": 1, "consensus": "Buy",
             }],
-            "earnings-surprises": [{
-                "date": "2026-03-31", "actualEarningResult": 2.0,
-                "estimatedEarning": 1.8,
+            "earnings": [{
+                "fiscalDateEnding": "2026-03-31", "epsActual": 2.0,
+                "epsEstimated": 1.8,
             }],
         })
         package = provider.fetch_package("AAPL", current_price=200)
@@ -65,6 +70,64 @@ class ConsensusProviderTests(unittest.TestCase):
         package = provider.fetch_package("AAPL")
         self.assertEqual(package.status, "Unavailable")
         self.assertTrue(any("rate limit" in gap for gap in package.data_gaps))
+        statuses = {row.provider: row for row in package.provider_statuses}
+        self.assertEqual(statuses["FMP price targets"].entitlement_status, "entitlement_error")
+        self.assertEqual(statuses["FMP recommendations"].entitlement_status, "rate_limited")
+        self.assertTrue(any("Fallback:" in gap for gap in package.data_gaps))
+
+    def test_fmp_list_shaped_error_body_is_parsed_without_attribute_error(self) -> None:
+        message = _safe_provider_message('[{"message":"Endpoint requires a paid subscription"}]')
+        self.assertEqual(message, "Endpoint requires a paid subscription")
+
+    def test_fmp_keeps_annual_estimates_when_quarterly_period_is_not_entitled(self) -> None:
+        provider = FixtureFmpProvider({
+            ("analyst-estimates", "annual"): [{
+                "date": "2027-09-30", "estimatedEpsAvg": 8.5,
+                "estimatedRevenueAvg": 500_000_000_000,
+            }],
+            ("analyst-estimates", "quarter"): ProviderError(
+                "HTTP 402: period quarter is not available under the current subscription"
+            ),
+            "earnings": [],
+        })
+
+        package = provider.fetch_package("AAPL")
+        statuses = {row.provider: row for row in package.provider_statuses}
+
+        self.assertEqual(package.status, "Partial")
+        self.assertTrue(any(item.period_type == "annual" for item in package.estimates))
+        self.assertEqual(statuses["FMP analyst estimates annual"].status, "Available")
+        self.assertEqual(
+            statuses["FMP analyst estimates quarter"].entitlement_status,
+            "entitlement_error",
+        )
+        self.assertIn("Nasdaq estimates", statuses["FMP analyst estimates quarter"].message)
+
+    def test_fmp_normalizes_current_stable_estimate_field_names(self) -> None:
+        provider = FixtureFmpProvider({
+            ("analyst-estimates", "annual"): [{
+                "date": "2027-09-30",
+                "epsAvg": 8.5,
+                "epsHigh": 9.0,
+                "epsLow": 8.0,
+                "numAnalystsEps": 35,
+                "revenueAvg": 500_000_000_000,
+                "numAnalystsRevenue": 30,
+                "ebitdaAvg": 180_000_000_000,
+                "ebitAvg": 160_000_000_000,
+                "netIncomeAvg": 140_000_000_000,
+                "sgaExpenseAvg": 30_000_000_000,
+            }],
+            ("analyst-estimates", "quarter"): [],
+        })
+
+        estimates = provider.fetch_estimates("AAPL")
+        by_metric = {item.metric: item for item in estimates}
+
+        self.assertEqual(by_metric["EPS"].analyst_count, 35)
+        self.assertEqual(by_metric["Revenue"].analyst_count, 30)
+        self.assertIn("EBIT", by_metric)
+        self.assertIn("SG&A Expense", by_metric)
 
     def test_fmp_endpoint_schema_drift_is_a_provider_gap_not_network_failure(self) -> None:
         provider = FixtureFmpProvider({

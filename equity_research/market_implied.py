@@ -212,7 +212,18 @@ def _non_financial_expectations(metrics, market_cap, assumptions, *, annual_flow
     if operating_cash and capex and _same_currency(operating_cash, capex):
         fcf = operating_cash_value - abs(capex_value)
     rows = []
-    flow_basis_label = "reported annual/TTM" if annual_flow_basis else "annualized interim screening"
+    operating_cash_basis = _flow_basis_kind(operating_cash)
+    capex_basis = _flow_basis_kind(capex)
+    fcf_verified = (
+        operating_cash_basis in {"annual", "ttm"}
+        and capex_basis in {"annual", "ttm"}
+    )
+    fcf_uses_ttm = "ttm" in {operating_cash_basis, capex_basis}
+    flow_basis_label = (
+        "trailing-twelve-month" if fcf_uses_ttm else
+        "reported annual" if fcf_verified else
+        "annualized interim screening"
+    )
     if enterprise_value and revenue and revenue_value > 0:
         rows.append(MarketImpliedExpectation(
             metric="Current enterprise value / revenue",
@@ -227,20 +238,36 @@ def _non_financial_expectations(metrics, market_cap, assumptions, *, annual_flow
     if market_cap and fcf and fcf > 0:
         rows.append(MarketImpliedExpectation(
             metric="Reverse DCF base FCF",
-            status="Observed" if annual_flow_basis else "Annualized screening estimate",
+            status=(
+                "TTM normalized" if fcf_uses_ttm else
+                "Observed" if fcf_verified else
+                "Annualized screening estimate"
+            ),
             implied_value=fcf,
             unit=_currency(operating_cash.unit) if operating_cash else "Unknown",
-            formula=(
-                "Operating cash flow - capital expenditure"
-                if annual_flow_basis else
-                f"Operating cash flow x {operating_cash_factor:g} - capital expenditure x {capex_factor:g}"
+            formula=_fcf_basis_formula(
+                operating_cash,
+                capex,
+                operating_cash_factor,
+                capex_factor,
             ),
             interpretation=(
+                "Trailing-twelve-month operating cash flow less trailing-twelve-month capex is used as the starting FCF base. "
+                + _ttm_method_summary(operating_cash, capex)
+                if fcf_uses_ttm else
                 "Reported annual cash flow used as the starting FCF base."
-                if annual_flow_basis else
+                if fcf_verified else
                 "Interim cash flow is annualized only to create a transparent screening base; seasonality and working-capital timing can make it materially different from TTM FCF."
             ),
-            confidence="High" if annual_flow_basis else "Low",
+            confidence=(
+                min(
+                    _flow_basis_confidence(operating_cash),
+                    _flow_basis_confidence(capex),
+                    key=lambda value: {"High": 3, "Medium": 2, "Low": 1, "Unknown": 0}.get(value, 0),
+                )
+                if fcf_uses_ttm else
+                "High" if fcf_verified else "Low"
+            ),
             required_inputs=["Operating Cash Flow", "Capital Expenditure"],
         ))
         rows.append(MarketImpliedExpectation(
@@ -484,6 +511,18 @@ def _latest(metrics):
 
 
 def _financial_basis(metrics):
+    operating_cash = metrics.get("Operating Cash Flow")
+    capex = metrics.get("Capital Expenditure")
+    cash_basis = _flow_basis_kind(operating_cash)
+    capex_basis = _flow_basis_kind(capex)
+    if cash_basis in {"annual", "ttm"} and capex_basis in {"annual", "ttm"}:
+        period = max(
+            str(getattr(operating_cash, "trailing_period_end", None) or operating_cash.period_end or ""),
+            str(getattr(capex, "trailing_period_end", None) or capex.period_end or ""),
+        ) or None
+        if "ttm" in {cash_basis, capex_basis}:
+            return "Trailing-twelve-month filing cash-flow facts", period, True
+        return "Annual normalized filing facts", period, True
     anchor = (
         metrics.get("Revenue")
         or metrics.get("Operating Cash Flow")
@@ -505,7 +544,9 @@ def _financial_basis(metrics):
 def _annualized_flow_value(metric, *, cumulative_interim, annual_flow_basis):
     if not metric:
         return 0.0, 1.0
-    if annual_flow_basis:
+    if _flow_basis_kind(metric) == "ttm":
+        return metric.trailing_twelve_month_value, 1.0
+    if _flow_basis_kind(metric) == "annual":
         return metric.value, 1.0
     fiscal_period = (metric.fiscal_period or "").upper()
     quarter = None
@@ -518,6 +559,53 @@ def _annualized_flow_value(metric, *, cumulative_interim, annual_flow_basis):
         return metric.value, 1.0
     factor = (4.0 / quarter) if cumulative_interim else 4.0
     return metric.value * factor, factor
+
+
+def _flow_basis_kind(metric):
+    if not metric:
+        return "missing"
+    fiscal_period = (metric.fiscal_period or "").upper()
+    form = (metric.form or "").upper()
+    if fiscal_period == "FY" or (form in {"10-K", "20-F", "40-F"} and not fiscal_period.startswith("Q")):
+        return "annual"
+    if metric.trailing_twelve_month_value is not None and metric.trailing_twelve_month_value != 0:
+        return "ttm"
+    return "interim"
+
+
+def _flow_basis_confidence(metric):
+    basis = _flow_basis_kind(metric)
+    if basis == "annual":
+        return "High"
+    if basis == "ttm":
+        return metric.trailing_confidence or "Medium"
+    return "Low" if basis == "interim" else "Unknown"
+
+
+def _fcf_basis_formula(operating_cash, capex, operating_cash_factor, capex_factor):
+    cash_basis = _flow_basis_kind(operating_cash)
+    capex_basis = _flow_basis_kind(capex)
+    if "ttm" in {cash_basis, capex_basis}:
+        return "Trailing-twelve-month operating cash flow - trailing-twelve-month capital expenditure"
+    if cash_basis == "annual" and capex_basis == "annual":
+        return "Reported annual operating cash flow - reported annual capital expenditure"
+    return f"Operating cash flow x {operating_cash_factor:g} - capital expenditure x {capex_factor:g}"
+
+
+def _ttm_method_summary(operating_cash, capex):
+    methods = {
+        metric.trailing_method
+        for metric in (operating_cash, capex)
+        if metric and metric.trailing_method and _flow_basis_kind(metric) == "ttm"
+    }
+    labels = {
+        "sum_of_four_standalone_quarters": "Built by summing four non-overlapping reported quarters.",
+        "latest_annual_plus_current_ytd_minus_prior_ytd": (
+            "Built as latest fiscal year plus current YTD less the comparable prior-year YTD."
+        ),
+        "reported_annual": "Uses a directly reported annual period.",
+    }
+    return " ".join(labels.get(method, method.replace("_", " ").capitalize() + ".") for method in sorted(methods))
 
 
 def _sum_values(metrics, names):

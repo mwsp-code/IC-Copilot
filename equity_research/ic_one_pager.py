@@ -34,7 +34,7 @@ def build_ic_one_pager(
 ) -> ICOnePager:
     top = ideas[0] if ideas else None
     cluster = _cluster_for_top(top, thesis_clusters)
-    status = _status(thesis_brief, evidence_sufficiency, evidence_work_order)
+    status = _status(thesis_brief, evidence_sufficiency, evidence_work_order, top)
     title = thesis_brief.title or (top.title if top else f"{identity.ticker}: no thesis")
     gaps = _evidence_gaps(thesis_brief, thesis_critique, thesis_validation, evidence_work_order)
     work_actions = _work_order_actions(evidence_work_order)
@@ -73,12 +73,25 @@ def _status(
     brief: ThesisBrief,
     sufficiency: EvidenceSufficiency,
     work_order: EvidenceWorkOrder | None,
+    top: TradeIdea | None,
 ) -> str:
     if brief.verdict == "No convincing thesis yet":
         return "No thesis yet"
-    if work_order and any(item.blocks_research_ready for item in work_order.items):
+    # Deterministic promotion gates are authoritative. Work orders explain the
+    # remaining diligence but must not retroactively downgrade a passed stage.
+    if top and top.stage == "High-Conviction":
+        return "IC-ready draft"
+    if top and top.stage == "Research-Ready":
+        return "Researchable, not high conviction"
+    if work_order and any(
+        item.blocks_research_ready and _work_item_is_open(item)
+        for item in work_order.items
+    ):
         return "Needs Research-Ready evidence"
-    if work_order and any(item.blocks_high_conviction for item in work_order.items):
+    if work_order and any(
+        item.blocks_high_conviction and _work_item_is_open(item)
+        for item in work_order.items
+    ):
         return "Researchable, not high conviction"
     if sufficiency.status == "Convincing":
         return "IC-ready draft"
@@ -314,7 +327,8 @@ def _evidence_gaps(
         rows.extend(
             item.action
             for item in work_order.items[:6]
-            if item.blocks_research_ready or item.blocks_high_conviction
+            if (item.blocks_research_ready or item.blocks_high_conviction)
+            and _work_item_is_open(item)
         )
     return _dedupe(rows)[:10]
 
@@ -325,7 +339,14 @@ def _work_order_actions(work_order: EvidenceWorkOrder | None) -> list[str]:
     return [
         f"[{item.priority}] {item.channel}: {item.action} ({item.source_type})"
         for item in work_order.items[:6]
+        if _work_item_is_open(item)
     ]
+
+
+def _work_item_is_open(item) -> bool:
+    return str(getattr(item, "status", "Open") or "Open").lower() not in {
+        "resolved", "contradicted", "closed",
+    }
 
 
 def _dedupe(rows: list[str]) -> list[str]:

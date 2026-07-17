@@ -52,6 +52,7 @@ from .idea_engine import (
     finalize_idea_research,
     generate_trade_ideas,
     ideas_with_changed_evidence_not_price_or_consensus,
+    refresh_ideas_after_investigation,
 )
 from .manual_data import load_china_macro_evidence, scan_manual_data_sources
 from .market_capture_workflow import build_market_capture_readiness
@@ -758,6 +759,9 @@ def run_us_equity_research(
             signal_family, horizon, 30,
         ),
         promotion_bundles=promotion_evidence,
+        annualized_volatility_pct=recent_market_context.annualized_volatility_pct,
+        entry_price_source=recent_market_context.source,
+        entry_price_as_of=recent_market_context.price_as_of,
     )
     causal_bridges = attach_causal_bridges(
         identity.ticker,
@@ -879,6 +883,118 @@ def run_us_equity_research(
         price_source=recent_market_context.source,
         price_as_of=recent_market_context.price_as_of,
         assumption_overrides=market_implied_overrides,
+    )
+
+    # The first gate pass creates actionable evidence work orders. Feed their
+    # closure outcomes and the completed company model back into the ideas,
+    # then rebuild all evidence-dependent outputs before any LLM synthesis.
+    refresh_ideas_after_investigation(
+        identity,
+        ideas,
+        metrics,
+        evidence_closure,
+        evidence_work_order,
+    )
+    evidence_ledger = build_evidence_ledger(
+        identity.ticker, ideas, events, management_package.cross_checks,
+    )
+    promotion_evidence = build_promotion_evidence_bundles(
+        ideas,
+        evidence_ledger,
+        external_evidence,
+        wisburg_lens,
+        news_claims,
+        source_plan,
+        primary_adapter_attempted=True,
+    )
+    idea_gate_results = finalize_idea_research(
+        ideas,
+        valuation,
+        evidence_ledger,
+        current_price,
+        calibration_lookup=lambda signal_family, horizon: store.calibrated_probability(
+            signal_family, horizon, 30,
+        ),
+        promotion_bundles=promotion_evidence,
+        annualized_volatility_pct=recent_market_context.annualized_volatility_pct,
+        entry_price_source=recent_market_context.source,
+        entry_price_as_of=recent_market_context.price_as_of,
+    )
+    causal_bridges = attach_causal_bridges(
+        identity.ticker,
+        ideas,
+        news_claims,
+        source_corroboration_results,
+    )
+    attach_thesis_audit_chains(ideas, valuation)
+    apply_valuation_context(ideas, valuation)
+    for idea in ideas:
+        idea.causal_bridge_status = _causal_bridge_status_for_idea(idea)
+        idea.equity_credit_lens = _equity_credit_lens_for_idea(idea)
+    ideas.sort(key=lambda item: item.score.total if item.score else 0, reverse=True)
+    build_conviction_chains(ideas, company_economics, valuation, consensus_package)
+    thesis_clusters = build_thesis_clusters(
+        ideas, company_economics, valuation, consensus_package,
+    )
+    research_questions = build_research_questions(
+        ideas, thesis_clusters, company_economics, source_plan,
+    )
+    market_capture_readiness = build_market_capture_readiness(
+        identity.ticker, ideas, consensus_package, manual_data_status, source_plan,
+    )
+    coverage_expansion = build_coverage_expansion_diagnostics(
+        identity,
+        entity_resolution,
+        financial_coverage,
+        company_economics,
+        consensus_package,
+        valuation,
+        ideas,
+        thesis_clusters,
+        source_plan,
+    )
+    event_workflow = build_event_workflow(
+        identity.ticker, filings, ideas, source_plan, consensus_package,
+    )
+    wow_ideas = ideas_with_changed_evidence_not_price_or_consensus(ideas)
+    data_quality = build_data_quality_report(events, ideas, consensus_package)
+    historical_references = build_historical_references(ideas, store)
+    thesis_validation = build_thesis_validation_report(
+        ideas,
+        evidence_ledger,
+        consensus_package,
+        valuation,
+        management_package,
+        external_evidence,
+        historical_references,
+    )
+    evidence_work_order = build_evidence_work_order(
+        thesis_validation,
+        market_capture_readiness,
+        research_questions,
+        source_plan,
+        coverage_expansion,
+        coverage_case,
+        source_coverage_matrix,
+        metric_resolution_audit,
+        events,
+    )
+    evidence_closure = execute_evidence_work_order(
+        identity.ticker,
+        evidence_work_order,
+        filings=filings,
+        metrics=metrics,
+        validated_claims=validated_claims,
+        management_sources=management_package,
+        external_evidence=external_evidence,
+        consensus=consensus_package,
+        ideas=ideas,
+        peer_metric_readthrough={
+            idea.idea_id: list(idea.peer_metric_readthrough)
+            for idea in ideas if idea.peer_metric_readthrough
+        },
+        primary_observations=primary_source_observations,
+        corroboration_results=source_corroboration_results,
     )
     causal_thesis_graphs = build_causal_thesis_graphs(
         identity.ticker,
@@ -2473,18 +2589,15 @@ def _equity_credit_lens_for_idea(idea: TradeIdea) -> dict[str, str]:
         if idea.peer_metric_summary else
         "Peer operating read-through has not produced aligned same-driver metrics yet"
     )
-    market_summary = (
-        idea.market_capture.diagnosis or idea.market_capture.explanation
-        if idea.market_capture else
-        "Market capture has not been evaluated"
-    )
+    market_summary = _market_capture_lens_summary(idea)
     payoff_summary = _payoff_lens_summary(idea)
     gap_summary = _lens_gap_summary(idea)
     if any(token in driver + title for token in ("cash", "debt", "liquidity", "credit")):
+        liquidity_story = _liquidity_equity_story(factors, factor_summary)
         return {
             "equity": (
-                "Equity lens: the app links this balance-sheet signal to capital return, reinvestment capacity, "
-                f"and downside optionality through {factor_summary}. {payoff_summary} {market_summary}"
+                "Equity lens: the app links this balance-sheet signal to FCF conversion, reinvestment capacity, "
+                f"capital return, and downside optionality. {liquidity_story} {payoff_summary} {market_summary}"
             ),
             "credit": (
                 "Credit lens: the app links this signal to liquidity runway, debt capacity, refinancing risk, "
@@ -2527,20 +2640,104 @@ def _equity_credit_lens_for_idea(idea: TradeIdea) -> dict[str, str]:
 
 def _payoff_lens_summary(idea: TradeIdea) -> str:
     payoff = idea.payoff_model
-    if payoff and payoff.status == "Available":
+    complete = bool(
+        payoff and payoff.payoff_completeness
+        and payoff.payoff_completeness.status == "Complete"
+    )
+    if payoff and complete:
         ev = (
             f"illustrative EV {payoff.expected_value_pct:+.1f}%"
             if payoff.expected_value_pct is not None else
             "payoff scenarios available"
         )
-        return f"Scenario bridge is present ({ev}); probability source is {payoff.probability_provenance.status if payoff.probability_provenance else 'Uncalibrated'}."
-    if payoff and payoff.data_gaps:
-        return "Scenario bridge is incomplete: " + "; ".join(payoff.data_gaps[:2]) + "."
+        rank_note = "rank eligible" if payoff.rank_eligible else "uncalibrated and excluded from EV ranking"
+        limitation = f" {payoff.limitations[0]}" if payoff.limitations else ""
+        return (
+            f"Scenario bridge is ready using {payoff.assumption_mode} assumptions "
+            f"({ev}; {rank_note}).{limitation} Assumptions remain editable in Scenario + Payoff."
+        )
+    if payoff:
+        missing = _dedupe_list(
+            list(payoff.validation_errors)
+            + list(payoff.payoff_completeness.missing_inputs if payoff.payoff_completeness else [])
+            + list(payoff.data_gaps)
+        )
+        blocker = "; ".join(missing[:3]) or "the automatic scenario basis could not produce complete net returns"
+        return f"Scenario bridge is incomplete. Exact blocker: {blocker}. {_payoff_control_guidance(idea, payoff)}"
+    return _payoff_control_guidance(idea, None)
+
+
+def _payoff_control_guidance(idea: TradeIdea, payoff) -> str:
+    if idea.direction == "Watch":
+        return (
+            "No payoff input is requested yet because the idea is still neutral. Use Causal Bridge > Evidence Closure "
+            "to validate a Long or Short mechanism first; scenario controls activate after direction is established."
+        )
+    if idea.direction == "Relative Value":
+        return (
+            "In Idea Scorer > Scenario + Payoff, open Assumption inputs, enter the sourced entry value and hedge ratio, "
+            "then choose Custom to supply Bear/Base/Bull pair exits before saving assumptions."
+        )
+    entry_missing = not payoff or not payoff.entry_price or payoff.entry_price <= 0
+    custom_invalid = bool(payoff and payoff.validation_errors)
+    if entry_missing:
+        return (
+            "In Idea Scorer > Scenario + Payoff, open Assumption inputs and keep Scenario basis = Model-derived. "
+            "Enter Current entry price only if the sourced market price is still missing; review the prefilled exits and "
+            "25/50/25 probabilities, then select Save Assumptions to recalculate immediately."
+        )
+    if custom_invalid:
+        return (
+            "In Idea Scorer > Scenario + Payoff > Assumption inputs, correct the Custom exit anchors so Bear <= Base <= Bull, "
+            "review probabilities and costs, then select Save Assumptions."
+        )
     return (
-        "Scenario bridge needs user inputs: current entry price, bear/base/bull exit anchors, "
-        "and cost assumptions where relevant. Enter them in Idea Scorer > Scenario + Payoff > "
-        "Assumption inputs; the app records them as user assumptions, not source facts."
+        "In Idea Scorer > Scenario + Payoff, open Assumption inputs. Keep Model-derived to use internal fair-value cases, "
+        "or choose Custom to edit Bear/Base/Bull exits; review the prefilled 25/50/25 probabilities and costs, then select "
+        "Save Assumptions to recalculate immediately."
     )
+
+
+def _market_capture_lens_summary(idea: TradeIdea) -> str:
+    capture = idea.market_capture
+    if not capture:
+        return "Market-capture context has not been evaluated."
+    if capture.capture_mode == "Price-only":
+        reaction = (
+            f"{capture.price_reaction_pct:+.1f}%"
+            if capture.price_reaction_pct is not None else "available"
+        )
+        return (
+            f"Capture mode: Price-only. Event price reaction is {reaction}; analyst-expectation response "
+            "remains unverified and is not treated as a thesis-validity failure."
+        )
+    if capture.capture_mode == "Consensus-confirmed":
+        return f"Capture mode: Consensus-confirmed. {capture.explanation}"
+    return f"Capture mode: {capture.capture_mode or 'Unclassified'}. {capture.explanation}"
+
+
+def _liquidity_equity_story(factors: list, fallback: str) -> str:
+    if not factors:
+        return "The balance-sheet signal is not yet decomposed into operating cash flow, reinvestment, financing, and capital return."
+    cash_conversion = [
+        f"{factor.cause} ({factor.magnitude_hint})"
+        for factor in factors
+        if any(token in factor.cause.lower() for token in ("operating cash", "capex", "free cash"))
+    ]
+    buyback = next((factor for factor in factors if "buyback" in factor.cause.lower()), None)
+    story = (
+        "The cash-flow bridge "
+        + (" and ".join(cash_conversion[:2]) if cash_conversion else fallback)
+        + " indicate the direction of near-term FCF conversion and reinvestment capacity."
+    )
+    if buyback:
+        lower_spend = "-" in str(buyback.magnitude_hint)
+        story += (
+            " Lower repurchase spending preserves liquidity but reduces immediate per-share capital-return support."
+            if lower_spend else
+            " Higher repurchase spending supports per-share capital return but consumes liquidity."
+        )
+    return story
 
 
 def _lens_gap_summary(idea: TradeIdea) -> str:

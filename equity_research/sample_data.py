@@ -36,6 +36,7 @@ from .models import (
     EarningsSurprise,
     EstimatePoint,
     EntityResolution,
+    EvidenceItem,
     ExternalEvidence,
     ExpectationsBridge,
     ExternalEvidenceBundle,
@@ -108,7 +109,8 @@ class _DemoConsensus(ConsensusAdapter):
     official_for_conviction = True
 
     def revision_since(self, ticker, event_date):
-        return 0.0
+        # Current demo observations do not prove what consensus was around an older event.
+        return None
 
 
 class _DemoLlmProvider:
@@ -119,13 +121,84 @@ class _DemoLlmProvider:
     timeout_seconds = 0
 
     def complete_json(self, prompt_pack: dict) -> dict:
-        citation_id, citation = next(iter(prompt_pack.get("citations", {}).items()))
+        citations = prompt_pack.get("citations", {})
+        citation_id, citation = next(iter(citations.items()))
         quoted_claim = str(
             citation.get("snippet")
             or citation.get("original_excerpt")
             or citation.get("section")
             or citation.get("source")
         ).strip()
+        ticker = str((prompt_pack.get("company") or {}).get("ticker") or "").upper()
+        if ticker == "AAPL":
+            support_id, support = _demo_citation_matching(
+                citations, "gross margin", "111.184", "operating cash flow",
+            )
+            counter_id, counter = _demo_citation_matching(
+                citations, "repurchases", "r&d", "research and development",
+            )
+            support_claim = str(
+                support.get("snippet") or support.get("original_excerpt") or quoted_claim
+            ).strip()
+            counter_claim = str(
+                counter.get("snippet") or counter.get("original_excerpt") or ""
+            ).strip()
+            evidence_chain = [{"claim": support_claim, "citation_ids": [support_id]}]
+            if counter_claim and counter_id != support_id:
+                evidence_chain.append({"claim": counter_claim, "citation_ids": [counter_id]})
+            return {
+                "verdict": "Convincing source-backed thesis for IC review within the frozen demo.",
+                "thesis": (
+                    "Apple's March-quarter evidence supports a research-ready Long thesis: revenue and gross profit "
+                    "advanced together, gross margin expanded, cash conversion strengthened, and diluted shares fell. "
+                    "The investable mechanism is operating leverage plus a smaller share base, not the cash balance alone."
+                ),
+                "variant_perception": (
+                    "The differentiated question is whether the combined margin, cash-conversion, and per-share effect "
+                    "persists beyond one strong quarter; the demo does not claim that analyst expectations failed to react."
+                ),
+                "evidence_chain": evidence_chain,
+                "strongest_counter_thesis": (
+                    "Research and development spending grew faster than revenue while repurchase spending declined; "
+                    "if those trends persist, stronger current cash conversion may not produce equally strong per-share compounding."
+                ),
+                "key_uncertainties": [
+                    "Whether gross-margin expansion is durable across product mix and input-cost cycles.",
+                    "Whether higher research investment converts into incremental revenue and ecosystem retention.",
+                    "Whether capital returns reaccelerate enough to preserve the share-count tailwind.",
+                ],
+                "missing_evidence": [
+                    "Refresh live price, consensus, and valuation inputs before using the frozen demo operationally."
+                ],
+                "what_would_falsify": [
+                    "Gross margin falls below the prior-year comparison while operating cash flow growth normalizes sharply.",
+                    "Diluted shares stop declining without a compensating increase in high-return reinvestment.",
+                ],
+                "action_plan": [
+                    {
+                        "criterion": "Margin durability",
+                        "source_field": "metrics.gross_margin_pct",
+                        "metric": "gross_margin_pct",
+                        "operator": ">=",
+                        "threshold": 47.0,
+                        "deadline": "2026-10-31",
+                        "confirm_trigger": "Gross margin remains above the prior-year comparison.",
+                        "break_trigger": "Gross margin falls below the prior-year comparison.",
+                        "cadence": "Quarterly",
+                    },
+                    {
+                        "criterion": "Per-share compounding",
+                        "source_field": "metrics.diluted_shares",
+                        "metric": "diluted_shares_yoy_pct",
+                        "operator": "<=",
+                        "threshold": 0.0,
+                        "deadline": "2026-10-31",
+                        "confirm_trigger": "Diluted share count continues to decline year over year.",
+                        "break_trigger": "Diluted share count begins growing without an offsetting operating return.",
+                        "cadence": "Quarterly",
+                    },
+                ],
+            }
         return {
             "verdict": "Promising but incomplete",
             "thesis": (
@@ -147,6 +220,41 @@ class _DemoLlmProvider:
         }
 
 
+class _DemoSecondaryProvider:
+    """No-network skeptical reader; it critiques but cannot change deterministic gates."""
+
+    provider_name = "sanitized_demo_secondary_reader"
+    model = "independent-critic-fixture"
+    timeout_seconds = 0
+
+    def complete_json(self, review_pack: dict) -> dict:
+        return {
+            "summary": (
+                "The primary thesis is traceable to the supplied evidence and states its operating mechanism. "
+                "It remains a frozen demonstration, so live price, consensus, and valuation inputs must be refreshed before use."
+            ),
+            "disagreements": [],
+            "missed_counter_thesis": [],
+            "unsupported_claims": [],
+            "language_quality_issues": [],
+            "readability_suggestions": [
+                "Keep the frozen-demo warning adjacent to the verdict and separate illustrative EV from calibrated ranking."
+            ],
+            "verdict": "Accepted as a bounded secondary critique; deterministic stage and score are unchanged.",
+        }
+
+
+def _demo_citation_matching(citations: dict, *tokens: str) -> tuple[str, dict]:
+    for citation_id, payload in citations.items():
+        haystack = " ".join(
+            str(payload.get(key) or "")
+            for key in ("snippet", "original_excerpt", "section", "source")
+        ).lower()
+        if any(token.lower() in haystack for token in tokens):
+            return citation_id, payload
+    return next(iter(citations.items()))
+
+
 _DEMO_COMPANIES = {
     "AAPL": ("0000320193", "Apple Inc.", "Active US reporting issuer"),
     "BABA": ("0001577552", "Alibaba Group Holding Limited", "US-listed ADR / foreign private issuer"),
@@ -166,20 +274,69 @@ _DEMO_PROFILES: dict[str, dict[str, object]] = {
         "filed": "2026-05-01",
         "fiscal_period": "Q2",
         "current_form": "10-Q",
-        "previous_form": "10-K",
+        "previous_form": "10-Q",
+        "previous_period_end": "2025-03-29",
+        "previous_filing_date": "2025-05-02",
+        "primary_source_name": "Apple FY26 Q2 consolidated financial statements",
+        "primary_source_url": "https://www.apple.com/newsroom/pdfs/fy2026q2/FY26_Q2_Consolidated_Financial_Statements.pdf",
         "metrics": [
-            ("Revenue", 124_300_000_000, 112_900_000_000, 10.1, "USD"),
-            ("Gross Profit", 58_900_000_000, 50_100_000_000, 17.6, "USD"),
-            ("Operating Income", 36_200_000_000, 31_400_000_000, 15.3, "USD"),
-            ("Operating Cash Flow", 41_800_000_000, 36_100_000_000, 15.8, "USD"),
-            ("Capital Expenditure", 3_100_000_000, 2_900_000_000, 6.9, "USD"),
-            ("Cash", 45_600_000_000, 28_200_000_000, 61.7, "USD"),
-            ("Long-term Debt", 86_000_000_000, 95_000_000_000, -9.5, "USD"),
-            ("Shares", 15_500_000_000, 15_900_000_000, -2.5, "shares"),
+            ("Revenue", 111_184_000_000, 95_359_000_000, 16.6, "USD"),
+            ("Gross Profit", 54_781_000_000, 44_867_000_000, 22.1, "USD"),
+            ("Gross Margin", 49.27, 47.05, 4.7, "%"),
+            ("Operating Income", 35_885_000_000, 29_589_000_000, 21.3, "USD"),
+            ("Net Income", 29_578_000_000, 24_780_000_000, 19.4, "USD"),
+            ("Operating Cash Flow", 82_627_000_000, 53_887_000_000, 53.3, "USD"),
+            ("Capital Expenditure", 4_344_000_000, 6_011_000_000, -27.7, "USD"),
+            ("Cash", 45_572_000_000, 28_162_000_000, 61.8, "USD"),
+            ("Long-term Debt", 74_404_000_000, 78_328_000_000, -5.0, "USD"),
+            ("Shares", 14_725_873_000, 15_056_133_000, -2.2, "shares"),
+            ("Share Repurchases", 36_989_000_000, 49_504_000_000, -25.3, "USD"),
+            ("Research and Development", 11_419_000_000, 8_550_000_000, 33.6, "USD"),
         ],
         "events": [
-            ("margin", "Gross margin moved +3.0 pts", "Gross margin expanded as services mix and product economics improved.", "positive", 4, "Gross margin", "Revenue rose while gross profit grew faster, implying gross margin expansion."),
-            ("capital_allocation", "Cash conversion and capital return strengthened", "Operating cash flow rose while diluted share count declined, improving capital-return capacity.", "positive", 4, "Cash flow and capital return", "Operating cash flow increased and diluted shares declined year over year."),
+            (
+                "margin",
+                "Gross margin expanded +2.2 pts",
+                "Revenue increased 16.6%, gross profit increased 22.1%, and gross margin rose to 49.27% from 47.05%.",
+                "positive",
+                5,
+                "Statement of operations",
+                "Revenue 111.184B vs 95.359B; gross profit 54.781B vs 44.867B; gross margin 49.27% vs 47.05%.",
+                {
+                    "metric_name": "Gross Margin",
+                    "current_value": 49.27,
+                    "previous_value": 47.05,
+                    "change_value": 2.22,
+                    "unit": "%",
+                    "current_period": "2026-03-28",
+                    "previous_period": "2025-03-29",
+                    "driver_family": "margin",
+                    "direction_rationale": "Gross profit grew faster than revenue, producing a 2.2-point year-over-year margin expansion.",
+                    "counter_thesis": "R&D grew faster than revenue and repurchase spending declined, so stronger current margins and cash conversion may not translate into equally strong per-share compounding.",
+                    "counter_excerpt": "R&D 11.419B vs 8.550B; share repurchases 36.989B vs 49.504B.",
+                    "counter_section": "Statements of operations and cash flows",
+                },
+            ),
+            (
+                "financial_kpi",
+                "Operating cash flow changed +53.3%",
+                "Six-month operating cash flow increased to 82.627B from 53.887B while diluted shares declined 2.2%.",
+                "positive",
+                4,
+                "Statement of cash flows",
+                "Operating cash flow 82.627B vs 53.887B; diluted shares 14.726B vs 15.056B.",
+                {
+                    "metric_name": "Operating Cash Flow",
+                    "current_value": 82_627_000_000,
+                    "previous_value": 53_887_000_000,
+                    "yoy_change_pct": 53.3,
+                    "unit": "USD",
+                    "current_period": "2026-03-28",
+                    "previous_period": "2025-03-29",
+                    "driver_family": "liquidity",
+                    "direction_rationale": "Higher operating cash generation and a lower diluted share count improve reinvestment and per-share capital-allocation capacity.",
+                },
+            ),
         ],
         "price": (200.0, 203.0),
         "targets": (236.0, 232.0, 285.0, 185.0, 34),
@@ -320,7 +477,22 @@ def _demo_events(profile: dict[str, object], filing_url: str) -> list[ChangeEven
     period_end = str(profile["period_end"])
     form = str(profile["current_form"])
     events = []
-    for category, title, summary, direction, severity, section, excerpt in profile["events"]:
+    for event_spec in profile["events"]:
+        category, title, summary, direction, severity, section, excerpt, *extra = event_spec
+        metadata = dict(extra[0]) if extra and isinstance(extra[0], dict) else {}
+        source_name = str(metadata.pop("citation_source", profile.get("primary_source_name") or f"Demo {form}"))
+        source_url = str(metadata.pop("citation_url", profile.get("primary_source_url") or filing_url))
+        source_form = str(metadata.pop("citation_form", form))
+        source_tier = int(metadata.pop("citation_source_tier", 1))
+        accession = metadata.pop("citation_accession", None)
+        event_metrics = {
+            "event_period": period_end,
+            "period_end": period_end,
+            "metric_family": section,
+            "interpretation": summary,
+            "research_work_order": f"Validate {section} against the historical series, peer operating metrics, management discussion, and valuation bridge.",
+        }
+        event_metrics.update(metadata)
         events.append(ChangeEvent(
             category=category,
             title=title,
@@ -328,22 +500,19 @@ def _demo_events(profile: dict[str, object], filing_url: str) -> list[ChangeEven
             severity=severity,
             direction=direction,
             event_date=filed,
-            source=f"Demo {form}",
+            source=source_name,
             citations=[Citation(
-                source=f"Demo {form}",
-                url=filing_url,
+                source=source_name,
+                url=source_url,
                 filed=filed,
-                form=form,
+                form=source_form,
                 section=section,
                 snippet=excerpt,
-                source_tier=1,
+                accession=accession,
+                period_end=period_end,
+                source_tier=source_tier,
             )],
-            metrics={
-                "event_period": period_end,
-                "metric_family": section,
-                "interpretation": summary,
-                "research_work_order": f"Validate {section} against the historical series, peer operating metrics, management discussion, and valuation bridge.",
-            },
+            metrics=event_metrics,
         ))
     return events
 
@@ -843,6 +1012,47 @@ def _attach_demo_peer_metrics(
     return {idea.idea_id: readthroughs for idea in ideas}
 
 
+def _attach_demo_counter_evidence(ticker: str, ideas, evidence) -> None:
+    """Attach a bounded adverse hypothesis without manufacturing a resolved contradiction."""
+    claims_by_idea = {claim.idea_id: claim for claim in evidence.claims}
+    for idea in ideas:
+        if not idea.source_events:
+            continue
+        event = idea.source_events[0]
+        statement = str(event.metrics.get("counter_thesis") or "").strip()
+        excerpt = str(event.metrics.get("counter_excerpt") or "").strip()
+        claim = claims_by_idea.get(idea.idea_id)
+        if not statement or not excerpt or claim is None:
+            continue
+        source_citation = event.citations[0] if event.citations else None
+        citation = Citation(
+            source=source_citation.source if source_citation else event.source,
+            url=source_citation.url if source_citation else "",
+            filed=source_citation.filed if source_citation else event.event_date,
+            form=source_citation.form if source_citation else None,
+            section=str(event.metrics.get("counter_section") or "Counter-thesis evidence"),
+            snippet=excerpt,
+            accession=source_citation.accession if source_citation else None,
+            period_end=source_citation.period_end if source_citation else event.metrics.get("event_period"),
+            source_tier=source_citation.source_tier if source_citation else 1,
+        )
+        evidence_id = f"demo-counter-{idea.idea_id}"
+        evidence.items.append(EvidenceItem(
+            evidence_id=evidence_id,
+            claim_id=claim.claim_id,
+            ticker=ticker,
+            stance="Contradicts",
+            statement=statement,
+            source_tier=citation.source_tier or 1,
+            source_type=citation.source,
+            materiality=2,
+            citation=citation,
+            unresolved=False,
+        ))
+        claim.contradicting_evidence_ids.append(evidence_id)
+        claim.strongest_counter = statement
+
+
 def demo_result(ticker: str = "AAPL") -> ResearchResult:
     ticker = ticker.upper()
     if ticker == "SPXC":
@@ -883,10 +1093,10 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         FilingRecord(
             form=previous_form,
             accession=f"{accession_prefix}-25-000001",
-            filing_date="2025-11-01",
-            report_date="2025-09-30",
+            filing_date=str(profile.get("previous_filing_date") or "2025-11-01"),
+            report_date=str(profile.get("previous_period_end") or "2025-09-30"),
             primary_doc=f"{primary_prefix}-2025-annual.htm",
-            description="Annual report",
+            description="Prior comparable report" if previous_form in {"10-Q", "6-K"} else "Annual report",
             url=filing_url,
         ),
         FilingRecord(
@@ -1013,6 +1223,7 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         filed=filed,
     )
     evidence = build_evidence_ledger(ticker, ideas, events)
+    _attach_demo_counter_evidence(ticker, ideas, evidence)
     gate_results = finalize_idea_research(ideas, valuation, evidence, price.latest_price)
     attach_thesis_audit_chains(ideas, valuation)
     build_conviction_chains(ideas, company_economics, valuation, consensus)
@@ -1336,7 +1547,8 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         historical_references=historical_references,
         thesis_validation=thesis_validation,
         provider=_DemoLlmProvider(),
-        enable_secondary=False,
+        secondary_provider=_DemoSecondaryProvider(),
+        enable_secondary=True,
         budget_policy=budget_policy,
         manual_data_status=manual_data_status,
         company_economics=company_economics,

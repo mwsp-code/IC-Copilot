@@ -1806,6 +1806,7 @@ def render_market_implied_expectations(result: ResearchResult) -> None:
             [
                 {
                     "Market-implied variable": row.metric,
+                    "Basis status": row.status,
                     "Value": f"{row.implied_value:,.2f} {row.unit}" if row.implied_value is not None else "Insufficient data",
                     "Confidence": row.confidence,
                     "Interpretation": row.interpretation,
@@ -1850,6 +1851,8 @@ def render_reverse_fcf_snapshot(result: ResearchResult) -> None:
             "Reverse FCF cannot be solved yet. Missing: "
             + ("; ".join(missing.missing_inputs) if missing and missing.missing_inputs else "price, normalized shares, cash/debt, or positive FCF inputs")
         )
+    if base:
+        st.caption(f"FCF basis: {base.status}. {base.formula}. {base.interpretation}")
     if "not verified as TTM" in (implied.financial_basis or ""):
         st.caption(
             f"Screening basis: {implied.financial_basis}. Open Market & Expectations to edit discount rate, terminal growth, forecast horizon, and revenue-growth assumptions."
@@ -3540,7 +3543,11 @@ def render_idea_scorer(result: ResearchResult) -> None:
         col_rank.metric("Rank eligible", "Yes" if idea.payoff_model.rank_eligible else "No")
         for gap in idea.payoff_model.data_gaps:
             st.caption(gap)
-        render_payoff_assumption_inputs(idea, result.valuation)
+        render_payoff_assumption_inputs(
+            idea,
+            result.valuation,
+            getattr(result, "recent_market_context", None),
+        )
     st.caption(
         "Scenario labels describe the stock outcome. Position payoff applies the idea direction, "
         "so a lower stock exit is profitable for a Short after borrow, dividends, and transaction costs."
@@ -3566,19 +3573,57 @@ def render_idea_scorer(result: ResearchResult) -> None:
     )
 
 
-def render_payoff_assumption_inputs(idea, valuation) -> None:
+def render_payoff_assumption_inputs(idea, valuation, market_context=None) -> None:
     payoff = idea.payoff_model
     if not payoff:
         return
     existing = getattr(idea, "user_assumptions", {}) or {}
-    scenario_by_name = {scenario.name: scenario for scenario in payoff.scenarios}
     with st.expander("Assumption inputs"):
         st.caption(
-            "Use this when the scenario bridge says entry price, exit anchors, or costs are missing. "
-            "Saved values are labelled user assumptions and do not override source evidence, citations, or conviction gates."
+            "Sensible defaults calculate immediately. Market prices remain sourced facts; model, market-range, "
+            "illustrative, and custom inputs are labelled separately and do not override evidence or conviction gates."
         )
-        with st.form(f"payoff_assumptions_{idea.idea_id}"):
-            entry_default = _existing_assumption_number(existing, "entry_price", payoff.entry_price or 0.0)
+        mode_options = ["Automatic", "Model-derived", "Market-implied", "Illustrative", "Custom"]
+        saved_mode = str(existing.get("assumption_mode") or "Model-derived")
+        if saved_mode not in mode_options:
+            saved_mode = "Model-derived"
+        selected_mode = st.radio(
+            "Scenario basis",
+            mode_options,
+            index=mode_options.index(saved_mode),
+            horizontal=True,
+            key=f"scenario_mode_{idea.idea_id}",
+            help=(
+                "Model-derived is the default and uses internal fair-value cases. If those are unavailable, the app "
+                "shows a labelled market-range or illustrative fallback. Select Custom to edit exit anchors."
+            ),
+        )
+        market_volatility = getattr(market_context, "annualized_volatility_pct", None)
+        price_source = getattr(market_context, "source", "") or payoff.entry_price_source
+        price_as_of = getattr(market_context, "price_as_of", None) or payoff.entry_price_as_of
+        preset = build_payoff_model(
+            idea,
+            valuation,
+            payoff.entry_price,
+            scenario_mode=selected_mode,
+            annualized_volatility_pct=market_volatility,
+            entry_price_source=price_source,
+            entry_price_as_of=price_as_of,
+        )
+        scenario_by_name = {scenario.name: scenario for scenario in preset.scenarios}
+        st.caption(
+            f"Selected basis: {preset.assumption_mode} ({preset.assumption_quality} confidence). "
+            f"Entry source: {price_source or 'Unknown'}; as of {price_as_of or 'Unknown'}."
+        )
+        for limitation in preset.limitations[:2]:
+            st.caption(f"Limitation: {limitation}")
+        use_saved_values = selected_mode == saved_mode
+        with st.form(f"payoff_assumptions_{idea.idea_id}_{selected_mode}"):
+            entry_default = _existing_assumption_number(
+                existing if use_saved_values else {},
+                "entry_price",
+                preset.entry_price or payoff.entry_price or 0.0,
+            )
             entry_price = st.number_input(
                 "Current entry price",
                 min_value=0.0,
@@ -3588,9 +3633,10 @@ def render_payoff_assumption_inputs(idea, valuation) -> None:
             )
             cols = st.columns(3)
             exits = {}
+            exits_editable = selected_mode == "Custom"
             for idx, name in enumerate(("Bear", "Base", "Bull")):
                 scenario = scenario_by_name.get(name)
-                default = existing.get(f"{name.lower()}_exit")
+                default = existing.get(f"{name.lower()}_exit") if use_saved_values else None
                 if default is None and scenario and scenario.exit_value is not None:
                     default = scenario.exit_value
                 exits[f"{name.lower()}_exit"] = cols[idx].number_input(
@@ -3598,13 +3644,17 @@ def render_payoff_assumption_inputs(idea, valuation) -> None:
                     min_value=0.0,
                     value=float(default or 0.0),
                     step=1.0,
+                    disabled=not exits_editable,
                     help="Exit price or fair-value anchor for this scenario.",
                 )
             probability_cols = st.columns(3)
             probabilities = {}
             for idx, name in enumerate(("Bear", "Base", "Bull")):
                 scenario = scenario_by_name.get(name)
-                default_probability = existing.get(f"{name.lower()}_probability_pct")
+                default_probability = (
+                    existing.get(f"{name.lower()}_probability_pct")
+                    if use_saved_values else None
+                )
                 if default_probability is None and scenario:
                     default_probability = scenario.probability * 100
                 probabilities[f"{name.lower()}_probability_pct"] = probability_cols[idx].number_input(
@@ -3619,31 +3669,31 @@ def render_payoff_assumption_inputs(idea, valuation) -> None:
             transaction_cost_pct = cost_cols[0].number_input(
                 "Transaction cost %",
                 min_value=0.0,
-                value=_existing_assumption_number(existing, "transaction_cost_pct", payoff.transaction_cost_pct or 0.10),
+                value=_existing_assumption_number(existing if use_saved_values else {}, "transaction_cost_pct", preset.transaction_cost_pct or 0.10),
                 step=0.05,
             )
             dividend_return_pct = cost_cols[1].number_input(
                 "Dividend return %",
-                value=_existing_assumption_number(existing, "dividend_return_pct", payoff.dividend_return_pct or 0.0),
+                value=_existing_assumption_number(existing if use_saved_values else {}, "dividend_return_pct", preset.dividend_return_pct or 0.0),
                 step=0.10,
             )
             borrow_cost_pct = cost_cols[2].number_input(
                 "Borrow cost %",
                 min_value=0.0,
-                value=_existing_assumption_number(existing, "borrow_cost_pct", payoff.borrow_cost_pct or 0.0),
+                value=_existing_assumption_number(existing if use_saved_values else {}, "borrow_cost_pct", preset.borrow_cost_pct or 0.0),
                 step=0.25,
                 help="Relevant for short ideas.",
             )
             hedge_ratio = cost_cols[3].number_input(
                 "Hedge ratio",
                 min_value=0.0,
-                value=_existing_assumption_number(existing, "hedge_ratio", payoff.hedge_ratio or 0.0),
+                value=_existing_assumption_number(existing if use_saved_values else {}, "hedge_ratio", preset.hedge_ratio or 0.0),
                 step=0.05,
                 help="Relevant for relative-value ideas.",
             )
             note = st.text_area(
                 "Assumption note",
-                value=str(existing.get("note") or ""),
+                value=str(existing.get("note") or "") if use_saved_values else "",
                 placeholder="Example: Base exit uses 18x next-year EPS; bear assumes margin reversion.",
             )
             preview_rows = _payoff_assumption_preview(
@@ -3657,14 +3707,31 @@ def render_payoff_assumption_inputs(idea, valuation) -> None:
                 probabilities,
             )
             st.dataframe(preview_rows, hide_index=True, use_container_width=True)
-            submitted = st.form_submit_button("Save Assumptions", use_container_width=True)
-        if submitted:
+            action_cols = st.columns(2)
+            submitted = action_cols[0].form_submit_button("Save Assumptions", use_container_width=True)
+            reset_defaults = action_cols[1].form_submit_button("Reset to Model-derived", use_container_width=True)
+        if reset_defaults:
+            ResearchStore().update_idea_assumptions(idea.idea_id, {})
+            idea.user_assumptions = {}
+            idea.payoff_model = build_payoff_model(
+                idea,
+                valuation,
+                payoff.entry_price,
+                scenario_mode="Model-derived",
+                annualized_volatility_pct=market_volatility,
+                entry_price_source=price_source,
+                entry_price_as_of=price_as_of,
+            )
+            idea.scenarios = idea.payoff_model.scenarios
+            idea.probability_provenance = idea.payoff_model.probability_provenance
+            st.success("Defaults restored. Model-derived is active, with labelled fallbacks only when the model is unavailable.")
+        elif submitted:
             if sum(probabilities.values()) <= 0:
                 st.error("At least one scenario probability must be greater than zero.")
                 return
             payload = {
+                "assumption_mode": selected_mode,
                 "entry_price": entry_price,
-                **exits,
                 **probabilities,
                 "transaction_cost_pct": transaction_cost_pct,
                 "dividend_return_pct": dividend_return_pct,
@@ -3672,6 +3739,8 @@ def render_payoff_assumption_inputs(idea, valuation) -> None:
                 "hedge_ratio": hedge_ratio,
                 "note": note.strip(),
             }
+            if selected_mode == "Custom":
+                payload.update(exits)
             saved = ResearchStore().update_idea_assumptions(idea.idea_id, payload)
             idea.user_assumptions = payload
             probability_values = {
@@ -3686,8 +3755,15 @@ def render_payoff_assumption_inputs(idea, valuation) -> None:
                 transaction_cost_pct=transaction_cost_pct,
                 dividend_return_pct=dividend_return_pct,
                 hedge_ratio=hedge_ratio or None,
-                scenario_exit_values={name.replace("_exit", ""): value for name, value in exits.items()},
+                scenario_exit_values=(
+                    {name.replace("_exit", ""): value for name, value in exits.items()}
+                    if selected_mode == "Custom" else None
+                ),
                 scenario_probabilities=probability_values,
+                scenario_mode=selected_mode,
+                annualized_volatility_pct=market_volatility,
+                entry_price_source=price_source,
+                entry_price_as_of=price_as_of,
             )
             idea.scenarios = idea.payoff_model.scenarios
             idea.probability_provenance = idea.payoff_model.probability_provenance

@@ -3,13 +3,27 @@ from __future__ import annotations
 import unittest
 
 from equity_research.idea_engine import (
+    build_monitor_items,
+    build_payoff_model,
     build_driver_analysis,
     build_peer_readthrough,
     evaluate_market_capture,
     generate_trade_ideas,
     ideas_with_changed_evidence_not_price_or_consensus,
+    refresh_ideas_after_investigation,
 )
-from equity_research.models import ChangeEvent, Citation, CompanyIdentity, FinancialMetric
+from equity_research.models import (
+    ChangeEvent,
+    Citation,
+    CompanyIdentity,
+    EvidenceClosureOutcome,
+    EvidenceClosureReport,
+    EvidenceWorkOrder,
+    EvidenceWorkOrderItem,
+    FinancialMetric,
+    ValuationCase,
+    ValuationResult,
+)
 from equity_research.providers import ConsensusAdapter, PriceReaction
 
 
@@ -204,6 +218,77 @@ class IdeaEngineTests(unittest.TestCase):
         self.assertTrue(any("Debt financing" in cause for cause in causes))
         self.assertFalse(any("Higher financing cost" == cause or "Higher tax expense" == cause for cause in causes))
         self.assertIn("Cash balance changes should reconcile", analysis.mechanism)
+
+    def test_post_investigation_refresh_assigns_direction_and_recomputes_payoff(self) -> None:
+        identity = CompanyIdentity(ticker="AAPL", cik="0000320193", name="Apple Inc.")
+        event = ChangeEvent(
+            category="financial_kpi",
+            title="Operating Cash Flow changed +50.0%",
+            summary="Operating cash flow increased.",
+            severity=5,
+            direction="neutral",
+            event_date="2026-06-30",
+            source="SEC Companyfacts",
+            citations=[Citation(source="SEC", url="https://example.com", period_end="2026-06-30")],
+            metrics={
+                "metric_name": "Operating Cash Flow",
+                "default_polarity": "neutral",
+                "direction_validation_required": True,
+                "driver_family": "liquidity",
+                "thesis_grade_status": "Thesis-grade",
+            },
+        )
+        metrics = [_metric("Operating Cash Flow", 150, 100, 50)]
+        idea = generate_trade_ideas(identity, [event], metrics=metrics)[0]
+        self.assertEqual(idea.direction, "Watch")
+        watch_payoff = build_payoff_model(idea, _valuation(), 100)
+        self.assertEqual(watch_payoff.payoff_completeness.status, "Incomplete")
+        work_order = EvidenceWorkOrder(
+            status="Open",
+            summary="Test",
+            items=[EvidenceWorkOrderItem(
+                work_id="work-1", priority="High", channel="causal_bridge",
+                action="Reconcile cash flow", source_type="sec", expected_output="Cash-flow bridge",
+                why_it_matters="Validates cash generation", origin="test",
+                related_idea_ids=[idea.idea_id],
+            )],
+        )
+        closure = EvidenceClosureReport(
+            ticker="AAPL", status="Closed", summary="Resolved", resolved_count=1,
+            outcomes=[EvidenceClosureOutcome("work-1", "resolved", "Cash-flow bridge resolved")],
+        )
+
+        refresh_ideas_after_investigation(identity, [idea], metrics, closure, work_order)
+        refreshed_payoff = build_payoff_model(idea, _valuation(), 100)
+
+        self.assertEqual(idea.direction, "Long")
+        self.assertIn("Post-investigation", idea.direction_rationale)
+        self.assertEqual(refreshed_payoff.payoff_completeness.status, "Complete")
+        self.assertTrue(all(row.net_return_pct is not None for row in refreshed_payoff.scenarios))
+
+    def test_watch_monitors_support_categorical_confirmation_values(self) -> None:
+        identity = CompanyIdentity(ticker="AAPL", cik="0000320193", name="Apple Inc.")
+        event = ChangeEvent(
+            "financial_kpi", "Cash changed", "Cash changed.", 4, "neutral", "2026-06-30", "SEC",
+            metrics={"metric_name": "Cash", "direction_validation_required": True},
+        )
+        idea = generate_trade_ideas(identity, [event], metrics=[])[0]
+        monitors = build_monitor_items(idea)
+        self.assertEqual(monitors[0].confirm_value, "Thesis-grade")
+        self.assertEqual(monitors[0].break_value, "Not thesis-grade")
+
+
+def _valuation() -> ValuationResult:
+    return ValuationResult(
+        template="Non-financial",
+        status="Available",
+        currency="USD",
+        cases=[
+            ValuationCase("Bear", 0.25, 80, "DCF", []),
+            ValuationCase("Base", 0.50, 100, "DCF", []),
+            ValuationCase("Bull", 0.25, 130, "DCF", []),
+        ],
+    )
 
 
 def _operating_income_event() -> ChangeEvent:
