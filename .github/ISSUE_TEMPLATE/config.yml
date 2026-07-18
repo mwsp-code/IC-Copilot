@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Research methodology discussion
+    url: https://github.com/mwsp-code/IC-Copilot/discussions
+    about: Discuss research design, playbooks, evidence gates, and roadmap ideas.
+  - name: Security report
+    url: https://github.com/mwsp-code/IC-Copilot/security/policy
+    about: Report credential, source-integrity, or local API vulnerabilities privately.
+

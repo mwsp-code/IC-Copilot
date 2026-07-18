@@ -1,0 +1,19 @@
+{
+  "name": "IC Copilot",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "overrideCommand": true,
+  "remoteUser": "appuser",
+  "forwardPorts": [8501],
+  "postCreateCommand": "python -m pip install -e '.[dev]'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff"
+      ]
+    }
+  }
+}

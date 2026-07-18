@@ -1,0 +1,42 @@
+name: Source adapter proposal
+description: Propose or implement a registered official, market, macro, or research provider.
+title: "[Source]: "
+labels: [source-adapter]
+body:
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and endpoint family
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Proposed source tier
+      options: [Tier 1 primary, Tier 2 official/context, Tier 3 licensed/reporting, Tier 4 unofficial/narrative]
+  - type: textarea
+    id: fields
+    attributes:
+      label: Research fields and causal-bridge use
+    validations:
+      required: true
+  - type: textarea
+    id: licensing
+    attributes:
+      label: Authentication, entitlement, licensing, and retention policy
+    validations:
+      required: true
+  - type: textarea
+    id: fallback
+    attributes:
+      label: Failure classification and fallback
+  - type: checkboxes
+    id: contract
+    attributes:
+      label: Adapter contract
+      options:
+        - label: I will preserve timestamps, citations, units, currencies, provider health, and no-lookahead eligibility.
+          required: true
+        - label: Normal tests will use fixtures and require no live credentials.
+          required: true
+

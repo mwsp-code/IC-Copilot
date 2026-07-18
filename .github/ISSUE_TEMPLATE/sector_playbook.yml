@@ -1,0 +1,30 @@
+name: Sector or industry playbook
+description: Add material drivers, KPIs, peers, valuation methods, and falsification tests.
+title: "[Playbook]: "
+labels: [sector-playbook, good-first-issue]
+body:
+  - type: input
+    id: sector
+    attributes:
+      label: Sector or industry
+    validations:
+      required: true
+  - type: textarea
+    id: economics
+    attributes:
+      label: Business economics and material KPIs
+    validations:
+      required: true
+  - type: textarea
+    id: peers
+    attributes:
+      label: Curated peers and selection rationale
+  - type: textarea
+    id: valuation
+    attributes:
+      label: Valuation and credit methods
+  - type: textarea
+    id: tests
+    attributes:
+      label: Confirmation, contradiction, and fixture cases
+

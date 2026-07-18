@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a reproducible app, provider, parser, or research-workflow defect.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never include API keys, proxy credentials, licensed reports, or local databases.
+  - type: input
+    id: ticker
+    attributes:
+      label: Ticker or demo
+      placeholder: AAPL, BABA, or frozen demo
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Research profile
+      options: [Fast Screening, Adaptive IC Research, Deep Initiation, Investigate This Event, Frozen demo]
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include the visible error and the workflow stage.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Windows 11, Python 3.11, Streamlit 1.x
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, private research, and licensed full text.
+          required: true
+

@@ -1,0 +1,943 @@
+{
+  "benchmark": "IC Copilot Research Integrity Benchmark",
+  "version": "0.1.0",
+  "generated_at": "2026-07-18T16:51:13.878970+00:00",
+  "fixture_only": true,
+  "network_required": false,
+  "scope_note": "Structural evidence-chain benchmark on sanitized fixtures; it does not measure forecast accuracy or investment returns.",
+  "status": "passed",
+  "integrity_cases": 25,
+  "checks_passed": 125,
+  "checks_total": 125,
+  "pass_rate_pct": 100.0,
+  "unsupported_high_conviction_ids": [],
+  "tickers": [
+    {
+      "ticker": "AAPL",
+      "events_evaluated": 2,
+      "ideas_evaluated": 2,
+      "citation_bound_ideas": 2,
+      "counter_thesis_coverage": 2,
+      "monitor_rule_coverage": 2,
+      "high_conviction_ideas": 1,
+      "unsupported_high_conviction_ids": []
+    },
+    {
+      "ticker": "NVDA",
+      "events_evaluated": 2,
+      "ideas_evaluated": 2,
+      "citation_bound_ideas": 2,
+      "counter_thesis_coverage": 2,
+      "monitor_rule_coverage": 2,
+      "high_conviction_ideas": 0,
+      "unsupported_high_conviction_ids": []
+    },
+    {
+      "ticker": "BABA",
+      "events_evaluated": 2,
+      "ideas_evaluated": 2,
+      "citation_bound_ideas": 2,
+      "counter_thesis_coverage": 2,
+      "monitor_rule_coverage": 2,
+      "high_conviction_ideas": 0,
+      "unsupported_high_conviction_ids": []
+    },
+    {
+      "ticker": "TSLA",
+      "events_evaluated": 2,
+      "ideas_evaluated": 2,
+      "citation_bound_ideas": 2,
+      "counter_thesis_coverage": 2,
+      "monitor_rule_coverage": 2,
+      "high_conviction_ideas": 0,
+      "unsupported_high_conviction_ids": []
+    },
+    {
+      "ticker": "GS",
+      "events_evaluated": 2,
+      "ideas_evaluated": 2,
+      "citation_bound_ideas": 2,
+      "counter_thesis_coverage": 2,
+      "monitor_rule_coverage": 2,
+      "high_conviction_ideas": 0,
+      "unsupported_high_conviction_ids": []
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "AAPL-01",
+      "ticker": "AAPL",
+      "case_type": "event_grounding",
+      "case_title": "Source event is dated, cited, and economically interpreted",
+      "source": "Apple FY26 Q2 consolidated financial statements",
+      "score": 100,
+      "checks": [
+        {
+          "name": "event_present",
+          "passed": true,
+          "detail": "A material source event is present."
+        },
+        {
+          "name": "citation_bound",
+          "passed": true,
+          "detail": "At least one source URL is attached to the event."
+        },
+        {
+          "name": "event_dated",
+          "passed": true,
+          "detail": "The event has an explicit date."
+        },
+        {
+          "name": "economic_relevance",
+          "passed": true,
+          "detail": "The event states why it could affect the investment case."
+        },
+        {
+          "name": "source_identified",
+          "passed": true,
+          "detail": "A filing, issuer, or normalized source is identified."
+        }
+      ]
+    },
+    {
+      "case_id": "AAPL-02",
+      "ticker": "AAPL",
+      "case_type": "thesis_grounding",
+      "case_title": "Thesis remains connected to source evidence",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "idea_present",
+          "passed": true,
+          "detail": "At least one research idea is present."
+        },
+        {
+          "name": "idea_cited",
+          "passed": true,
+          "detail": "The idea includes citations."
+        },
+        {
+          "name": "source_events",
+          "passed": true,
+          "detail": "The idea retains source events."
+        },
+        {
+          "name": "thesis_written",
+          "passed": true,
+          "detail": "A thesis statement is present."
+        },
+        {
+          "name": "bounded_direction",
+          "passed": true,
+          "detail": "Direction is one of Long, Short, Neutral, or Watch."
+        }
+      ]
+    },
+    {
+      "case_id": "AAPL-03",
+      "ticker": "AAPL",
+      "case_type": "counter_thesis",
+      "case_title": "Counter-thesis and falsification remain visible",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "counter_evaluated",
+          "passed": true,
+          "detail": "The strongest counter-thesis was evaluated."
+        },
+        {
+          "name": "idea_cited",
+          "passed": true,
+          "detail": "Counter-analysis remains source-bound."
+        },
+        {
+          "name": "next_source",
+          "passed": true,
+          "detail": "A falsification source or monitor is identified."
+        },
+        {
+          "name": "driver_mapped",
+          "passed": true,
+          "detail": "The thesis has a causal-driver mapping or explicit bridge status."
+        },
+        {
+          "name": "stage_visible",
+          "passed": true,
+          "detail": "The research stage is explicit."
+        }
+      ]
+    },
+    {
+      "case_id": "AAPL-04",
+      "ticker": "AAPL",
+      "case_type": "monitor_and_payoff",
+      "case_title": "Monitoring, market context, and payoff gaps are explicit",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "monitor_or_work_order",
+          "passed": true,
+          "detail": "A monitor rule or executable next source is attached."
+        },
+        {
+          "name": "market_capture",
+          "passed": true,
+          "detail": "Market-capture mode is recorded."
+        },
+        {
+          "name": "score_present",
+          "passed": true,
+          "detail": "Research completeness is scored."
+        },
+        {
+          "name": "direction_rationale",
+          "passed": true,
+          "detail": "Direction has a rationale."
+        },
+        {
+          "name": "payoff_or_gap",
+          "passed": true,
+          "detail": "A payoff model or explicit payoff gap is recorded."
+        }
+      ]
+    },
+    {
+      "case_id": "AAPL-05",
+      "ticker": "AAPL",
+      "case_type": "promotion_integrity",
+      "case_title": "Promotion gates cannot hide unsupported conviction",
+      "source": "Deterministic gate",
+      "score": 100,
+      "checks": [
+        {
+          "name": "no_unsupported_high_conviction",
+          "passed": true,
+          "detail": "No unsupported idea is promoted."
+        },
+        {
+          "name": "validation_present",
+          "passed": true,
+          "detail": "Claim validation results are attached."
+        },
+        {
+          "name": "evidence_ledger",
+          "passed": true,
+          "detail": "An evidence ledger is attached."
+        },
+        {
+          "name": "run_manifest",
+          "passed": true,
+          "detail": "A reproducible run manifest is attached."
+        },
+        {
+          "name": "one_pager",
+          "passed": true,
+          "detail": "The IC one-pager is generated from the same result."
+        }
+      ]
+    },
+    {
+      "case_id": "NVDA-01",
+      "ticker": "NVDA",
+      "case_type": "event_grounding",
+      "case_title": "Source event is dated, cited, and economically interpreted",
+      "source": "Demo 10-Q",
+      "score": 100,
+      "checks": [
+        {
+          "name": "event_present",
+          "passed": true,
+          "detail": "A material source event is present."
+        },
+        {
+          "name": "citation_bound",
+          "passed": true,
+          "detail": "At least one source URL is attached to the event."
+        },
+        {
+          "name": "event_dated",
+          "passed": true,
+          "detail": "The event has an explicit date."
+        },
+        {
+          "name": "economic_relevance",
+          "passed": true,
+          "detail": "The event states why it could affect the investment case."
+        },
+        {
+          "name": "source_identified",
+          "passed": true,
+          "detail": "A filing, issuer, or normalized source is identified."
+        }
+      ]
+    },
+    {
+      "case_id": "NVDA-02",
+      "ticker": "NVDA",
+      "case_type": "thesis_grounding",
+      "case_title": "Thesis remains connected to source evidence",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "idea_present",
+          "passed": true,
+          "detail": "At least one research idea is present."
+        },
+        {
+          "name": "idea_cited",
+          "passed": true,
+          "detail": "The idea includes citations."
+        },
+        {
+          "name": "source_events",
+          "passed": true,
+          "detail": "The idea retains source events."
+        },
+        {
+          "name": "thesis_written",
+          "passed": true,
+          "detail": "A thesis statement is present."
+        },
+        {
+          "name": "bounded_direction",
+          "passed": true,
+          "detail": "Direction is one of Long, Short, Neutral, or Watch."
+        }
+      ]
+    },
+    {
+      "case_id": "NVDA-03",
+      "ticker": "NVDA",
+      "case_type": "counter_thesis",
+      "case_title": "Counter-thesis and falsification remain visible",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "counter_evaluated",
+          "passed": true,
+          "detail": "The strongest counter-thesis was evaluated."
+        },
+        {
+          "name": "idea_cited",
+          "passed": true,
+          "detail": "Counter-analysis remains source-bound."
+        },
+        {
+          "name": "next_source",
+          "passed": true,
+          "detail": "A falsification source or monitor is identified."
+        },
+        {
+          "name": "driver_mapped",
+          "passed": true,
+          "detail": "The thesis has a causal-driver mapping or explicit bridge status."
+        },
+        {
+          "name": "stage_visible",
+          "passed": true,
+          "detail": "The research stage is explicit."
+        }
+      ]
+    },
+    {
+      "case_id": "NVDA-04",
+      "ticker": "NVDA",
+      "case_type": "monitor_and_payoff",
+      "case_title": "Monitoring, market context, and payoff gaps are explicit",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "monitor_or_work_order",
+          "passed": true,
+          "detail": "A monitor rule or executable next source is attached."
+        },
+        {
+          "name": "market_capture",
+          "passed": true,
+          "detail": "Market-capture mode is recorded."
+        },
+        {
+          "name": "score_present",
+          "passed": true,
+          "detail": "Research completeness is scored."
+        },
+        {
+          "name": "direction_rationale",
+          "passed": true,
+          "detail": "Direction has a rationale."
+        },
+        {
+          "name": "payoff_or_gap",
+          "passed": true,
+          "detail": "A payoff model or explicit payoff gap is recorded."
+        }
+      ]
+    },
+    {
+      "case_id": "NVDA-05",
+      "ticker": "NVDA",
+      "case_type": "promotion_integrity",
+      "case_title": "Promotion gates cannot hide unsupported conviction",
+      "source": "Deterministic gate",
+      "score": 100,
+      "checks": [
+        {
+          "name": "no_unsupported_high_conviction",
+          "passed": true,
+          "detail": "No unsupported idea is promoted."
+        },
+        {
+          "name": "validation_present",
+          "passed": true,
+          "detail": "Claim validation results are attached."
+        },
+        {
+          "name": "evidence_ledger",
+          "passed": true,
+          "detail": "An evidence ledger is attached."
+        },
+        {
+          "name": "run_manifest",
+          "passed": true,
+          "detail": "A reproducible run manifest is attached."
+        },
+        {
+          "name": "one_pager",
+          "passed": true,
+          "detail": "The IC one-pager is generated from the same result."
+        }
+      ]
+    },
+    {
+      "case_id": "BABA-01",
+      "ticker": "BABA",
+      "case_type": "event_grounding",
+      "case_title": "Source event is dated, cited, and economically interpreted",
+      "source": "Demo 20-F",
+      "score": 100,
+      "checks": [
+        {
+          "name": "event_present",
+          "passed": true,
+          "detail": "A material source event is present."
+        },
+        {
+          "name": "citation_bound",
+          "passed": true,
+          "detail": "At least one source URL is attached to the event."
+        },
+        {
+          "name": "event_dated",
+          "passed": true,
+          "detail": "The event has an explicit date."
+        },
+        {
+          "name": "economic_relevance",
+          "passed": true,
+          "detail": "The event states why it could affect the investment case."
+        },
+        {
+          "name": "source_identified",
+          "passed": true,
+          "detail": "A filing, issuer, or normalized source is identified."
+        }
+      ]
+    },
+    {
+      "case_id": "BABA-02",
+      "ticker": "BABA",
+      "case_type": "thesis_grounding",
+      "case_title": "Thesis remains connected to source evidence",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "idea_present",
+          "passed": true,
+          "detail": "At least one research idea is present."
+        },
+        {
+          "name": "idea_cited",
+          "passed": true,
+          "detail": "The idea includes citations."
+        },
+        {
+          "name": "source_events",
+          "passed": true,
+          "detail": "The idea retains source events."
+        },
+        {
+          "name": "thesis_written",
+          "passed": true,
+          "detail": "A thesis statement is present."
+        },
+        {
+          "name": "bounded_direction",
+          "passed": true,
+          "detail": "Direction is one of Long, Short, Neutral, or Watch."
+        }
+      ]
+    },
+    {
+      "case_id": "BABA-03",
+      "ticker": "BABA",
+      "case_type": "counter_thesis",
+      "case_title": "Counter-thesis and falsification remain visible",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "counter_evaluated",
+          "passed": true,
+          "detail": "The strongest counter-thesis was evaluated."
+        },
+        {
+          "name": "idea_cited",
+          "passed": true,
+          "detail": "Counter-analysis remains source-bound."
+        },
+        {
+          "name": "next_source",
+          "passed": true,
+          "detail": "A falsification source or monitor is identified."
+        },
+        {
+          "name": "driver_mapped",
+          "passed": true,
+          "detail": "The thesis has a causal-driver mapping or explicit bridge status."
+        },
+        {
+          "name": "stage_visible",
+          "passed": true,
+          "detail": "The research stage is explicit."
+        }
+      ]
+    },
+    {
+      "case_id": "BABA-04",
+      "ticker": "BABA",
+      "case_type": "monitor_and_payoff",
+      "case_title": "Monitoring, market context, and payoff gaps are explicit",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "monitor_or_work_order",
+          "passed": true,
+          "detail": "A monitor rule or executable next source is attached."
+        },
+        {
+          "name": "market_capture",
+          "passed": true,
+          "detail": "Market-capture mode is recorded."
+        },
+        {
+          "name": "score_present",
+          "passed": true,
+          "detail": "Research completeness is scored."
+        },
+        {
+          "name": "direction_rationale",
+          "passed": true,
+          "detail": "Direction has a rationale."
+        },
+        {
+          "name": "payoff_or_gap",
+          "passed": true,
+          "detail": "A payoff model or explicit payoff gap is recorded."
+        }
+      ]
+    },
+    {
+      "case_id": "BABA-05",
+      "ticker": "BABA",
+      "case_type": "promotion_integrity",
+      "case_title": "Promotion gates cannot hide unsupported conviction",
+      "source": "Deterministic gate",
+      "score": 100,
+      "checks": [
+        {
+          "name": "no_unsupported_high_conviction",
+          "passed": true,
+          "detail": "No unsupported idea is promoted."
+        },
+        {
+          "name": "validation_present",
+          "passed": true,
+          "detail": "Claim validation results are attached."
+        },
+        {
+          "name": "evidence_ledger",
+          "passed": true,
+          "detail": "An evidence ledger is attached."
+        },
+        {
+          "name": "run_manifest",
+          "passed": true,
+          "detail": "A reproducible run manifest is attached."
+        },
+        {
+          "name": "one_pager",
+          "passed": true,
+          "detail": "The IC one-pager is generated from the same result."
+        }
+      ]
+    },
+    {
+      "case_id": "TSLA-01",
+      "ticker": "TSLA",
+      "case_type": "event_grounding",
+      "case_title": "Source event is dated, cited, and economically interpreted",
+      "source": "Demo 10-Q",
+      "score": 100,
+      "checks": [
+        {
+          "name": "event_present",
+          "passed": true,
+          "detail": "A material source event is present."
+        },
+        {
+          "name": "citation_bound",
+          "passed": true,
+          "detail": "At least one source URL is attached to the event."
+        },
+        {
+          "name": "event_dated",
+          "passed": true,
+          "detail": "The event has an explicit date."
+        },
+        {
+          "name": "economic_relevance",
+          "passed": true,
+          "detail": "The event states why it could affect the investment case."
+        },
+        {
+          "name": "source_identified",
+          "passed": true,
+          "detail": "A filing, issuer, or normalized source is identified."
+        }
+      ]
+    },
+    {
+      "case_id": "TSLA-02",
+      "ticker": "TSLA",
+      "case_type": "thesis_grounding",
+      "case_title": "Thesis remains connected to source evidence",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "idea_present",
+          "passed": true,
+          "detail": "At least one research idea is present."
+        },
+        {
+          "name": "idea_cited",
+          "passed": true,
+          "detail": "The idea includes citations."
+        },
+        {
+          "name": "source_events",
+          "passed": true,
+          "detail": "The idea retains source events."
+        },
+        {
+          "name": "thesis_written",
+          "passed": true,
+          "detail": "A thesis statement is present."
+        },
+        {
+          "name": "bounded_direction",
+          "passed": true,
+          "detail": "Direction is one of Long, Short, Neutral, or Watch."
+        }
+      ]
+    },
+    {
+      "case_id": "TSLA-03",
+      "ticker": "TSLA",
+      "case_type": "counter_thesis",
+      "case_title": "Counter-thesis and falsification remain visible",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "counter_evaluated",
+          "passed": true,
+          "detail": "The strongest counter-thesis was evaluated."
+        },
+        {
+          "name": "idea_cited",
+          "passed": true,
+          "detail": "Counter-analysis remains source-bound."
+        },
+        {
+          "name": "next_source",
+          "passed": true,
+          "detail": "A falsification source or monitor is identified."
+        },
+        {
+          "name": "driver_mapped",
+          "passed": true,
+          "detail": "The thesis has a causal-driver mapping or explicit bridge status."
+        },
+        {
+          "name": "stage_visible",
+          "passed": true,
+          "detail": "The research stage is explicit."
+        }
+      ]
+    },
+    {
+      "case_id": "TSLA-04",
+      "ticker": "TSLA",
+      "case_type": "monitor_and_payoff",
+      "case_title": "Monitoring, market context, and payoff gaps are explicit",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "monitor_or_work_order",
+          "passed": true,
+          "detail": "A monitor rule or executable next source is attached."
+        },
+        {
+          "name": "market_capture",
+          "passed": true,
+          "detail": "Market-capture mode is recorded."
+        },
+        {
+          "name": "score_present",
+          "passed": true,
+          "detail": "Research completeness is scored."
+        },
+        {
+          "name": "direction_rationale",
+          "passed": true,
+          "detail": "Direction has a rationale."
+        },
+        {
+          "name": "payoff_or_gap",
+          "passed": true,
+          "detail": "A payoff model or explicit payoff gap is recorded."
+        }
+      ]
+    },
+    {
+      "case_id": "TSLA-05",
+      "ticker": "TSLA",
+      "case_type": "promotion_integrity",
+      "case_title": "Promotion gates cannot hide unsupported conviction",
+      "source": "Deterministic gate",
+      "score": 100,
+      "checks": [
+        {
+          "name": "no_unsupported_high_conviction",
+          "passed": true,
+          "detail": "No unsupported idea is promoted."
+        },
+        {
+          "name": "validation_present",
+          "passed": true,
+          "detail": "Claim validation results are attached."
+        },
+        {
+          "name": "evidence_ledger",
+          "passed": true,
+          "detail": "An evidence ledger is attached."
+        },
+        {
+          "name": "run_manifest",
+          "passed": true,
+          "detail": "A reproducible run manifest is attached."
+        },
+        {
+          "name": "one_pager",
+          "passed": true,
+          "detail": "The IC one-pager is generated from the same result."
+        }
+      ]
+    },
+    {
+      "case_id": "GS-01",
+      "ticker": "GS",
+      "case_type": "event_grounding",
+      "case_title": "Source event is dated, cited, and economically interpreted",
+      "source": "Demo 10-Q",
+      "score": 100,
+      "checks": [
+        {
+          "name": "event_present",
+          "passed": true,
+          "detail": "A material source event is present."
+        },
+        {
+          "name": "citation_bound",
+          "passed": true,
+          "detail": "At least one source URL is attached to the event."
+        },
+        {
+          "name": "event_dated",
+          "passed": true,
+          "detail": "The event has an explicit date."
+        },
+        {
+          "name": "economic_relevance",
+          "passed": true,
+          "detail": "The event states why it could affect the investment case."
+        },
+        {
+          "name": "source_identified",
+          "passed": true,
+          "detail": "A filing, issuer, or normalized source is identified."
+        }
+      ]
+    },
+    {
+      "case_id": "GS-02",
+      "ticker": "GS",
+      "case_type": "thesis_grounding",
+      "case_title": "Thesis remains connected to source evidence",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "idea_present",
+          "passed": true,
+          "detail": "At least one research idea is present."
+        },
+        {
+          "name": "idea_cited",
+          "passed": true,
+          "detail": "The idea includes citations."
+        },
+        {
+          "name": "source_events",
+          "passed": true,
+          "detail": "The idea retains source events."
+        },
+        {
+          "name": "thesis_written",
+          "passed": true,
+          "detail": "A thesis statement is present."
+        },
+        {
+          "name": "bounded_direction",
+          "passed": true,
+          "detail": "Direction is one of Long, Short, Neutral, or Watch."
+        }
+      ]
+    },
+    {
+      "case_id": "GS-03",
+      "ticker": "GS",
+      "case_type": "counter_thesis",
+      "case_title": "Counter-thesis and falsification remain visible",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "counter_evaluated",
+          "passed": true,
+          "detail": "The strongest counter-thesis was evaluated."
+        },
+        {
+          "name": "idea_cited",
+          "passed": true,
+          "detail": "Counter-analysis remains source-bound."
+        },
+        {
+          "name": "next_source",
+          "passed": true,
+          "detail": "A falsification source or monitor is identified."
+        },
+        {
+          "name": "driver_mapped",
+          "passed": true,
+          "detail": "The thesis has a causal-driver mapping or explicit bridge status."
+        },
+        {
+          "name": "stage_visible",
+          "passed": true,
+          "detail": "The research stage is explicit."
+        }
+      ]
+    },
+    {
+      "case_id": "GS-04",
+      "ticker": "GS",
+      "case_type": "monitor_and_payoff",
+      "case_title": "Monitoring, market context, and payoff gaps are explicit",
+      "source": "TradeIdea",
+      "score": 100,
+      "checks": [
+        {
+          "name": "monitor_or_work_order",
+          "passed": true,
+          "detail": "A monitor rule or executable next source is attached."
+        },
+        {
+          "name": "market_capture",
+          "passed": true,
+          "detail": "Market-capture mode is recorded."
+        },
+        {
+          "name": "score_present",
+          "passed": true,
+          "detail": "Research completeness is scored."
+        },
+        {
+          "name": "direction_rationale",
+          "passed": true,
+          "detail": "Direction has a rationale."
+        },
+        {
+          "name": "payoff_or_gap",
+          "passed": true,
+          "detail": "A payoff model or explicit payoff gap is recorded."
+        }
+      ]
+    },
+    {
+      "case_id": "GS-05",
+      "ticker": "GS",
+      "case_type": "promotion_integrity",
+      "case_title": "Promotion gates cannot hide unsupported conviction",
+      "source": "Deterministic gate",
+      "score": 100,
+      "checks": [
+        {
+          "name": "no_unsupported_high_conviction",
+          "passed": true,
+          "detail": "No unsupported idea is promoted."
+        },
+        {
+          "name": "validation_present",
+          "passed": true,
+          "detail": "Claim validation results are attached."
+        },
+        {
+          "name": "evidence_ledger",
+          "passed": true,
+          "detail": "An evidence ledger is attached."
+        },
+        {
+          "name": "run_manifest",
+          "passed": true,
+          "detail": "A reproducible run manifest is attached."
+        },
+        {
+          "name": "one_pager",
+          "passed": true,
+          "detail": "The IC one-pager is generated from the same result."
+        }
+      ]
+    }
+  ]
+}

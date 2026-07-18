@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use IC Copilot in research or teaching, please cite the software."
+title: "IC Copilot: Evidence-First Equity Research"
+type: software
+version: 0.1.0
+date-released: 2026-07-18
+repository-code: "https://github.com/mwsp-code/IC-Copilot"
+url: "https://ic-copilot.streamlit.app/"
+license: MIT
+authors:
+  - family-names: "IC Copilot contributors"
+keywords:
+  - equity research
+  - investment research
+  - SEC filings
+  - valuation
+  - artificial intelligence
+

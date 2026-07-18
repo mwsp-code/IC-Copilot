@@ -1,0 +1,13 @@
+.git
+.github
+.idea
+.pytest_cache
+__pycache__
+*.pyc
+*.log
+.env
+.env.local
+data/*.db
+data/*.sqlite*
+venv
+docs/launch

@@ -23,12 +23,23 @@ AI builders. The project values auditable research coverage more than the number
 ## Development workflow
 
 ```bash
-python -m pip install -r requirements.txt
-python -m pip install pytest
+python -m pip install -e ".[dev]"
+python -m compileall -q app.py server.py equity_research scripts
+ruff check app.py server.py equity_research scripts tests
 python -m pytest -q
+python scripts/run_benchmark.py
 ```
 
 Add fixture-based tests for new providers and parsers. Live-network tests must remain optional and
 must never be required by the normal suite.
+
+Read the [development guide](docs/development.md), [architecture](docs/architecture.md), and
+[research methodology](docs/methodology.md) before changing source tiers, scoring, or promotion gates.
+The [good first issues](docs/contributing/good-first-issues.md) include acceptance criteria for the
+most useful contributor paths.
+
+Please use the pull-request template and the issue form that matches your change. Contributions that
+alter factual outputs should include a sanitized fixture proving source, period, unit/currency, and
+no-lookahead behavior.
 
 By submitting a contribution, you agree that it may be distributed under the MIT License.

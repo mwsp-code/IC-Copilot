@@ -47,10 +47,14 @@ from equity_research.thesis_synthesis import UnavailableLlmProvider
 
 
 st.set_page_config(
-    page_title="US Equity Research Radar",
+    page_title="IC Copilot",
     page_icon="",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
+
+GITHUB_REPOSITORY_URL = "https://github.com/mwsp-code/IC-Copilot"
+LIVE_DEMO_URL = "https://ic-copilot.streamlit.app/"
 
 
 def _demo_case_runtime_metadata(case) -> dict[str, object]:
@@ -64,10 +68,66 @@ def _demo_case_runtime_metadata(case) -> dict[str, object]:
     }
 
 
+def _inject_global_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"] {
+            overflow-x: hidden;
+        }
+        [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+            min-width: 0;
+        }
+        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stAlertContent"],
+        [data-testid="stMetricValue"],
+        [data-testid="stMetricLabel"] {
+            overflow-wrap: anywhere;
+            word-break: normal;
+        }
+        .stTabs [data-baseweb="tab-list"] {
+            max-width: 100%;
+            overflow-x: auto;
+            scrollbar-width: thin;
+        }
+        @media (max-width: 700px) {
+            .block-container {
+                padding-left: 1rem;
+                padding-right: 1rem;
+            }
+            [data-testid="stHorizontalBlock"] {
+                flex-direction: column;
+                gap: 0.6rem;
+            }
+            [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+                width: 100%;
+                flex: 1 1 auto;
+            }
+            [data-testid="stMetric"] {
+                min-height: auto;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
-    st.title("US Equity Research Radar")
+    _inject_global_styles()
+    title_col, repo_col = st.columns([4, 1])
+    with title_col:
+        st.title("IC Copilot")
+        st.caption(
+            "Evidence-first equity research: source event -> business driver -> "
+            "financial impact -> valuation -> IC decision."
+        )
+    with repo_col:
+        st.link_button("View on GitHub", GITHUB_REPOSITORY_URL, use_container_width=True)
     if "result" not in st.session_state:
-        st.session_state.result = None
+        st.session_state.result = demo_result("AAPL")
+        st.session_state.demo_mode = "AAPL"
     if "network_diagnostics" not in st.session_state:
         st.session_state.network_diagnostics = None
     pending_demo_preset = st.session_state.pop("_pending_demo_preset", None)
@@ -541,6 +601,7 @@ def main() -> None:
 
     if load_demo_clicked:
         st.session_state.result = demo_result(selected_case.ticker)
+        st.session_state.demo_mode = selected_case.ticker
         st.session_state._pending_demo_preset = {
             "research_profile": "deep_initiation" if case_budget_mode == "Premium" else default_profile,
             "budget_mode": case_budget_mode or budget_mode,
@@ -601,6 +662,7 @@ def main() -> None:
                 st.sidebar.caption(gap)
 
     if (run_clicked or investigate_clicked) and ticker:
+        st.session_state.demo_mode = None
         effective_profile = "investigate_event" if investigate_clicked else selected_profile_id
         try:
             with st.spinner(f"Running research workflow for {ticker}..."):
@@ -666,6 +728,13 @@ def main() -> None:
     if result is None:
         st.info("Enter a US ticker and run the workflow.")
         return
+
+    demo_mode = st.session_state.get("demo_mode")
+    if demo_mode:
+        st.info(
+            f"Viewing the frozen {demo_mode} Deep Initiation demo. "
+            "Choose Run Live Research to refresh sources with your configured providers."
+        )
 
     render_header(result)
     tabs = st.tabs(
@@ -934,6 +1003,11 @@ def render_formula_traces(result: ResearchResult) -> None:
 
 def render_contributor_surface(result: ResearchResult) -> None:
     with st.expander("Improve this project", expanded=False):
+        st.link_button(
+            "Star or contribute on GitHub",
+            GITHUB_REPOSITORY_URL,
+            use_container_width=True,
+        )
         pack = build_contribution_pack(result)
         st.write(
             "The app can prefill safe configuration and test specifications from this run. "
