@@ -4749,6 +4749,7 @@ st.set_page_config(
 
 GITHUB_REPOSITORY_URL = "https://github.com/mwsp-code/IC-Copilot"
 LIVE_DEMO_URL = "https://ic-copilot.streamlit.app/"
+FEEDBACK_DISCUSSION_URL = "https://github.com/mwsp-code/IC-Copilot/discussions/5"
 
 
 def _demo_case_runtime_metadata(case) -> dict[str, object]:
