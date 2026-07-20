@@ -24,3 +24,4 @@ venv/
 .codex/
 .DS_Store
 Thumbs.db
+docs/assets/demo/*.m4a

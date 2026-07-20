@@ -1,0 +1,31 @@
+1
+00:00:00,000 --> 00:00:10,750
+Most research tools give you a confident answer. IC Copilot begins somewhere else: with evidence. And when the evidence is weak, it can say so.
+
+2
+00:00:10,750 --> 00:00:21,596
+For Apple, the starting point is simple. Revenue and gross profit rose together, while gross margin improved. That is the change we need to explain.
+
+3
+00:00:21,596 --> 00:00:30,867
+Open the claim, and you can see the issuer document, reporting period, citation, parser status, and the underlying numbers.
+
+4
+00:00:30,867 --> 00:00:43,480
+From there, the app tests the chain one link at a time: source event, business driver, operating K P I, earnings or free cash flow, valuation, and catalyst.
+
+5
+00:00:43,480 --> 00:00:53,189
+It then asks whether peers show the same operating pattern. This is a metric comparison, not just a stock-price comparison.
+
+6
+00:00:53,189 --> 00:01:06,606
+Reverse D C F turns the question around: what must today's price already assume? Every input, formula, confidence level, and limitation stays visible.
+
+7
+00:01:06,606 --> 00:01:18,334
+Finally, the bull, bear, and judge views separate what supports the thesis, what challenges it, what the evidence proves, and what is still open.
+
+8
+00:01:18,334 --> 00:01:30,784
+The result is not a polished guess. It is an investment committee decision you can inspect, challenge, and reproduce. IC Copilot is open source on GitHub.

@@ -9,7 +9,9 @@
 
 [Try the live demo](https://ic-copilot.streamlit.app/) | [Quickstart](docs/quickstart.md) | [Methodology](docs/methodology.md) | [Roadmap](ROADMAP.md) | [Contribute](CONTRIBUTING.md)
 
-![AAPL IC Story](docs/assets/ic-story-aapl.png)
+[![IC Copilot AAPL research walkthrough](docs/assets/demo/ic-copilot-aapl-demo.gif)](docs/assets/demo/ic-copilot-aapl-demo.mp4)
+
+**[Watch the 91-second narrated AAPL walkthrough](docs/assets/demo/ic-copilot-aapl-demo.mp4)** | Source event -> causal bridge -> peer evidence -> reverse DCF -> Bull/Bear/Judge
 
 ## Why IC Copilot
 
@@ -23,9 +25,9 @@ Most AI research tools are good at producing text. IC Copilot is designed to pro
 
 The app is built for equity analysts, credit analysts, portfolio managers, and AI builders who want evidence before eloquence.
 
-## See It In 60 Seconds
+## See It In 90 Seconds
 
-1. Open the [hosted app](https://ic-copilot.streamlit.app/). The AAPL Deep Initiation demo is loaded automatically.
+1. Watch the [narrated AAPL walkthrough](docs/assets/demo/ic-copilot-aapl-demo.mp4), or open the [hosted app](https://ic-copilot.streamlit.app/). The AAPL Deep Initiation demo is loaded automatically.
 2. Read the one-screen IC Story: verdict, what changed, causal bridge, counter-thesis, valuation, and next action.
 3. Open an evidence drawer to inspect the exact citation and formula trace.
 4. Switch to NVDA, BABA, TSLA, or GS to see a different research playbook.
