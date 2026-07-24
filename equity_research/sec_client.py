@@ -13,10 +13,16 @@ from .models import CompanyIdentity, FilingRecord
 
 
 SEC_TICKER_URL = "https://www.sec.gov/files/company_tickers.json"
+SEC_TICKER_SNAPSHOT_PATH = Path(__file__).resolve().parent / "resources" / "sec_company_tickers.json"
+SEC_TICKER_SNAPSHOT_AS_OF = "2026-07-22"
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 SEC_SUBMISSIONS_ARCHIVE_URL = "https://data.sec.gov/submissions/{name}"
 SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 SEC_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession}/{doc}"
+SEC_REQUEST_INTERVAL_SECONDS = 0.12
+
+_SEC_REQUEST_LOCK = Lock()
+_SEC_LAST_REQUEST_AT = 0.0
 
 
 class SecClientError(RuntimeError):
@@ -29,10 +35,13 @@ class SecClient:
         user_agent: str | None = None,
         cache_dir: Path | None = None,
         timeout_seconds: int | None = None,
+        ticker_snapshot_path: Path | None = None,
     ) -> None:
         self.user_agent = user_agent or config.SEC_USER_AGENT
         self.cache_dir = cache_dir or config.CACHE_DIR
         self.timeout_seconds = timeout_seconds or config.REQUEST_TIMEOUT_SECONDS
+        self.ticker_snapshot_path = ticker_snapshot_path or SEC_TICKER_SNAPSHOT_PATH
+        self.ticker_map_source = "not_loaded"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._text_memory_cache: dict[str, str] = {}
         self._json_memory_cache: dict[str, dict] = {}
@@ -41,12 +50,48 @@ class SecClient:
 
     def map_ticker(self, ticker: str) -> CompanyIdentity:
         ticker = ticker.upper().strip()
-        ticker_map = self.get_json(SEC_TICKER_URL, ttl_seconds=24 * 60 * 60)
-        for row in ticker_map.values():
-            if row.get("ticker", "").upper() == ticker:
-                cik = str(row["cik_str"]).zfill(10)
-                return CompanyIdentity(ticker=ticker, cik=cik, name=row["title"])
-        raise SecClientError(f"Ticker {ticker!r} was not found in the SEC ticker map.")
+        live_error: Exception | None = None
+        try:
+            ticker_map = self.get_json(SEC_TICKER_URL, ttl_seconds=24 * 60 * 60)
+            identity = _identity_from_ticker_map(ticker, ticker_map)
+            if identity is not None:
+                self.ticker_map_source = "live_sec_or_cache"
+                return identity
+        except (SecClientError, json.JSONDecodeError, ValueError, OSError) as exc:
+            live_error = exc
+
+        snapshot_map = self._load_ticker_snapshot()
+        identity = _identity_from_ticker_map(ticker, snapshot_map)
+        if identity is not None:
+            self.ticker_map_source = "bundled_sec_snapshot"
+            return identity
+
+        if live_error is not None:
+            raise SecClientError(
+                f"Ticker {ticker!r} was not found in the bundled SEC ticker snapshot "
+                f"(as of {SEC_TICKER_SNAPSHOT_AS_OF}), and the live SEC ticker index "
+                "was unavailable. Retry later or verify the ticker/CIK."
+            ) from live_error
+        raise SecClientError(
+            f"Ticker {ticker!r} was not found in the live or bundled SEC ticker map."
+        )
+
+    def _load_ticker_snapshot(self) -> dict:
+        cache_key = str(self.ticker_snapshot_path)
+        cached = self._json_memory_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            payload = json.loads(self.ticker_snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SecClientError(
+                "The live SEC ticker index was unavailable and the bundled ticker "
+                "snapshot could not be loaded."
+            ) from exc
+        if not isinstance(payload, dict):
+            raise SecClientError("The bundled SEC ticker snapshot is malformed.")
+        self._json_memory_cache[cache_key] = payload
+        return payload
 
     def get_submissions(self, cik: str) -> dict:
         return self.get_json(SEC_SUBMISSIONS_URL.format(cik=cik), ttl_seconds=20 * 60)
@@ -170,6 +215,7 @@ class SecClient:
                 },
             )
             try:
+                _throttle_sec_request(url)
                 with urlopen(req, timeout=self.timeout_seconds) as response:
                     raw = response.read()
                     encoding = response.headers.get_content_charset() or "utf-8"
@@ -204,6 +250,37 @@ def _safe_idx(values: list, idx: int, default: str) -> str:
     except IndexError:
         return default
     return "" if value is None else str(value)
+
+
+def _identity_from_ticker_map(ticker: str, ticker_map: object) -> CompanyIdentity | None:
+    rows = ticker_map.values() if isinstance(ticker_map, dict) else ticker_map
+    if not isinstance(rows, (list, tuple)) and not hasattr(rows, "__iter__"):
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("ticker") or "").upper() != ticker:
+            continue
+        cik_value = row.get("cik_str")
+        if cik_value in (None, ""):
+            continue
+        return CompanyIdentity(
+            ticker=ticker,
+            cik=str(cik_value).zfill(10),
+            name=str(row.get("title") or ticker),
+        )
+    return None
+
+
+def _throttle_sec_request(url: str) -> None:
+    if ".sec.gov/" not in url.lower():
+        return
+    global _SEC_LAST_REQUEST_AT
+    with _SEC_REQUEST_LOCK:
+        elapsed = time.monotonic() - _SEC_LAST_REQUEST_AT
+        if elapsed < SEC_REQUEST_INTERVAL_SECONDS:
+            time.sleep(SEC_REQUEST_INTERVAL_SECONDS - elapsed)
+        _SEC_LAST_REQUEST_AT = time.monotonic()
 
 
 def _filing_records_from_columns(

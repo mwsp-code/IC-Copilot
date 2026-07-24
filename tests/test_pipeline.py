@@ -239,6 +239,19 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(debt.metrics["previous_accession"], "prior-20f")
         self.assertIn(debt.metrics["comparison_status"], {"period_aligned", "comparable_imperfect"})
 
+    def test_blocked_filing_html_does_not_abort_structured_sec_research(self) -> None:
+        class BlockedFilingClient(CrowdedAnnualSecClient):
+            def get_filing_text(self, filing):
+                raise SecClientError("HTTP Error 403: Forbidden")
+
+        filings = BlockedFilingClient().get_recent_filings("BABA")
+
+        events = _compare_latest_pairs(
+            BlockedFilingClient(), "BABA", filings, "20-F",
+        )
+
+        self.assertEqual(events, [])
+
 
 if __name__ == "__main__":
     unittest.main()

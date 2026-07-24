@@ -408,6 +408,12 @@ def run_us_equity_research(
         identity, submissions, filings + registration_filings,
     )
     coverage_notes = _coverage_notes(filings)
+    if getattr(sec, "ticker_map_source", "") == "bundled_sec_snapshot":
+        coverage_notes.append(
+            "Entity identity used the bundled SEC ticker snapshot because the live "
+            "SEC ticker index was unavailable. Filings, submissions, and XBRL facts "
+            "remain live-source or cache-backed."
+        )
     if entity_resolution.warning:
         coverage_notes.append(entity_resolution.warning)
     profiler.checkpoint("entity_and_filings")
@@ -1610,7 +1616,11 @@ def _compare_latest_pairs(
     text_cache = text_cache if text_cache is not None else {}
     current = form_filings[0]
     previous = form_filings[1] if len(form_filings) > 1 else None
-    current_text = _profile_filing_text(sec, current, text_cache)
+    try:
+        current_text = _profile_filing_text(sec, current, text_cache)
+    except Exception as exc:
+        current_text = ""
+        discovery_error = str(exc)
     previous_text = None
     prior_parse_failed = False
     if previous:

@@ -728,8 +728,15 @@ def main() -> None:
                         investigate_event_id=investigate_event_id if investigate_clicked else None,
                     )
         except SecClientError as exc:
-            st.error(str(exc))
-            st.stop()
+            retained = st.session_state.get("result")
+            retained_label = (
+                f" The previously loaded {retained.identity.ticker} result remains visible below."
+                if retained is not None else ""
+            )
+            st.error(
+                f"Live SEC research could not complete: {exc}{retained_label} "
+                "This is a source-access failure, not a finding about the company."
+            )
         except Exception as exc:  # pragma: no cover - UI guardrail
             st.exception(exc)
             st.stop()

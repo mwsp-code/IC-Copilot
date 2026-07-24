@@ -39,6 +39,9 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["equity_research*"]
 
+[tool.setuptools.package-data]
+equity_research = ["resources/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
