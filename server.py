@@ -959,13 +959,23 @@ HTML = r"""<!doctype html>
       const implied = current.market_implied_expectations || {};
       const impliedRows = implied.expectations || [];
       const reverseBase = impliedRows.find(item => item.metric === "Reverse DCF base FCF");
-      const reverseGrowth = impliedRows.find(item => (item.metric || "").startsWith("Reverse DCF: implied"));
+      const reverseGrowth = impliedRows.find(item =>
+        (item.metric || "").startsWith("Reverse DCF: implied") &&
+        (item.metric || "").includes("FCF growth") &&
+        item.implied_value != null
+      ) || impliedRows.find(item =>
+        (item.metric || "").startsWith("Reverse DCF: implied") &&
+        item.implied_value != null
+      );
       const fcfYield = impliedRows.find(item => item.metric === "Current free-cash-flow yield");
+      const reverseLabel = reverseGrowth && (reverseGrowth.metric || "").toLowerCase().includes("margin")
+        ? "Price-implied FCF margin"
+        : "Price-implied FCF growth";
       const reverseSnapshot = implied.template === "Non-financial" ? `<h3>Reverse FCF / DCF Snapshot</h3>
         <div class="summary">
           <div class="metric"><span>FCF base</span><strong>${reverseBase && reverseBase.implied_value != null ? `${number(reverseBase.implied_value)} ${esc(reverseBase.unit)}` : "Unavailable"}</strong></div>
           <div class="metric"><span>Current FCF yield</span><strong>${fcfYield && fcfYield.implied_value != null ? `${number(fcfYield.implied_value)} ${esc(fcfYield.unit)}` : "Unavailable"}</strong></div>
-          <div class="metric"><span>Price-implied FCF growth</span><strong>${reverseGrowth && reverseGrowth.implied_value != null ? `${number(reverseGrowth.implied_value)} ${esc(reverseGrowth.unit)}` : "Unavailable"}</strong></div>
+          <div class="metric"><span>${reverseLabel}</span><strong>${reverseGrowth && reverseGrowth.implied_value != null ? `${number(reverseGrowth.implied_value)} ${esc(reverseGrowth.unit)}` : "Unavailable"}</strong></div>
           <div class="metric"><span>Confidence</span><strong>${esc(reverseGrowth ? reverseGrowth.confidence : "Unavailable")}</strong></div>
         </div>
         <p class="muted">${esc(reverseGrowth ? reverseGrowth.interpretation : "Open Market & Expectations for exact missing reverse-DCF inputs.")}</p>
@@ -2214,7 +2224,7 @@ HTML = r"""<!doctype html>
       const implied = current.market_implied_expectations || {};
       const rows = (implied.expectations || []).map(item => ({
         metric: item.metric,
-        value: item.implied_value === null || item.implied_value === undefined ? "Insufficient data" : `${number(item.implied_value)} ${item.unit}`,
+        value: item.implied_value === null || item.implied_value === undefined ? (item.status || "Not calculated") : `${number(item.implied_value)} ${item.unit}`,
         confidence: item.confidence,
         interpretation: item.interpretation,
         formula: item.formula,

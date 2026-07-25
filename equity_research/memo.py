@@ -459,7 +459,7 @@ def build_dd_memo(
             f"period {market_implied_expectations.financial_period or 'Unknown'}."
         )
         for row in market_implied_expectations.expectations:
-            value = "Insufficient data" if row.implied_value is None else f"{row.implied_value:,.2f} {row.unit}"
+            value = row.status if row.implied_value is None else f"{row.implied_value:,.2f} {row.unit}"
             lines.append(f"- {row.metric}: **{value}**. {row.interpretation}")
             lines.append(f"  - Formula: {row.formula}; confidence: {row.confidence}.")
         lines.append("")

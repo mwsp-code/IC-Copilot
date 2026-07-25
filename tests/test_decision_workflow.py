@@ -150,6 +150,39 @@ def test_market_implied_reverse_dcf_and_company_model_are_auditable():
     assert implied.financial_period == "2026-03-31"
 
 
+def test_market_implied_negative_fcf_uses_margin_and_breakeven_bridge() -> None:
+    metrics = [
+        row if row.name != "Capital Expenditure" else _metric("Capital Expenditure", 300.0)
+        for row in _metrics()
+    ]
+    model = build_company_model_workspace(_identity(), metrics, _valuation())
+
+    implied = build_market_implied_expectations(
+        _identity(), metrics, 100.0, _valuation(), model,
+    )
+
+    rows = {row.metric: row for row in implied.expectations}
+    base = rows["Reverse DCF base FCF"]
+    margin = rows["Reverse DCF: implied normalized FCF margin at 5.0% revenue growth"]
+    conventional = rows["Conventional reverse DCF: implied five-year FCF growth"]
+    gap = rows["FCF breakeven funding gap"]
+
+    assert implied.status == "Available"
+    assert base.implied_value == -80.0
+    assert base.status == "Observed negative FCF"
+    assert margin.implied_value is not None
+    assert margin.implied_value > 0
+    assert conventional.implied_value is None
+    assert conventional.status == "Not meaningful from negative FCF base"
+    assert conventional.missing_inputs == []
+    assert gap.implied_value == 80.0
+    assert not any(
+        row.metric == "Reverse DCF"
+        and "required normalized inputs are missing" in row.interpretation
+        for row in implied.expectations
+    )
+
+
 def test_market_implied_quarterly_flow_basis_is_disclosed_and_confidence_reduced():
     metrics = [
         _metric(row.name, row.value, row.unit, row.previous_value, row.yoy_change_pct, "Q2", "10-Q")

@@ -1915,7 +1915,7 @@ def render_market_implied_expectations(result: ResearchResult) -> None:
                 {
                     "Market-implied variable": row.metric,
                     "Basis status": row.status,
-                    "Value": f"{row.implied_value:,.2f} {row.unit}" if row.implied_value is not None else "Insufficient data",
+                    "Value": f"{row.implied_value:,.2f} {row.unit}" if row.implied_value is not None else row.status,
                     "Confidence": row.confidence,
                     "Interpretation": row.interpretation,
                     "Formula": row.formula,
@@ -1942,13 +1942,27 @@ def render_reverse_fcf_snapshot(result: ResearchResult) -> None:
         return
     rows = implied.expectations or []
     base = next((row for row in rows if row.metric == "Reverse DCF base FCF"), None)
-    growth = next((row for row in rows if row.metric.startswith("Reverse DCF: implied")), None)
+    growth = next((
+        row for row in rows
+        if row.metric.startswith("Reverse DCF: implied")
+        and "FCF growth" in row.metric
+        and row.implied_value is not None
+    ), None) or next((
+        row for row in rows
+        if row.metric.startswith("Reverse DCF: implied")
+        and row.implied_value is not None
+    ), None)
     fcf_yield = next((row for row in rows if row.metric == "Current free-cash-flow yield"), None)
+    implied_label = (
+        "Price-implied FCF margin"
+        if growth and "margin" in growth.metric.lower()
+        else "Price-implied FCF growth"
+    )
     st.markdown("#### Reverse FCF / DCF Snapshot")
     _wrapped_metric_grid([
         ("FCF base", _implied_row_value(base)),
         ("Current FCF yield", _implied_row_value(fcf_yield)),
-        ("Price-implied FCF growth", _implied_row_value(growth)),
+        (implied_label, _implied_row_value(growth)),
         ("Confidence", growth.confidence if growth else "Unavailable"),
     ])
     if growth:

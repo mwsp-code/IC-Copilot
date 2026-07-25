@@ -81,6 +81,21 @@ def test_orcl_demo_uses_live_capture_semantics_without_vendor_payloads() -> None
         for item in result.consensus.provider_statuses
     }
     assert status_by_provider["FMP"] == "entitlement_error"
+    implied_rows = {
+        row.metric: row
+        for row in result.market_implied_expectations.expectations
+    }
+    assert implied_rows["Reverse DCF base FCF"].implied_value == -23_686_000_000
+    assert implied_rows["Reverse DCF base FCF"].status == "Observed negative FCF"
+    assert implied_rows[
+        "Reverse DCF: implied normalized FCF margin at 5.0% revenue growth"
+    ].implied_value is not None
+    assert implied_rows["FCF breakeven funding gap"].implied_value == 23_686_000_000
+    market_story = next(
+        card for card in result.story_cards
+        if card.card_id == "market_implied"
+    )
+    assert "implied normalized FCF margin" in market_story.summary
     assert result.demo_case.network_required is False
 
 

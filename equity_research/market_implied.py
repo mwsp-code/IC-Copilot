@@ -235,10 +235,11 @@ def _non_financial_expectations(metrics, market_cap, assumptions, *, annual_flow
             confidence="Medium",
             required_inputs=["Price", "Shares", "Debt", "Cash", "Revenue"],
         ))
-    if market_cap and fcf and fcf > 0:
+    if market_cap and fcf is not None:
         rows.append(MarketImpliedExpectation(
             metric="Reverse DCF base FCF",
             status=(
+                "Observed negative FCF" if fcf <= 0 else
                 "TTM normalized" if fcf_uses_ttm else
                 "Observed" if fcf_verified else
                 "Annualized screening estimate"
@@ -252,6 +253,13 @@ def _non_financial_expectations(metrics, market_cap, assumptions, *, annual_flow
                 capex_factor,
             ),
             interpretation=(
+                (
+                    f"Capital expenditure exceeds operating cash flow by {abs(fcf):,.0f} "
+                    f"{_currency(operating_cash.unit) if operating_cash else 'currency units'}. "
+                    "A conventional growth-rate reverse DCF is not meaningful from a negative base, "
+                    "so the model solves for the normalized FCF margin required by price instead."
+                )
+                if fcf <= 0 else
                 "Trailing-twelve-month operating cash flow less trailing-twelve-month capex is used as the starting FCF base. "
                 + _ttm_method_summary(operating_cash, capex)
                 if fcf_uses_ttm else
@@ -276,9 +284,36 @@ def _non_financial_expectations(metrics, market_cap, assumptions, *, annual_flow
             implied_value=fcf / market_cap * 100,
             unit="%",
             formula=f"{flow_basis_label} FCF / market capitalization",
-            interpretation="Shows the cash yield supported by normalized reported inputs before imposing a growth forecast.",
+            interpretation=(
+                "Negative current FCF yield reflects investment spending above operating cash generation; "
+                "it is a capital-cycle observation, not by itself proof of value destruction."
+                if fcf <= 0 else
+                "Shows the cash yield supported by normalized reported inputs before imposing a growth forecast."
+            ),
             confidence="Medium",
             required_inputs=["Price", "Shares", "Operating Cash Flow", "Capital Expenditure"],
+        ))
+    if enterprise_value and revenue and revenue_value > 0:
+        implied_margin = _solve_terminal_margin(
+            enterprise_value, revenue_value, revenue_growth, discount, terminal_growth, years,
+        )
+        rows.append(MarketImpliedExpectation(
+            metric=f"Reverse DCF: implied normalized FCF margin at {revenue_growth * 100:.1f}% revenue growth",
+            status="Derived" if implied_margin is not None else "Insufficient data",
+            implied_value=implied_margin * 100 if implied_margin is not None else None,
+            unit="%",
+            formula=(
+                f"Solve enterprise value from {years}-year {revenue_growth * 100:.1f}% revenue growth "
+                "and a constant normalized FCF margin"
+            ),
+            interpretation=(
+                "Shows the normalized cash margin required to support the current enterprise value under the "
+                "selected growth, discount-rate, and terminal-growth assumptions. For a negative-FCF investment "
+                "cycle, this is more informative than compounding the current negative FCF base."
+            ),
+            confidence="Low",
+            required_inputs=["Price", "Shares", "Cash", "Debt", "Revenue"],
+            missing_inputs=[] if implied_margin is not None else ["Stable positive enterprise value and revenue"],
         ))
     if enterprise_value and fcf and fcf > 0:
         implied_growth = _solve_fcf_growth(enterprise_value, fcf, discount, terminal_growth, years)
@@ -311,23 +346,6 @@ def _non_financial_expectations(metrics, market_cap, assumptions, *, annual_flow
                 required_inputs=["Revenue", "Free cash flow"],
                 missing_inputs=[] if implied_revenue_growth is not None else ["Positive, comparable FCF margin"],
             ))
-            implied_margin = _solve_terminal_margin(
-                enterprise_value, revenue_value, revenue_growth, discount, terminal_growth, years,
-            )
-            rows.append(MarketImpliedExpectation(
-                metric=f"Implied terminal FCF margin at {revenue_growth * 100:.1f}% revenue growth",
-                status="Derived" if implied_margin is not None else "Insufficient data",
-                implied_value=implied_margin * 100 if implied_margin is not None else None,
-                unit="%",
-                formula=(
-                    f"Solve EV from {years}-year {revenue_growth * 100:.1f}% revenue growth "
-                    "and a constant terminal FCF margin"
-                ),
-                interpretation="Separates the margin assumption embedded in price from the growth assumption.",
-                confidence="Low",
-                required_inputs=["Revenue", "Enterprise value"],
-                missing_inputs=[] if implied_margin is not None else ["Stable positive enterprise value and revenue"],
-            ))
         terminal_fcf = fcf * (1 + (implied_growth or 0.0)) ** years
         terminal_multiple = enterprise_value / terminal_fcf if terminal_fcf > 0 else None
         rows.append(MarketImpliedExpectation(
@@ -341,12 +359,69 @@ def _non_financial_expectations(metrics, market_cap, assumptions, *, annual_flow
             required_inputs=["Enterprise value", f"Year-{years} implied FCF"],
             missing_inputs=[] if terminal_multiple else [f"Year-{years} implied FCF"],
         ))
+    elif enterprise_value and market_cap and fcf is not None and fcf <= 0:
+        rows.append(MarketImpliedExpectation(
+            metric=f"Conventional reverse DCF: implied {horizon_label} FCF growth",
+            status="Not meaningful from negative FCF base",
+            implied_value=None,
+            unit="% CAGR",
+            formula="Growth-rate solve requires a positive starting free-cash-flow base",
+            interpretation=(
+                "All normalized inputs are present, but compounding a negative FCF base does not identify a "
+                "credible path to positive cash generation. Use the implied normalized FCF margin and breakeven "
+                "funding requirements instead."
+            ),
+            confidence="High",
+            required_inputs=["Operating Cash Flow", "Capital Expenditure"],
+        ))
+        rows.append(MarketImpliedExpectation(
+            metric="FCF breakeven funding gap",
+            status="Derived",
+            implied_value=abs(fcf),
+            unit=_currency(operating_cash.unit) if operating_cash else "Unknown",
+            formula=f"abs({flow_basis_label} operating cash flow - capital expenditure)",
+            interpretation=(
+                "Additional operating cash flow, lower capex, or a combination of both is required to reach "
+                "FCF breakeven before financing flows."
+            ),
+            confidence="High" if fcf_verified else "Low",
+            required_inputs=["Operating Cash Flow", "Capital Expenditure"],
+        ))
+        if capex_value and operating_cash_value:
+            rows.extend([
+                MarketImpliedExpectation(
+                    metric="Capex reduction required for FCF breakeven at flat operating cash flow",
+                    status="Derived",
+                    implied_value=abs(fcf) / abs(capex_value) * 100,
+                    unit="%",
+                    formula="FCF deficit / capital expenditure",
+                    interpretation=(
+                        "Mechanical breakeven sensitivity only; it does not assume that cutting growth capex "
+                        "would preserve revenue growth or competitive position."
+                    ),
+                    confidence="Medium",
+                    required_inputs=["Operating Cash Flow", "Capital Expenditure"],
+                ),
+                MarketImpliedExpectation(
+                    metric="Operating cash-flow growth required for FCF breakeven at flat capex",
+                    status="Derived",
+                    implied_value=abs(fcf) / operating_cash_value * 100,
+                    unit="%",
+                    formula="FCF deficit / operating cash flow",
+                    interpretation=(
+                        "Mechanical breakeven sensitivity holding capex constant; the causal thesis must test "
+                        "whether backlog conversion and utilization can produce this cash-flow increase."
+                    ),
+                    confidence="Medium",
+                    required_inputs=["Operating Cash Flow", "Capital Expenditure"],
+                ),
+            ])
     else:
         missing = []
         if market_cap is None:
             missing.extend(["Shares", "Market capitalization"])
-        if not fcf or fcf <= 0:
-            missing.extend(["Positive Operating Cash Flow less Capital Expenditure"])
+        if fcf is None:
+            missing.extend(["Operating Cash Flow", "Capital Expenditure"])
         rows.append(_unavailable("Reverse DCF", ["Price", "Shares", "Cash", "Debt", "Operating Cash Flow", "Capital Expenditure"], missing))
     if revenue and operating_income and _same_currency(revenue, operating_income):
         margin = operating_income_value / revenue_value * 100 if revenue_value else None

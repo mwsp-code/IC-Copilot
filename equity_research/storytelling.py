@@ -226,6 +226,12 @@ def _market_expectation_story_cards(
         ))
     if market_implied:
         available = [row for row in market_implied.expectations if row.implied_value is not None]
+        available.sort(key=lambda row: (
+            0 if row.metric.startswith("Reverse DCF: implied") else
+            1 if row.metric == "Reverse DCF base FCF" else
+            2 if row.metric == "Current free-cash-flow yield" else
+            3
+        ))
         values = "; ".join(
             f"{row.metric}: {row.implied_value:,.2f} {row.unit} ({row.confidence})"
             for row in available[:3]
