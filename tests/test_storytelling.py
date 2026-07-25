@@ -13,16 +13,22 @@ def test_demo_gallery_cases_are_keyless_and_story_focused() -> None:
     cases = demo_cases()
     tickers = {case.ticker for case in cases}
 
-    assert {"AAPL", "NVDA", "BABA", "TSLA", "GS", "SPCX"}.issubset(tickers)
+    assert {"AAPL", "NVDA", "ORCL", "BABA", "TSLA", "GS", "SPCX"}.issubset(tickers)
     assert all(case.network_required is False for case in cases)
     assert all(case.lesson for case in cases)
     assert all(case.screenshot_focus for case in cases)
-    current_cases = [case for case in cases if case.ticker in {"AAPL", "NVDA", "BABA", "TSLA", "GS"}]
-    assert all(case.content_version == "Deep Initiation Premium 2026.07.16" for case in current_cases)
+    current_cases = [
+        case for case in cases
+        if case.ticker in {"AAPL", "NVDA", "ORCL", "BABA", "TSLA", "GS"}
+    ]
+    assert all(case.content_version.startswith("Deep Initiation Premium") for case in current_cases)
     assert all(case.research_profile.startswith("Deep Initiation") for case in current_cases)
     assert all(case.budget_mode == "Premium" for case in current_cases)
     assert all("Wisburg research lens" in case.enabled_layers or "Wisburg bilingual research lens" in case.enabled_layers for case in current_cases)
-    assert all(case.refreshed_at == "2026-07-16" for case in cases)
+    oracle = next(case for case in cases if case.ticker == "ORCL")
+    assert oracle.content_version == "Deep Initiation Premium 2026.07.24"
+    assert oracle.refreshed_at == "2026-07-24"
+    assert all(case.refreshed_at for case in cases)
 
 
 def test_nvda_demo_is_current_ticker_specific_and_has_peer_operating_evidence() -> None:
@@ -40,6 +46,42 @@ def test_nvda_demo_is_current_ticker_specific_and_has_peer_operating_evidence() 
     readthroughs = [row for rows in result.peer_metric_readthrough.values() for row in rows]
     assert {row.peer_ticker for row in readthroughs} == {"TSM", "AMD"}
     assert all(row.status == "available" and row.observations for row in readthroughs)
+
+
+def test_orcl_demo_uses_live_capture_semantics_without_vendor_payloads() -> None:
+    result = demo_result("ORCL")
+    top = result.ideas[0]
+
+    assert result.demo_case is not None
+    assert result.demo_case.demo_id == "orcl-cloud-capacity-cash-conversion"
+    assert result.identity.name == "Oracle Corporation"
+    assert result.entity_resolution.cik == "0001341439"
+    metrics = {metric.name: metric for metric in result.metrics}
+    assert metrics["Remaining Performance Obligations"].value == 638_000_000_000
+    assert metrics["Cloud Revenue Mix"].value == 51.0
+    assert metrics["Capital Expenditure"].value == 55_663_000_000
+    assert metrics["Free Cash Flow"].value == -23_686_000_000
+    assert metrics["Long-term Debt"].value == 122_342_000_000
+    assert result.consensus.target is not None
+    assert result.consensus.target.target_kind == "aggregate"
+    assert result.consensus.target.target_aggregate == 248.15
+    assert result.consensus.target.target_mean is None
+    assert result.consensus.revisions == []
+    assert any("pre-event consensus snapshot" in gap for gap in result.consensus.data_gaps)
+    assert top.direction == "Long"
+    assert top.stage in {"Research-Ready", "High-Conviction"}
+    assert result.thesis_brief.source == "llm"
+    assert "contracted demand" in result.thesis_brief.variant_perception.lower()
+    assert result.peer_universe.status == "Configured"
+    peer_rows = [row for rows in result.peer_metric_readthrough.values() for row in rows]
+    assert {row.peer_ticker for row in peer_rows} == {"MSFT", "AMZN", "SAP", "CRM", "IBM"}
+    assert all(row.status == "available" and row.observations for row in peer_rows)
+    status_by_provider = {
+        item.provider: item.entitlement_status
+        for item in result.consensus.provider_statuses
+    }
+    assert status_by_provider["FMP"] == "entitlement_error"
+    assert result.demo_case.network_required is False
 
 
 def test_aapl_demo_contains_one_convincing_citation_bound_showcase_thesis() -> None:
@@ -83,7 +125,7 @@ def test_demo_stage_remains_authoritative_after_work_order_closure() -> None:
 
 
 def test_latest_showcase_demos_use_deep_premium_macro_and_wisburg_fixtures() -> None:
-    for ticker in ["NVDA", "BABA", "AAPL", "TSLA", "GS"]:
+    for ticker in ["NVDA", "ORCL", "BABA", "AAPL", "TSLA", "GS"]:
         result = demo_result(ticker)
 
         assert result.research_profile.profile_id == "deep_initiation", ticker
@@ -109,6 +151,7 @@ def test_latest_showcase_demos_use_deep_premium_macro_and_wisburg_fixtures() -> 
 def test_named_demos_do_not_reuse_aapl_financial_payload() -> None:
     expected_markers = {
         "BABA": "Share Repurchases",
+        "ORCL": "Remaining Performance Obligations",
         "TSLA": "Deliveries",
         "GS": "Investment Banking Fees",
     }

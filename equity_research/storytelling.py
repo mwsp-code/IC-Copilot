@@ -57,6 +57,28 @@ DEMO_CASES: tuple[DemoCase, ...] = (
         enabled_layers=("Official macro", "Wisburg research lens", "Premium consensus fixture", "Guardrailed LLM"),
     ),
     DemoCase(
+        demo_id="orcl-cloud-capacity-cash-conversion",
+        ticker="ORCL",
+        title="ORCL: Cloud capacity versus cash conversion",
+        lesson=(
+            "Test whether accelerating cloud mix and contracted backlog justify the data-center buildout, "
+            "negative near-term free cash flow, new financing, and dilution risk."
+        ),
+        screenshot_focus="Cloud/RPO causal bridge, financing-aware credit lens, and global software peer read-through.",
+        content_version="Deep Initiation Premium 2026.07.24",
+        refreshed_at="2026-07-24",
+        research_profile="Deep Initiation (20 quarters / 5 annual reports / 20 calls)",
+        budget_mode="Premium",
+        enabled_layers=(
+            "Alpha Vantage + Finnhub consensus context",
+            "FMP entitlement-aware fallbacks",
+            "Tiingo + EODHD market data",
+            "Official macro",
+            "Wisburg research lens",
+            "Guardrailed DeepSeek synthesis",
+        ),
+    ),
+    DemoCase(
         demo_id="baba-adr-fpi-complexity",
         ticker="BABA",
         title="BABA: ADR/FPI complexity",

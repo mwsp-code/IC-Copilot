@@ -10,6 +10,15 @@ python -m pip install -e ".[dev]"
 streamlit run app.py
 ```
 
+On Windows, the checked launcher runs a syntax preflight before starting Streamlit:
+
+```powershell
+.\scripts\run_streamlit.ps1
+```
+
+Terminal commands belong in PowerShell or a shell, never inside `app.py` or `server.py`.
+The launcher and CI compile both entrypoints before startup or test collection.
+
 The repository also includes a Dockerfile and devcontainer. Neither image contains API keys;
 configure credentials at runtime through environment variables or the local OS keychain.
 

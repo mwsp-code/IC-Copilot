@@ -30,7 +30,7 @@ The app is built for equity analysts, credit analysts, portfolio managers, and A
 1. Watch the [narrated AAPL walkthrough](docs/assets/demo/ic-copilot-aapl-demo.mp4), or open the [hosted app](https://ic-copilot.streamlit.app/). The AAPL Deep Initiation demo is loaded automatically.
 2. Read the one-screen IC Story: verdict, what changed, causal bridge, counter-thesis, valuation, and next action.
 3. Open an evidence drawer to inspect the exact citation and formula trace.
-4. Switch to NVDA, BABA, TSLA, or GS to see a different research playbook.
+4. Switch to NVDA, ORCL, BABA, TSLA, or GS to see a different research playbook.
 
 The frozen demos require no API keys, make no paid provider calls, and contain no licensed full-text payloads.
 
@@ -57,6 +57,7 @@ Every connection is scored separately. A weak link identifies the exact missing 
 |---|---|
 | **AAPL** | Source-backed cash-flow and margin thesis with model-derived scenarios |
 | **NVDA** | Neutral-first capex and goodwill investigation with semiconductor peer checks |
+| **ORCL** | Cloud/RPO growth versus data-center capex, financing, dilution, and cash conversion |
 | **BABA** | ADR/FPI normalization, China segments, bilingual external context, and price-only capture |
 | **TSLA** | Driver-specific peer metric read-through across automakers |
 | **GS** | Bank/broker economics, equity lens, and credit lens |
@@ -71,6 +72,12 @@ git clone https://github.com/mwsp-code/IC-Copilot.git
 cd IC-Copilot
 python -m pip install -r requirements.txt
 streamlit run app.py
+```
+
+Windows users can run the preflighted launcher instead:
+
+```powershell
+.\scripts\run_streamlit.ps1
 ```
 
 ### No-dependency local UI
@@ -179,7 +186,7 @@ The app is built for equity analysts, credit analysts, portfolio managers, and A
 1. Watch the [narrated AAPL walkthrough](docs/assets/demo/ic-copilot-aapl-demo.mp4), or open the [hosted app](https://ic-copilot.streamlit.app/). The AAPL Deep Initiation demo is loaded automatically.
 2. Read the one-screen IC Story: verdict, what changed, causal bridge, counter-thesis, valuation, and next action.
 3. Open an evidence drawer to inspect the exact citation and formula trace.
-4. Switch to NVDA, BABA, TSLA, or GS to see a different research playbook.
+4. Switch to NVDA, ORCL, BABA, TSLA, or GS to see a different research playbook.
 
 The frozen demos require no API keys, make no paid provider calls, and contain no licensed full-text payloads.
 
@@ -206,6 +213,7 @@ Every connection is scored separately. A weak link identifies the exact missing 
 |---|---|
 | **AAPL** | Source-backed cash-flow and margin thesis with model-derived scenarios |
 | **NVDA** | Neutral-first capex and goodwill investigation with semiconductor peer checks |
+| **ORCL** | Cloud/RPO growth versus data-center capex, financing, dilution, and cash conversion |
 | **BABA** | ADR/FPI normalization, China segments, bilingual external context, and price-only capture |
 | **TSLA** | Driver-specific peer metric read-through across automakers |
 | **GS** | Bank/broker economics, equity lens, and credit lens |

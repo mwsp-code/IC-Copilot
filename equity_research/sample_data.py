@@ -199,6 +199,77 @@ class _DemoLlmProvider:
                     },
                 ],
             }
+        if ticker == "ORCL":
+            support_id, support = _demo_citation_matching(
+                citations, "cloud revenue", "remaining performance", "67.357",
+            )
+            counter_id, counter = _demo_citation_matching(
+                citations, "capital expenditure", "free cash flow", "debt",
+            )
+            support_claim = str(
+                support.get("snippet") or support.get("original_excerpt") or quoted_claim
+            ).strip()
+            counter_claim = str(
+                counter.get("snippet") or counter.get("original_excerpt") or ""
+            ).strip()
+            evidence_chain = [{"claim": support_claim, "citation_ids": [support_id]}]
+            if counter_claim and counter_id != support_id:
+                evidence_chain.append({"claim": counter_claim, "citation_ids": [counter_id]})
+            return {
+                "verdict": "Convincing source-backed debate for IC review within the frozen demo.",
+                "thesis": (
+                    "Oracle's FY2026 evidence supports a research-ready Long investigation: revenue grew 17.3%, "
+                    "cloud mix reached 51%, and contracted backlog expanded sharply. The investable mechanism is "
+                    "backlog conversion into recurring cloud revenue and operating profit, not the backlog headline alone."
+                ),
+                "variant_perception": (
+                    "The differentiated question is whether Oracle can utilize its new data-center capacity quickly "
+                    "enough to convert contracted demand into free cash flow before financing cost and dilution consume "
+                    "the operating upside."
+                ),
+                "evidence_chain": evidence_chain,
+                "strongest_counter_thesis": (
+                    "Capital expenditure rose to 55.7B USD and exceeded operating cash flow, leaving free cash flow "
+                    "negative 23.7B USD while debt, interest expense, and share count increased."
+                ),
+                "key_uncertainties": [
+                    "The timing and margin of revenue recognition from remaining performance obligations.",
+                    "Data-center utilization and incremental returns on the accelerated capital program.",
+                    "The refinancing, preferred-conversion, and common-share dilution path.",
+                ],
+                "missing_evidence": [
+                    "No eligible pre-event consensus snapshot exists; market capture is price-only.",
+                    "Refresh utilization, cloud growth, capex guidance, and financing terms before acting.",
+                ],
+                "what_would_falsify": [
+                    "Cloud revenue growth or RPO conversion slows while capex remains above operating cash flow.",
+                    "Incremental operating profit fails to cover higher depreciation and financing expense.",
+                ],
+                "action_plan": [
+                    {
+                        "criterion": "Backlog conversion",
+                        "source_field": "metrics.cloud_revenue_mix",
+                        "metric": "cloud_revenue_mix_pct",
+                        "operator": ">=",
+                        "threshold": 51.0,
+                        "deadline": "2026-09-30",
+                        "confirm_trigger": "Cloud mix remains at or above 51% with double-digit revenue growth.",
+                        "break_trigger": "Cloud mix or revenue growth decelerates before capacity utilization improves.",
+                        "cadence": "Quarterly",
+                    },
+                    {
+                        "criterion": "Cash conversion",
+                        "source_field": "metrics.free_cash_flow",
+                        "metric": "free_cash_flow",
+                        "operator": ">",
+                        "threshold": -23_686_000_000,
+                        "deadline": "2027-05-31",
+                        "confirm_trigger": "Free cash flow improves as new data-center capacity begins producing revenue.",
+                        "break_trigger": "Free cash flow deteriorates while debt and interest expense continue rising.",
+                        "cadence": "Quarterly",
+                    },
+                ],
+            }
         return {
             "verdict": "Promising but incomplete",
             "thesis": (
@@ -262,6 +333,7 @@ _DEMO_COMPANIES = {
     "GS": ("0000886982", "The Goldman Sachs Group, Inc.", "Active US reporting issuer"),
     "JPM": ("0000019617", "JPMorgan Chase & Co.", "Active US reporting issuer"),
     "NVDA": ("0001045810", "NVIDIA Corporation", "Active US reporting issuer"),
+    "ORCL": ("0001341439", "Oracle Corporation", "Active US reporting issuer"),
     "SPCX": ("", "Space Exploration Technologies Corp / SPX ticker ambiguity demo", "Entity ambiguity demo"),
 }
 
@@ -341,6 +413,145 @@ _DEMO_PROFILES: dict[str, dict[str, object]] = {
         "price": (200.0, 203.0),
         "targets": (236.0, 232.0, 285.0, 185.0, 34),
         "management": "Services mix, installed-base monetization, and disciplined capital return remain the principal earnings and valuation bridges.",
+    },
+    "ORCL": {
+        "exchange": "NYSE",
+        "currency": "USD",
+        "period_end": "2026-05-31",
+        "filed": "2026-06-22",
+        "fiscal_period": "FY",
+        "current_form": "10-K",
+        "previous_form": "10-K",
+        "previous_period_end": "2025-05-31",
+        "previous_filing_date": "2025-06-18",
+        "primary_source_name": "Oracle FY2026 Form 10-K",
+        "primary_source_url": (
+            "https://www.sec.gov/Archives/edgar/data/1341439/"
+            "000119312526277521/orcl-20260531.htm"
+        ),
+        "metrics": [
+            ("Revenue", 67_357_000_000, 57_399_000_000, 17.3, "USD"),
+            ("Operating Income", 20_606_000_000, 17_678_000_000, 16.6, "USD"),
+            ("Net Income", 17_087_000_000, 12_443_000_000, 37.3, "USD"),
+            ("Operating Cash Flow", 31_977_000_000, 20_821_000_000, 53.6, "USD"),
+            ("Capital Expenditure", 55_663_000_000, 21_215_000_000, 162.4, "USD"),
+            ("Free Cash Flow", -23_686_000_000, -394_000_000, -5_911.7, "USD"),
+            ("Cash", 31_289_000_000, 10_786_000_000, 190.1, "USD"),
+            ("Current Debt", 7_199_000_000, 7_271_000_000, -1.0, "USD"),
+            ("Long-term Debt", 122_342_000_000, 85_297_000_000, 43.4, "USD"),
+            ("Interest Expense", 4_599_000_000, 3_578_000_000, 28.5, "USD"),
+            ("Shares", 2_880_471_000, 2_808_833_000, 2.6, "shares"),
+            ("Share Repurchases", 95_000_000, 600_000_000, -84.2, "USD"),
+            ("Dividends Paid", 5_787_000_000, 4_743_000_000, 22.0, "USD"),
+            ("R&D Expense", 10_272_000_000, 9_860_000_000, 4.2, "USD"),
+            ("Sales and Marketing Expense", 8_331_000_000, 8_651_000_000, -3.7, "USD"),
+            ("Remaining Performance Obligations", 638_000_000_000, 138_000_000_000, 362.3, "USD"),
+            ("Cloud Revenue Mix", 51.0, 43.0, 18.6, "%"),
+        ],
+        "events": [
+            (
+                "financial_kpi",
+                "Cloud mix and contracted backlog accelerated",
+                (
+                    "Revenue rose 17.3%, cloud mix increased to 51% from 43%, and remaining "
+                    "performance obligations increased to 638B USD from 138B USD. The constructive "
+                    "case depends on converting that backlog into revenue and cash returns."
+                ),
+                "positive",
+                5,
+                "Cloud revenue and remaining performance obligations",
+                "Cloud revenues were 51% of revenue; remaining performance obligations were 638B USD.",
+                {
+                    "metric_name": "Revenue",
+                    "current_value": 67_357_000_000,
+                    "previous_value": 57_399_000_000,
+                    "yoy_change_pct": 17.3,
+                    "unit": "USD",
+                    "current_period": "2026-05-31",
+                    "previous_period": "2025-05-31",
+                    "driver_family": "revenue_growth",
+                    "direction_rationale": (
+                        "Revenue, cloud mix, and contracted backlog all increased; the Long mechanism "
+                        "is future backlog conversion, not backlog size by itself."
+                    ),
+                    "counter_thesis": (
+                        "Data-center capex exceeded operating cash flow, free cash flow turned deeply "
+                        "negative, debt increased, and share count rose; backlog may not earn an adequate return."
+                    ),
+                    "counter_excerpt": (
+                        "Capex was 55.7B USD versus 32.0B USD of operating cash flow; "
+                        "total debt was 129.5B USD."
+                    ),
+                    "counter_section": "Liquidity, capital expenditures, and debt",
+                },
+            ),
+            (
+                "financial_kpi",
+                "Data-center capex increased +162.4%",
+                (
+                    "Capex rose to 55.7B USD primarily for data-center expansion. The signal remains "
+                    "neutral until utilization, backlog conversion, incremental margins, and funding costs are tested."
+                ),
+                "neutral",
+                5,
+                "Capital expenditures and data-center capacity",
+                "Capital expenditures rose from 21.2B USD to 55.7B USD for data-center expansion.",
+                {
+                    "metric_name": "Capital Expenditure",
+                    "current_value": 55_663_000_000,
+                    "previous_value": 21_215_000_000,
+                    "yoy_change_pct": 162.4,
+                    "unit": "USD",
+                    "current_period": "2026-05-31",
+                    "previous_period": "2025-05-31",
+                    "driver_family": "investment_cycle",
+                    "direction_rationale": (
+                        "Capex is ambiguous: it creates cloud capacity but depresses near-term free cash flow."
+                    ),
+                },
+            ),
+            (
+                "debt_liquidity",
+                "Expansion relied on external financing",
+                (
+                    "Operating cash flow improved, but capital spending exceeded it. Senior-note and "
+                    "mandatory-convertible-preferred proceeds helped fund the buildout and cash balance."
+                ),
+                "negative",
+                4,
+                "Liquidity and capital resources",
+                "Operating cash flow was 32.0B USD, capex was 55.7B USD, and free cash flow was negative 23.7B USD.",
+                {
+                    "metric_name": "Free Cash Flow",
+                    "current_value": -23_686_000_000,
+                    "previous_value": -394_000_000,
+                    "unit": "USD",
+                    "current_period": "2026-05-31",
+                    "previous_period": "2025-05-31",
+                    "driver_family": "cash_generation",
+                    "direction_rationale": (
+                        "Negative free cash flow, higher debt, financing cost, and a larger share base "
+                        "raise the hurdle for the cloud investment cycle."
+                    ),
+                },
+            ),
+        ],
+        "price": (174.4498, 114.99),
+        "price_source": "Tiingo EOD sanitized observation",
+        "targets": (248.15, None, None, None, 43),
+        "target_kind": "aggregate",
+        "target_source": "Alpha Vantage sanitized observation",
+        "recommendations": (15, 25, 8, 1, 0, "Buy"),
+        "recommendation_source": "Finnhub sanitized observation",
+        "eps_estimate": ("2027-05-31", 6.47, 6.67, 6.28, 17),
+        "estimate_source": "Nasdaq sanitized public observation (unofficial)",
+        "estimate_official": False,
+        "consensus_history": False,
+        "management": (
+            "Cloud infrastructure demand and contracted backlog accelerated, while data-center "
+            "utilization, capex funding, interest burden, dilution, and free-cash-flow conversion "
+            "remain the decisive equity and credit tests."
+        ),
     },
     "NVDA": {
         "exchange": "NASDAQ",
@@ -531,6 +742,22 @@ _DEMO_RESEARCH_CONTEXT: dict[str, dict[str, str]] = {
         "bull": "Outside research emphasizes accelerated-computing demand, platform breadth, and supply conversion.",
         "bear": "Outside research focuses on customer concentration, capex digestion, export controls, and acquisition integration risk.",
         "driver": "AI infrastructure demand and investment-cycle durability",
+    },
+    "ORCL": {
+        "macro_title": "Rates, power availability, and enterprise cloud-spend context",
+        "macro_summary": (
+            "Official rates and investment series frame Oracle's financing cost, data-center buildout, "
+            "and the durability of enterprise and AI infrastructure demand."
+        ),
+        "bull": (
+            "Outside research emphasizes OCI demand, cloud mix, contracted backlog, database distribution, "
+            "and the revenue capacity created by the data-center buildout."
+        ),
+        "bear": (
+            "Outside research focuses on capex intensity, negative free cash flow, financing cost, "
+            "execution timing, customer concentration, and dilution."
+        ),
+        "driver": "Cloud backlog conversion, capacity utilization, and financing-adjusted cash returns",
     },
     "BABA": {
         "macro_title": "China consumption, policy, FX, and global-liquidity context",
@@ -916,6 +1143,35 @@ _DEMO_PEER_METRICS: dict[str, tuple[str, list[tuple[str, list[tuple[str, float, 
         ("TSM", [("Revenue", 839_000_000_000, 673_500_000_000, 24.6, "TWD"), ("Gross Margin", 58.8, 53.1, 10.7, "%"), ("Capital Expenditure", 317_000_000_000, 252_000_000_000, 25.8, "TWD")]),
         ("AMD", [("Revenue", 9_200_000_000, 6_800_000_000, 35.3, "USD"), ("Gross Profit", 4_900_000_000, 3_600_000_000, 36.1, "USD"), ("Inventory", 7_100_000_000, 5_000_000_000, 42.0, "USD")]),
     ]),
+    "ORCL": ("cloud_investment_cycle", [
+        ("MSFT", [
+            ("Revenue", 82_900_000_000, 70_100_000_000, 18.3, "USD"),
+            ("Operating Income", 38_400_000_000, 32_000_000_000, 20.0, "USD"),
+            ("Capital Expenditure", 30_900_000_000, 16_800_000_000, 84.4, "USD"),
+            ("Operating Cash Flow", 46_700_000_000, 37_100_000_000, 25.9, "USD"),
+        ]),
+        ("AMZN", [
+            ("Revenue", 181_500_000_000, 155_700_000_000, 16.6, "USD"),
+            ("Operating Income", 23_900_000_000, 18_400_000_000, 29.6, "USD"),
+            ("Capital Expenditure", 44_200_000_000, 25_000_000_000, 76.7, "USD"),
+            ("Operating Cash Flow", 26_000_000_000, 17_000_000_000, 53.0, "USD"),
+        ]),
+        ("SAP", [
+            ("Revenue", 36_800_000_000, 34_200_000_000, 7.7, "EUR"),
+            ("Operating Income", 9_600_000_000, 4_700_000_000, 106.2, "EUR"),
+            ("Operating Cash Flow", 9_200_000_000, 5_200_000_000, 75.4, "EUR"),
+        ]),
+        ("CRM", [
+            ("Revenue", 11_100_000_000, 9_800_000_000, 13.3, "USD"),
+            ("Operating Income", 2_300_000_000, 1_900_000_000, 20.9, "USD"),
+            ("Capital Expenditure", 145_000_000, 179_000_000, -19.0, "USD"),
+        ]),
+        ("IBM", [
+            ("Revenue", 17_200_000_000, 17_000_000_000, 1.1, "USD"),
+            ("Gross Profit", 9_900_000_000, 9_970_000_000, -0.7, "USD"),
+            ("Capital Expenditure", 461_000_000, 454_000_000, 1.5, "USD"),
+        ]),
+    ]),
     "BABA": ("china_consumer_cloud", [
         ("JD", [("Revenue", 301_100_000_000, 270_300_000_000, 11.4, "CNY"), ("Operating Income", 12_800_000_000, 10_500_000_000, 21.9, "CNY")]),
         ("PDD", [("Revenue", 112_600_000_000, 86_800_000_000, 29.7, "CNY"), ("Operating Income", 31_900_000_000, 25_400_000_000, 25.6, "CNY")]),
@@ -1045,9 +1301,9 @@ def _attach_demo_counter_evidence(ticker: str, ideas, evidence) -> None:
             statement=statement,
             source_tier=citation.source_tier or 1,
             source_type=citation.source,
-            materiality=2,
+            materiality=4 if ticker == "ORCL" else 2,
             citation=citation,
-            unresolved=False,
+            unresolved=ticker == "ORCL",
         ))
         claim.contradicting_evidence_ids.append(evidence_id)
         claim.strongest_counter = statement
@@ -1060,7 +1316,8 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
     profile = _demo_profile(ticker)
     is_baba = ticker == "BABA"
     demo_case = demo_case_for(ticker)
-    observed_at = "2026-07-16T00:00:00+00:00"
+    demo_as_of = demo_case.refreshed_at if demo_case else "2026-07-16"
+    observed_at = f"{demo_as_of}T00:00:00+00:00"
     cik, company_name, listing_status = _DEMO_COMPANIES.get(
         ticker,
         ("0000320193", f"{ticker} Demo Company", "Demo US-listed reporting issuer"),
@@ -1087,7 +1344,11 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
             filing_date=filed,
             report_date=period_end,
             primary_doc=f"{primary_prefix}-2026-current.htm",
-            description="Annual report" if is_baba else "Quarterly report",
+            description=(
+                "Annual report"
+                if annual_form in {"10-K", "20-F", "40-F"}
+                else "Quarterly report"
+            ),
             url=filing_url,
         ),
         FilingRecord(
@@ -1132,83 +1393,219 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         start_price=start_price,
         latest_price=latest_price,
         reaction_pct=round((latest_price / start_price - 1.0) * 100.0, 2),
-        source="Demo price series",
+        source=str(profile.get("price_source") or "Demo price series"),
     )
-    target_mean, target_median, target_high, target_low, analyst_count = profile["targets"]
+    target_value, target_median, target_high, target_low, analyst_count = profile["targets"]
+    target_kind = str(profile.get("target_kind") or "mean")
+    target_mean = target_value if target_kind == "mean" else None
+    target_aggregate = target_value if target_kind == "aggregate" else None
+    target_source = str(
+        profile.get("target_source") or "Sanitized Premium consensus fixture"
+    )
+    implied_upside = (
+        round((target_value / latest_price - 1.0) * 100.0, 1)
+        if target_value not in (None, 0) and latest_price
+        else None
+    )
+    dispersion = (
+        round((target_high - target_low) / target_value * 100.0, 1)
+        if target_high is not None
+        and target_low is not None
+        and target_value not in (None, 0)
+        else None
+    )
     target = TargetConsensus(
         ticker=ticker,
-        as_of="2026-07-16",
+        as_of=demo_as_of,
+        target_aggregate=target_aggregate,
         target_mean=target_mean,
         target_median=target_median,
         target_high=target_high,
         target_low=target_low,
         analyst_count=analyst_count,
         current_price=latest_price,
-        implied_upside_pct=round((target_mean / latest_price - 1.0) * 100.0, 1),
-        dispersion_pct=round((target_high - target_low) / target_mean * 100.0, 1),
-        provider_timestamp="2026-07-16",
+        implied_upside_pct=implied_upside,
+        dispersion_pct=dispersion,
+        provider_timestamp=demo_as_of,
         freshness_days=0,
-        source="Sanitized Premium consensus fixture",
+        source=target_source,
         observed_at=observed_at,
-        source_as_of="2026-07-16",
+        source_as_of=demo_as_of,
         provenance="Frozen no-network demo observation; not a live vendor payload.",
+        target_label="Aggregate Target" if target_kind == "aggregate" else "Mean target",
+        target_kind=target_kind,
     )
-    consensus = ConsensusPackage(
-        ticker=ticker,
-        provider="Sanitized Premium consensus fixture",
-        status="Available",
-        target=target,
-        recommendations=RecommendationConsensus(
-            ticker=ticker, as_of="2026-07-16", strong_buy=12, buy=14,
-            hold=7, sell=1, strong_sell=0, consensus_label="Buy",
-            source="Sanitized Premium consensus fixture",
+    recommendation_values = profile.get("recommendations") or (12, 14, 7, 1, 0, "Buy")
+    strong_buy, buy, hold, sell, strong_sell, recommendation_label = recommendation_values
+    recommendation_source = str(
+        profile.get("recommendation_source") or "Sanitized Premium consensus fixture"
+    )
+    eps_period, eps_average, eps_high, eps_low, eps_analysts = profile.get(
+        "eps_estimate",
+        ("2027-03-31", 8.4, 9.2, 7.5, 28),
+    )
+    estimate_source = str(
+        profile.get("estimate_source") or "Sanitized Premium consensus fixture"
+    )
+    estimate_official = bool(profile.get("estimate_official", True))
+    estimates = [
+        EstimatePoint(
+            ticker=ticker,
+            as_of=demo_as_of,
+            metric="EPS",
+            period_end=str(eps_period),
+            period_type="annual",
+            average=float(eps_average),
+            high=float(eps_high),
+            low=float(eps_low),
+            analyst_count=int(eps_analysts),
+            currency="USD",
+            source=estimate_source,
             observed_at=observed_at,
-            source_as_of="2026-07-16",
+            source_as_of=demo_as_of,
+            provenance="Frozen normalized observation; not a live vendor payload.",
+            official=estimate_official,
+            period_precision="month" if not estimate_official else "day",
+        )
+    ]
+    if estimate_official:
+        estimates.append(EstimatePoint(
+            ticker=ticker,
+            as_of=demo_as_of,
+            metric="Revenue",
+            period_end="2027-03-31",
+            period_type="annual",
+            average=next(metric.value for metric in metrics if metric.name == "Revenue")
+            * (1.1 if str(profile["fiscal_period"]) == "FY" else 4.4),
+            high=next(metric.value for metric in metrics if metric.name == "Revenue")
+            * (1.2 if str(profile["fiscal_period"]) == "FY" else 4.8),
+            low=next(metric.value for metric in metrics if metric.name == "Revenue")
+            * (1.0 if str(profile["fiscal_period"]) == "FY" else 4.0),
+            analyst_count=25,
+            currency=currency,
+            source=estimate_source,
+            observed_at=observed_at,
+            source_as_of=demo_as_of,
             provenance="Frozen point-in-time demo observation.",
-        ),
-        estimates=[
-            EstimatePoint(
-                ticker, "2026-07-16", "EPS", "2027-03-31", "annual",
-                8.4, 9.2, 7.5, 28, "USD", "Sanitized Premium consensus fixture",
-                observed_at, "2026-07-16", provenance="Frozen point-in-time demo observation.",
-            ),
-            EstimatePoint(
-                ticker, "2026-07-16", "Revenue", "2027-03-31", "annual",
-                next(metric.value for metric in metrics if metric.name == "Revenue")
-                * (1.1 if str(profile["fiscal_period"]) == "FY" else 4.4),
-                next(metric.value for metric in metrics if metric.name == "Revenue")
-                * (1.2 if str(profile["fiscal_period"]) == "FY" else 4.8),
-                next(metric.value for metric in metrics if metric.name == "Revenue")
-                * (1.0 if str(profile["fiscal_period"]) == "FY" else 4.0),
-                25, currency, "Sanitized Premium consensus fixture",
-                observed_at, "2026-07-16", provenance="Frozen point-in-time demo observation.",
-            ),
-        ],
-        surprises=[EarningsSurprise(
+        ))
+    has_consensus_history = bool(profile.get("consensus_history", True))
+    surprises = (
+        [EarningsSurprise(
             ticker, period_end, 2.05, 1.92, 6.8,
             "Sanitized Premium consensus fixture", observed_at, filed,
             "Frozen pre-event estimate paired with the demo actual.",
-        )],
-        revisions=[
-            RevisionWindow("EPS", 7, "2026-07-09", "2026-07-16", 8.25, 8.40, 1.82, "Sanitized Premium consensus fixture"),
-            RevisionWindow("EPS", 30, "2026-06-16", "2026-07-16", 8.05, 8.40, 4.35, "Sanitized Premium consensus fixture"),
-            RevisionWindow("Revenue", 90, "2026-04-17", "2026-07-16", 100.0, 103.0, 3.0, "Sanitized Premium consensus fixture"),
-        ],
-        provider_statuses=[ProviderStatus(
-            "Sanitized Premium consensus fixture",
-            "Available",
-            True,
-            "fixture_available",
-            observed_at,
-            "Frozen point-in-time example; live provider refresh is required before use.",
-        )],
+        )]
+        if has_consensus_history
+        else []
+    )
+    revisions = (
+        [
+            RevisionWindow(
+                "EPS", 7, "2026-07-09", "2026-07-16",
+                8.25, 8.40, 1.82, "Sanitized Premium consensus fixture",
+            ),
+            RevisionWindow(
+                "EPS", 30, "2026-06-16", "2026-07-16",
+                8.05, 8.40, 4.35, "Sanitized Premium consensus fixture",
+            ),
+            RevisionWindow(
+                "Revenue", 90, "2026-04-17", "2026-07-16",
+                100.0, 103.0, 3.0, "Sanitized Premium consensus fixture",
+            ),
+        ]
+        if has_consensus_history
+        else []
+    )
+    provider_statuses = [ProviderStatus(
+        "Sanitized Premium consensus fixture",
+        "Available",
+        True,
+        "fixture_available",
+        observed_at,
+        "Frozen normalized example; live provider refresh is required before use.",
+    )]
+    consensus_gaps: list[str] = []
+    if ticker == "ORCL":
+        provider_statuses = [
+            ProviderStatus(
+                "Alpha Vantage",
+                "Available (sanitized fixture)",
+                True,
+                "available",
+                observed_at,
+                "Aggregate target only; it is not relabelled as mean or median.",
+            ),
+            ProviderStatus(
+                "Finnhub",
+                "Available (sanitized fixture)",
+                True,
+                "available",
+                observed_at,
+                "Recommendation trend counts are retained separately from targets.",
+            ),
+            ProviderStatus(
+                "FMP",
+                "Partial - entitlement limited",
+                True,
+                "entitlement_error",
+                observed_at,
+                "Configured key did not entitle target, estimate, recommendation, or surprise endpoints.",
+            ),
+            ProviderStatus(
+                "Nasdaq (unofficial)",
+                "Partial - unofficial only",
+                False,
+                "available",
+                observed_at,
+                "Forward EPS is valuation context only and cannot prove historical market capture.",
+            ),
+        ]
+        consensus_gaps = [
+            "No eligible pre-event consensus snapshot exists for the 2026-06-22 filing event.",
+            "FMP was configured but the captured plan did not entitle the required consensus endpoints.",
+            "Current unofficial estimates cannot establish whether expectations changed around the event.",
+        ]
+    consensus = ConsensusPackage(
+        ticker=ticker,
+        provider=(
+            "Sanitized multi-provider Premium capture"
+            if ticker == "ORCL"
+            else "Sanitized Premium consensus fixture"
+        ),
+        status="Available",
+        target=target,
+        recommendations=RecommendationConsensus(
+            ticker=ticker,
+            as_of=demo_as_of,
+            strong_buy=int(strong_buy),
+            buy=int(buy),
+            hold=int(hold),
+            sell=int(sell),
+            strong_sell=int(strong_sell),
+            consensus_label=str(recommendation_label),
+            source=recommendation_source,
+            observed_at=observed_at,
+            source_as_of=demo_as_of,
+            provenance="Frozen normalized observation; not a live vendor payload.",
+        ),
+        estimates=estimates,
+        surprises=surprises,
+        revisions=revisions,
+        data_gaps=consensus_gaps,
+        provider_statuses=provider_statuses,
         provider_targets=[target],
     )
     expectations = ExpectationsBridge(
-        status="Available",
-        headline="EPS beat expectations by 6.8%.",
+        status="Available" if has_consensus_history else "Partial",
+        headline=(
+            "EPS beat expectations by 6.8%."
+            if has_consensus_history
+            else "Current expectations context is available, but no eligible pre-event snapshot exists for this filing."
+        ),
         point_in_time_note=(
             "Sanitized demo uses a frozen point-in-time pre-event estimate and never substitutes a current value for history."
+            if has_consensus_history
+            else "The 2026-07-24 observation is later than the 2026-06-22 filing and is not used to infer the event-date consensus response."
         ),
     )
     valuation = build_valuation(identity, metrics, consensus, price.latest_price)

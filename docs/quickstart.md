@@ -10,12 +10,13 @@ Open the printed local URL and use **Load demo** before entering API keys. The d
 
 - `AAPL`: source-backed thesis.
 - `NVDA`: neutral-first capex, goodwill, and semiconductor peer investigation.
+- `ORCL`: cloud backlog and AI capacity versus capex, financing, and free-cash-flow conversion.
 - `BABA`: ADR/FPI complexity.
 - `TSLA`: peer metric read-through.
 - `GS`: financial-sector playbook.
 - `SPCX`: entity-resolution warning.
 
-The five analyst showcases (`AAPL`, `NVDA`, `BABA`, `TSLA`, and `GS`) are versioned Deep Initiation
+The six analyst showcases (`AAPL`, `NVDA`, `ORCL`, `BABA`, `TSLA`, and `GS`) are versioned Deep Initiation
 fixtures with 20 quarters, five annual reports, 20 calls, Premium-mode provider slots, official macro
 context, sanitized Wisburg debate maps, market-implied expectations, and citation-guardrailed LLM
 research metadata. They do not call live providers or retain licensed full report text. Refresh live
