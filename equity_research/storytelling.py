@@ -7,12 +7,15 @@ from .models import (
     ClaimValidationResult,
     CompanyEconomics,
     CreditLens,
+    DecisionDelta,
     DemoCase,
     EntityResolution,
     EvidenceDrawer,
     EvidenceWorkOrder,
     FinancialCoverage,
     FormulaTrace,
+    CatalystClock,
+    ICDecisionBrief,
     ICOnePager,
     JudgeResolutionItem,
     MarketCaptureReadiness,
@@ -161,6 +164,8 @@ def build_story_presentation(
     market_implied: MarketImpliedExpectations | None = None,
     earnings_surprise: EarningsSurpriseProxy | None = None,
     recent_market_context: RecentMarketContext | None = None,
+    decision_delta: DecisionDelta | None = None,
+    catalyst_clock: CatalystClock | None = None,
 ) -> dict:
     top_idea = ideas[0] if ideas else None
     story_cards = build_story_cards(
@@ -179,6 +184,17 @@ def build_story_presentation(
     story_cards[6:6] = market_cards
     return {
         "demo_case": demo_case,
+        "ic_decision_brief": build_ic_decision_brief(
+            identity,
+            top_idea,
+            one_pager,
+            thesis_brief,
+            thesis_critique,
+            validation,
+            work_order,
+            decision_delta=decision_delta,
+            catalyst_clock=catalyst_clock,
+        ),
         "run_progress": build_run_progress(
             entity_resolution,
             financial_coverage,
@@ -201,6 +217,235 @@ def build_story_presentation(
         ),
         "formula_traces": build_formula_traces(ideas, valuation, metric_audit),
     }
+
+
+def build_ic_decision_brief(
+    identity,
+    top_idea: TradeIdea | None,
+    one_pager: ICOnePager,
+    thesis_brief: ThesisBrief,
+    critique: ThesisCritique,
+    validation: ThesisValidationReport,
+    work_order: EvidenceWorkOrder,
+    *,
+    decision_delta: DecisionDelta | None = None,
+    catalyst_clock: CatalystClock | None = None,
+) -> ICDecisionBrief:
+    event = _priority_source_event(top_idea)
+    score = top_idea.score.total if top_idea and top_idea.score else None
+    confidence = (
+        "High"
+        if validation.score >= 80 and top_idea and top_idea.stage in {"High-Conviction", "HighConviction"}
+        else "Medium"
+        if validation.score >= 60 and top_idea
+        else "Low"
+    )
+    evidence_status = (
+        "Validated and decision-ready"
+        if one_pager.decision.lower().startswith(("act", "monitor"))
+        else "Research-ready with open evidence"
+        if top_idea and top_idea.stage == "Research-Ready"
+        else "Investigation required"
+    )
+    next_decision = (
+        one_pager.next_best_action
+        or (work_order.items[0].action if work_order.items else "")
+        or "Re-run the thesis gate after the next material filing, call, or monitor trigger."
+    )
+    freshness_parts = []
+    if event:
+        event_period = (
+            event.metrics.get("period_end")
+            or event.metrics.get("current_period")
+            or event.metrics.get("reporting_period")
+        ) if isinstance(event.metrics, dict) else None
+        freshness_parts.extend(
+            item
+            for item in [
+                f"event {event.event_date}" if event.event_date else "",
+                f"period {event_period}" if event_period else "",
+            ]
+            if item
+        )
+    if score is not None:
+        evidence_status += f"; idea quality {score}/100"
+    return ICDecisionBrief(
+        ticker=identity.ticker,
+        verdict=one_pager.verdict or thesis_brief.verdict,
+        decision=one_pager.decision or "Research next",
+        direction=one_pager.direction or thesis_brief.direction,
+        stage=one_pager.stage or thesis_brief.stage,
+        confidence=confidence,
+        horizon=top_idea.horizon if top_idea else "Not established",
+        thesis=one_pager.thesis or thesis_brief.thesis,
+        why_now=_decision_why_now(
+            top_idea,
+            one_pager,
+            decision_delta,
+            catalyst_clock,
+        ),
+        financial_bridge=one_pager.causal_bridge or one_pager.equity_lens,
+        valuation=one_pager.valuation,
+        principal_risk=one_pager.counter_thesis or critique.strongest_counter_thesis,
+        next_decision=next_decision,
+        freshness="; ".join(freshness_parts) or "No dated source event selected",
+        evidence_status=evidence_status,
+        why_research_next=_why_research_next(one_pager, work_order),
+        why_now_evidence_ids=_why_now_evidence_ids(
+            event,
+            decision_delta,
+            catalyst_clock,
+        ),
+    )
+
+
+def _decision_why_now(
+    top_idea: TradeIdea | None,
+    one_pager: ICOnePager,
+    decision_delta: DecisionDelta | None,
+    catalyst_clock: CatalystClock | None,
+) -> str:
+    event = _priority_source_event(top_idea)
+    if event and event.event_date:
+        metrics = event.metrics if isinstance(event.metrics, dict) else {}
+        period = str(
+            metrics.get("period_end")
+            or metrics.get("current_period")
+            or metrics.get("reporting_period")
+            or ""
+        )
+        driver = str(
+            metrics.get("economic_driver")
+            or getattr(top_idea, "primary_driver", "")
+            or event.title
+        )
+        grade = str(
+            metrics.get("thesis_grade_status")
+            or top_idea.thesis_grade_status
+            or ""
+        )
+        period_text = f", reporting period {period}" if period else ""
+        if (
+            top_idea.direction == "Watch"
+            or grade in {"Watch Item", "Not thesis-grade"}
+            or metrics.get("normalization_required")
+        ):
+            return (
+                f"The {event.title} dated {event.event_date}{period_text} "
+                f"flagged {driver}, but direction or normalization remains "
+                "unvalidated. It is a research trigger, not a timing signal."
+            )
+        return (
+            f"The validated {driver} evidence dated {event.event_date}"
+            f"{period_text} is the latest material thesis input."
+        )
+    if (
+        decision_delta
+        and decision_delta.status in {"Strengthened", "Weakened", "Mixed"}
+    ):
+        return (
+            f"The decision changed in the latest run: "
+            f"{decision_delta.summary}"
+        )
+    if catalyst_clock:
+        dated = next(
+            (
+                item for item in catalyst_clock.items
+                if item.due_date
+            ),
+            None,
+        )
+        if dated:
+            return (
+                f"No validated urgency from current evidence. The next "
+                f"decision point is {dated.label} on {dated.due_date}."
+            )
+    current = one_pager.why_now or one_pager.decision_reason
+    if current and "incomplete, unmapped, or normalization-sensitive" not in current:
+        return current
+    return (
+        "No validated urgency. Wait for a dated source event, price signal, "
+        "or monitor trigger before treating the research gap as a timing edge."
+    )
+
+
+def _priority_source_event(top_idea: TradeIdea | None):
+    if top_idea is None or not top_idea.source_events:
+        return None
+
+    def priority(event) -> tuple[int, str, int]:
+        metrics = event.metrics if isinstance(event.metrics, dict) else {}
+        severity_value = getattr(event, "severity", 0)
+        severity = (
+            int(severity_value)
+            if isinstance(severity_value, (int, float)) else 0
+        )
+        grade = str(
+            metrics.get("thesis_grade_status")
+            or getattr(top_idea, "thesis_grade_status", "")
+            or ""
+        ).casefold()
+        validated = int(
+            grade not in {"watch item", "not thesis-grade", "unmapped"}
+            and not metrics.get("normalization_required")
+        )
+        return (
+            validated,
+            str(event.event_date or ""),
+            severity,
+        )
+
+    return max(top_idea.source_events, key=priority)
+
+
+def _why_now_evidence_ids(
+    event,
+    decision_delta: DecisionDelta | None,
+    catalyst_clock: CatalystClock | None,
+) -> list[str]:
+    if event is not None:
+        metrics = event.metrics if isinstance(event.metrics, dict) else {}
+        identifiers = [
+            str(metrics.get("event_id") or event.title or ""),
+            str(
+                metrics.get("validated_claim_id")
+                or metrics.get("claim_id")
+                or ""
+            ),
+            *[
+                str(getattr(citation, "citation_id", "") or "")
+                for citation in getattr(event, "citations", []) or []
+            ],
+        ]
+        return list(dict.fromkeys(item for item in identifiers if item))
+    if decision_delta and decision_delta.current_run_id:
+        return [decision_delta.current_run_id]
+    if catalyst_clock:
+        item = next((row for row in catalyst_clock.items if row.due_date), None)
+        if item:
+            return list(dict.fromkeys(
+                value for value in [
+                    item.related_idea_id,
+                    *item.related_idea_ids,
+                ] if value
+            ))
+    return []
+
+
+def _why_research_next(
+    one_pager: ICOnePager,
+    work_order: EvidenceWorkOrder,
+) -> str:
+    if one_pager.next_best_action:
+        return one_pager.next_best_action
+    if work_order.items:
+        first = work_order.items[0]
+        return str(
+            getattr(first, "action", "")
+            or getattr(first, "title", "")
+            or "Resolve the highest-priority evidence work order."
+        )
+    return "No additional automatic research action is currently queued."
 
 
 def _market_expectation_story_cards(
@@ -497,6 +742,13 @@ def _judge_resolution_plan(
             ),
             check.gaps[0] if check.gaps else "Fetch or recompute the evidence needed to test this contradiction.",
         )
+        related_work = next(
+            (
+                item for item in work_order.items
+                if item.channel == check.channel or item.action == action
+            ),
+            None,
+        )
         rows.append(JudgeResolutionItem(
             issue_type="Evidence contradiction",
             status="Open",
@@ -506,6 +758,7 @@ def _judge_resolution_plan(
             user_action="Review the cited conflict only if the automated source refresh remains inconclusive.",
             blocking_scope="High-Conviction",
             auto_resolvable=True,
+            action_id=related_work.work_id if related_work else "",
         ))
 
     seen_actions = {item.app_action for item in rows}
@@ -534,6 +787,7 @@ def _judge_resolution_plan(
                 if item.blocks_research_ready else "High-Conviction"
             ),
             auto_resolvable=auto_resolvable,
+            action_id=item.work_id,
         ))
         seen_actions.add(item.action)
 

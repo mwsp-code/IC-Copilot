@@ -1180,6 +1180,22 @@ def _causal_bridge_payload(
                 "Official records or issuer filings contradict the alleged exposure.",
             ],
         },
+        "disclosure": {
+            "primary_driver": "Disclosure risk / research lead",
+            "mechanism": "Narrative disclosure changes identify a possible exposure or management emphasis; they require section-level comparison, specificity, materiality, and operating or legal corroboration before affecting direction or valuation.",
+            "evidence_needed": [
+                "Current and prior disclosure excerpts from the same filing section.",
+                "Specific affected product, geography, counterparty, legal matter, or operating mechanism.",
+                "Official filing, regulator, court, issuer, KPI, or financial evidence that confirms or contradicts materiality.",
+            ],
+            "peer_metric_checks": ["Comparable peer disclosure changes", "Sector exposure evidence", "Official regulatory or legal developments"],
+            "valuation_implication": "A narrative change affects valuation only after probability, timing, and financial exposure are supported by admitted evidence.",
+            "credit_implication": "Disclosure language affects credit only when it maps to liquidity, leverage, covenant, liability, or refinancing exposure.",
+            "falsification_tests": [
+                "The language is boilerplate, reordered, or immaterial relative to the prior filing.",
+                "Official or operating evidence does not corroborate the implied exposure.",
+            ],
+        },
         "management": {
             "primary_driver": "Management credibility / execution",
             "mechanism": "Management-language signals need specificity, repeated commitments, later KPI outcomes, and filing cross-checks before they can support a thesis.",
@@ -1302,6 +1318,8 @@ def _driver_family(metric_name: str, event: ChangeEvent) -> str:
         return "guidance"
     if any(token in text for token in ("regulation", "regulatory", "litigation", "legal", "policy")):
         return "regulation"
+    if any(token in text for token in ("risk factor", "risk factors", "disclosure", "10-k item 1a", "20-f risk")):
+        return "disclosure"
     if any(token in text for token in ("management", "tone", "credibility", "evasion", "governance", "proxy")):
         return "management"
     if any(token in text for token in ("cash", "liquidity", "free cash flow", "operating cash flow")):
@@ -1480,7 +1498,7 @@ def finalize_idea_research(
         if _is_documented_counter(ledger_counter):
             idea.strongest_counter_thesis = ledger_counter
         elif not _is_documented_counter(idea.strongest_counter_thesis):
-            idea.strongest_counter_thesis = "No material counter-evidence identified in the current run."
+            idea.strongest_counter_thesis = "Counter-thesis not established — diligence gap."
         idea.promotion_decision = decide_promotion((promotion_bundles or {}).get(idea.idea_id))
         idea.promotion_label = idea.promotion_decision.label if idea.promotion_decision.eligible else ""
         probability, sample_size = (
@@ -1555,6 +1573,7 @@ def finalize_idea_research(
             or (
                 idea.strongest_counter_thesis
                 and "no material counter-evidence identified" not in idea.strongest_counter_thesis.lower()
+                and "counter-thesis not established" not in idea.strongest_counter_thesis.lower()
                 and idea.strongest_counter_thesis != "Not yet evaluated."
             )
         )
@@ -1825,6 +1844,8 @@ def _is_documented_counter(value: str | None) -> bool:
             "no material counter-evidence identified",
             "no counter-thesis",
             "none found",
+            "counter-thesis not established",
+            "diligence gap",
         )
     )
 

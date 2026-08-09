@@ -43,6 +43,14 @@ from equity_research.llm_vault import (
     save_llm_profile_with_secret,
     test_llm_profile,
 )
+from equity_research.hybrid_research import (
+    CODEX_LOCAL_BACKEND,
+    OPENAI_RESPONSES_BACKEND,
+    CodexLocalProvider,
+    HybridResearchJobManager,
+    OpenAIResponsesProvider,
+    build_hybrid_execution_preflight,
+)
 from equity_research.network_diagnostics import run_network_diagnostics
 from equity_research.news_intelligence import (
     build_corroboration_results,
@@ -54,12 +62,20 @@ from equity_research.news_intelligence import (
 )
 from equity_research.providers import StooqPriceClient, build_consensus_provider
 from equity_research.research_store import ResearchStore
-from equity_research.research_profiles import event_identifier, research_profiles
+from equity_research.research_profiles import event_identifier, research_profiles, resolve_research_profile
+from equity_research.retrieval_audit import run_retrieval_audit
 from equity_research.rigor import build_calibration_report
 from equity_research.sample_data import demo_result
 from equity_research.sec_client import SecClient
 from equity_research.storytelling import demo_cases
-from equity_research.thesis_synthesis import UnavailableLlmProvider, provider_from_config
+from equity_research.thesis_synthesis import (
+    OpenAICompatibleProvider,
+    UnavailableLlmProvider,
+    provider_from_config,
+)
+
+
+HYBRID_JOB_MANAGER = HybridResearchJobManager()
 
 
 HTML = r"""<!doctype html>
@@ -184,7 +200,13 @@ HTML = r"""<!doctype html>
       padding: 12px;
     }
     .metric span { color: var(--muted); font-size: 12px; display: block; }
-    .metric strong { font-size: 20px; display: block; margin-top: 6px; }
+    .metric strong {
+      font-size: 20px;
+      display: block;
+      margin-top: 6px;
+      overflow-wrap: anywhere;
+      word-break: normal;
+    }
     .tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
     .tab {
       border-bottom-left-radius: 0;
@@ -214,6 +236,8 @@ HTML = r"""<!doctype html>
       padding: 9px 10px;
       font-size: 13px;
       vertical-align: top;
+      overflow-wrap: anywhere;
+      word-break: normal;
     }
     th { color: var(--muted); font-weight: 700; background: #fbfcfe; }
     tr:last-child td { border-bottom: 0; }
@@ -310,7 +334,7 @@ HTML = r"""<!doctype html>
 </head>
 <body>
   <header>
-    <h1>US Equity Research Radar</h1>
+    <h1>IC Copilot</h1>
     <div class="controls">
       <input id="ticker" value="AAPL" aria-label="Ticker" />
       <select id="research-profile" aria-label="Research profile">
@@ -319,10 +343,19 @@ HTML = r"""<!doctype html>
         <option value="deep_initiation">Deep Initiation</option>
       </select>
       <select id="event-investigation" aria-label="Event investigation"><option value="">Investigate event...</option></select>
+      <select id="display-timezone" aria-label="Display timezone">
+        <option value="UTC" selected>UTC</option>
+        <option value="America/New_York">New York</option>
+        <option value="America/Los_Angeles">Los Angeles</option>
+        <option value="Asia/Seoul">Seoul</option>
+        <option value="Asia/Hong_Kong">Hong Kong</option>
+        <option value="Europe/London">London</option>
+      </select>
       <button id="investigate-event">Investigate This Event</button>
       <details class="sources">
-        <summary>Data Sources</summary>
+        <summary>Advanced Settings</summary>
         <div class="source-menu">
+          <div class="muted">Data: all configured and entitled sources are used automatically.</div>
           <label>Alpha Vantage API key<input id="alpha-key" type="password" autocomplete="off" /></label>
           <label>Finnhub API key<input id="finnhub-key" type="password" autocomplete="off" /></label>
           <label>FMP API key<input id="fmp-key" type="password" autocomplete="off" /></label>
@@ -333,13 +366,16 @@ HTML = r"""<!doctype html>
           <label>Census API key<input id="census-key" type="password" autocomplete="off" /></label>
           <label>Wisburg API key<input id="wisburg-key" type="password" autocomplete="off" /></label>
           <label>SEC user agent<input id="sec-user-agent" autocomplete="off" /></label>
-          <label>Budget mode<select id="budget-mode"><option>Free</option><option selected>Lean</option><option>Stable</option><option>Premium</option></select></label>
-          <label>Primary LLM<select id="llm-primary"></select></label>
-          <label>Secondary reader<select id="llm-secondary"></select></label>
+          <input id="budget-mode" type="hidden" value="Lean" />
+          <label>Primary Research AI<select id="llm-primary"></select></label>
+          <label>Independent Research Auditor<select id="llm-secondary"></select></label>
           <label>Secondary minimum stage<select id="llm-secondary-min-stage"><option>Research-Ready</option><option>High-Conviction</option></select></label>
           <label>Language policy<select id="llm-language-policy"><option value="bilingual_audit">Bilingual audit</option><option value="english_only">English only</option></select></label>
           <label class="check"><input id="enable-llm" type="checkbox" />LLM thesis synthesis</label>
-          <label class="check"><input id="enable-secondary-llm" type="checkbox" checked />Secondary review for Research-Ready+</label>
+          <label class="check"><input id="enable-secondary-llm" type="checkbox" checked />Independent review for Research-Ready+</label>
+          <label class="check"><input id="enable-hybrid-research" type="checkbox" />Independent Research QA over one shared evidence graph</label>
+          <label>Primary DeepSeek key<input id="hybrid-deepseek-key" type="password" autocomplete="off" title="Session-only primary planning, analysis, and IC-writing key" /></label>
+          <label>Independent auditor key<input id="hybrid-openai-key" type="password" autocomplete="off" title="Optional session-only independent audit key" /></label>
           <details>
             <summary>LLM Provider Vault</summary>
             <label>Provider preset<select id="llm-profile-preset"></select></label>
@@ -356,8 +392,7 @@ HTML = r"""<!doctype html>
           </details>
           <label class="check"><input id="enable-nasdaq" type="checkbox" />Nasdaq estimates (unofficial)</label>
           <label class="check"><input id="enable-tradingview" type="checkbox" />TradingView targets (unofficial)</label>
-          <label class="check"><input id="enable-default-macro" type="checkbox" checked />Default official macro sources</label>
-          <label class="check"><input id="global-macro-mode" type="checkbox" />Global macro mode</label>
+          <label>Macro context<select id="macro-policy"><option value="adaptive" selected>Adaptive Macro</option><option value="off">Pause macro</option><option value="global">Global diagnostic</option></select></label>
           <label class="check"><input id="enable-gdelt" type="checkbox" />GDELT narrative saturation</label>
           <label class="check"><input id="enable-wisburg" type="checkbox" />Wisburg external research</label>
           <label class="check"><input id="refresh-macro-cache" type="checkbox" />Refresh macro cache</label>
@@ -369,9 +404,10 @@ HTML = r"""<!doctype html>
           <div id="secret-status" class="muted">Checking saved key status...</div>
         </div>
       </details>
-      <button class="primary" id="run">Run Research</button>
+      <button class="primary" id="run">Run / Refresh Research</button>
       <button id="demo">Demo</button>
     </div>
+    <div id="run-setup-summary" class="muted"></div>
   </header>
   <main>
     <section id="demo-gallery" class="demo-gallery"></section>
@@ -382,15 +418,17 @@ HTML = r"""<!doctype html>
   </main>
   <script>
     const tabs = [
-      "IC Story",
-      "Evidence Trail",
-      "Causal Bridge",
-      "Market & Expectations",
-      "Work Orders",
-      "Raw Data"
+      "IC Brief",
+      "Thesis & Scenarios",
+      "Historical Analogs",
+      "Evidence & Debate",
+      "Market & Peers",
+      "Research Queue",
+      "Audit & Memo"
     ];
     let activeTab = tabs[0];
     let current = null;
+    let displayedRunSetup = "No live run loaded";
     let llmProfiles = [];
     let llmPresets = [];
     let llmSelection = {};
@@ -404,10 +442,13 @@ HTML = r"""<!doctype html>
     document.getElementById("save-llm-profile").addEventListener("click", saveLlmProfile);
     document.getElementById("test-llm-profile").addEventListener("click", testLlmProfile);
     document.getElementById("delete-llm-profile").addEventListener("click", deleteLlmProfile);
+    document.getElementById("display-timezone").addEventListener("change", () => {
+      if (current) render("Display timezone updated. Canonical audit timestamps remain UTC.");
+    });
     loadSecretStatus();
     loadLlmProfiles();
-    loadBudgetModes();
     loadDemoCases();
+    bindRunSetupSummary();
 
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, c => ({
@@ -415,11 +456,70 @@ HTML = r"""<!doctype html>
       }[c]));
     }
 
+    function displayDate(value) {
+      if (!value) return "Unknown";
+      if (String(value).length === 10) return String(value);
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return String(value);
+      const timeZone = document.getElementById("display-timezone").value || "UTC";
+      return parsed.toLocaleString(undefined, {
+        year: "numeric", month: "short", day: "numeric",
+        hour: "numeric", minute: "2-digit", timeZoneName: "short", timeZone
+      });
+    }
+
+    function relativeDate(value) {
+      if (!value) return "at an unknown time";
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return `on ${value}`;
+      const seconds = Math.max(0, Math.floor((Date.now() - parsed.getTime()) / 1000));
+      if (seconds < 90) return "less than 2 minutes ago";
+      if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes ago`;
+      if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
+      return `${Math.floor(seconds / 86400)} days ago`;
+    }
+
+    function currentRunSetupText() {
+      const profile = document.getElementById("research-profile");
+      const macro = document.getElementById("macro-policy").value || "adaptive";
+      const macroLabel = {
+        off: "Paused", adaptive: "Adaptive", global: "Global diagnostic"
+      }[macro] || macro;
+      const qa = document.getElementById("enable-hybrid-research").checked
+        ? "Enabled"
+        : "Optional — not configured";
+      const profileLabel = profile.options[profile.selectedIndex]?.text || "Adaptive IC Research";
+      return `${profileLabel} | Data: Best available | Macro: ${macroLabel} | Independent Research QA: ${qa}`;
+    }
+
+    function updateRunSetupSummary() {
+      const target = document.getElementById("run-setup-summary");
+      if (!target) return;
+      target.textContent = `Next live run: ${currentRunSetupText()}. Run Live Research and the Data Freshness refresh use this same setup.`;
+    }
+
+    function bindRunSetupSummary() {
+      [
+        "research-profile", "macro-policy", "enable-wisburg",
+        "enable-llm", "enable-hybrid-research"
+      ].forEach(id => document.getElementById(id)?.addEventListener("change", updateRunSetupSummary));
+      updateRunSetupSummary();
+    }
+
     async function load(demo, investigateEvent = false) {
       const ticker = document.getElementById("ticker").value.trim().toUpperCase() || "AAPL";
+      const requestedSetup = currentRunSetupText();
       if (investigateEvent && !document.getElementById("event-investigation").value) {
         setStatus("Select a detected event before running an event investigation.");
         return;
+      }
+      if (!demo && document.getElementById("enable-hybrid-research").checked) {
+        const missing = [];
+        if (!document.getElementById("hybrid-deepseek-key").value) missing.push("primary DeepSeek session key");
+        if (missing.length) {
+          setStatus(`Primary Research AI did not start. Missing: ${missing.join(", ")}.`);
+          return;
+        }
       }
       setStatus(demo ? "Loading demo workflow..." : `Running live workflow for ${ticker}...`);
       try {
@@ -449,10 +549,16 @@ HTML = r"""<!doctype html>
                 enable_secondary_llm: document.getElementById("enable-secondary-llm").checked,
                 secondary_llm_min_stage: document.getElementById("llm-secondary-min-stage").value,
                 llm_language_policy: document.getElementById("llm-language-policy").value,
+                enable_hybrid_research: document.getElementById("enable-hybrid-research").checked,
+                enable_independent_research_qa: document.getElementById("enable-hybrid-research").checked,
+                hybrid_deepseek_key: document.getElementById("hybrid-deepseek-key").value,
+                hybrid_openai_key: document.getElementById("hybrid-openai-key").value,
+                hybrid_execution_backend: "openai_responses",
                 enable_nasdaq: document.getElementById("enable-nasdaq").checked,
                 enable_tradingview: document.getElementById("enable-tradingview").checked,
-                enable_default_macro: document.getElementById("enable-default-macro").checked,
-                global_macro_mode: document.getElementById("global-macro-mode").checked,
+                enable_default_macro: document.getElementById("macro-policy").value !== "off",
+                global_macro_mode: document.getElementById("macro-policy").value === "global",
+                macro_policy: document.getElementById("macro-policy").value,
                 enable_gdelt: document.getElementById("enable-gdelt").checked,
                 enable_wisburg: document.getElementById("enable-wisburg").checked,
                 refresh_macro_cache: document.getElementById("refresh-macro-cache").checked,
@@ -462,6 +568,7 @@ HTML = r"""<!doctype html>
         const payload = await parseJsonResponse(response);
         if (!response.ok && !payload.result) throw new Error(payload.error || "Research failed");
         current = payload.result;
+        displayedRunSetup = demo ? "Frozen demo preset" : requestedSetup;
         await hydrateDailySnapshotContext();
         render(payload.warning || `Loaded ${current.identity.ticker}.`);
       } catch (error) {
@@ -528,6 +635,7 @@ HTML = r"""<!doctype html>
         const currentValue = select.value || "Lean";
         select.innerHTML = modes.map(mode => `<option ${mode === currentValue ? "selected" : ""}>${esc(mode)}</option>`).join("");
         if (!modes.includes(currentValue) && modes.includes("Lean")) select.value = "Lean";
+        updateRunSetupSummary();
       } catch (error) {
         // Static fallback remains usable.
       }
@@ -722,7 +830,8 @@ HTML = r"""<!doctype html>
         ["Company", identity.name],
         ["Ticker / CIK", `${identity.ticker} / ${identity.cik}`],
         ["Top Idea Score", score],
-        ["Market Capture", capture]
+        ["Market Capture", capture],
+        ["Freshness", (current.research_freshness || {}).overall_status || "Unknown"]
       ];
       document.getElementById("summary").innerHTML = values.map(([label, value]) => `
         <div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>
@@ -744,16 +853,19 @@ HTML = r"""<!doctype html>
 
     function renderContent() {
       const target = document.getElementById("content");
-      if (activeTab === "IC Story") target.innerHTML = icCopilot();
-      if (activeTab === "Evidence Trail") target.innerHTML = researchRadar() + managementSources();
-      if (activeTab === "Causal Bridge") target.innerHTML = decisionModels() + ideaFactory() + ideaScorer();
-      if (activeTab === "Market & Expectations") target.innerHTML = earningsSurprisePanel() + marketImpliedPanel() + recentMarketContextPanel() + priceMoveAttribution();
-      if (activeTab === "Work Orders") target.innerHTML = evidenceClosurePanel() + thesisMonitor();
-      if (activeTab === "Raw Data") target.innerHTML = memoPack();
-      if (activeTab === "Causal Bridge") bindOutcomeForms();
-      if (activeTab === "Causal Bridge") bindPayoffAssumptionActions();
-      if (activeTab === "Work Orders") bindMonitorActions();
-      if (activeTab === "Market & Expectations") bindMarketImpliedActions();
+      if (activeTab === "IC Brief") target.innerHTML = icBrief();
+      if (activeTab === "Thesis & Scenarios") target.innerHTML = decisionModels() + ideaFactory() + ideaScorer();
+      if (activeTab === "Historical Analogs") target.innerHTML = historicalPerspective(false);
+      if (activeTab === "Evidence & Debate") target.innerHTML = researchRadar() + managementSources() + newsDebate(false);
+      if (activeTab === "Market & Peers") target.innerHTML = earningsSurprisePanel() + marketImpliedPanel() + recentMarketContextPanel() + priceMoveAttribution();
+      if (activeTab === "Research Queue") target.innerHTML = evidenceClosurePanel() + thesisMonitor();
+      if (activeTab === "Audit & Memo") target.innerHTML = independentResearchQaPanel() + hybridResearchPanel() + icCopilot() + memoPack();
+      if (activeTab === "Thesis & Scenarios") bindOutcomeForms();
+      if (activeTab === "Thesis & Scenarios") bindPayoffAssumptionActions();
+      if (activeTab === "Research Queue") bindMonitorActions();
+      if (activeTab === "Market & Peers") bindMarketImpliedActions();
+      const refresh = document.getElementById("refresh-current-setup");
+      if (refresh) refresh.addEventListener("click", () => load(false, false));
     }
 
     function table(rows, columns) {
@@ -876,6 +988,7 @@ HTML = r"""<!doctype html>
     function storyFirstPanel() {
       const brief = current.thesis_brief || {};
       const onePager = current.ic_one_pager || {};
+      const decision = current.ic_decision_brief || {};
       const demo = current.demo_case || {};
       const progress = current.run_progress || {};
       const judge = current.bull_bear_judge || {};
@@ -898,7 +1011,7 @@ HTML = r"""<!doctype html>
           ${stage.next_action ? `<p class="muted">Next: ${esc(stage.next_action)}</p>` : ""}
         </details>
       `).join("")}</div>` : "";
-      const storyCards = `<h3>Story Cards</h3><div class="story-grid">${cards.map(card => `
+      const storyCards = `<h3>Story Cards</h3><div class="story-grid">${cards.slice(0, 4).map(card => `
         <article class="story-card">
           <h3>${esc(card.title)}</h3>
           <p class="muted">${esc(card.status || "")}</p>
@@ -916,7 +1029,13 @@ HTML = r"""<!doctype html>
             excerpt: item.excerpt || ""
           })), [["Claim", "claim"], ["Source", "source"], ["Section", "section"], ["Metric", "metric"], ["Value", "value"], ["Formula", "formula"], ["Period", "period"], ["Confidence", "confidence"], ["Excerpt", "excerpt"]])}</details>` : ""}
         </article>
-      `).join("")}</div>`;
+      `).join("")}</div>${cards.length > 4 ? `<details><summary>More IC context (${cards.length - 4})</summary>${table(cards.slice(4).map(card => ({
+        section: card.title,
+        status: card.status,
+        finding: card.body || card.summary || "",
+        next: card.next_action || "",
+        evidence: (card.evidence || []).length
+      })), [["Section", "section"], ["Status", "status"], ["Finding", "finding"], ["Next action", "next"], ["Evidence items", "evidence"]])}</details>` : ""}`;
       const judgePanel = `<h3>Bull / Bear / Judge</h3><div class="judge-grid">
         <article class="judge-card"><h3>Bull case</h3><p>${esc(judge.bull_case || "n/a")}</p></article>
         <article class="judge-card"><h3>Bear case</h3><p>${esc(judge.bear_case || "n/a")}</p></article>
@@ -957,39 +1076,399 @@ HTML = r"""<!doctype html>
         ${table(contributorRows, [["Contribution", "item"], ["Status", "status"], ["What the app can prepare", "app"]])}
       </details>`;
       const implied = current.market_implied_expectations || {};
-      const impliedRows = implied.expectations || [];
-      const reverseBase = impliedRows.find(item => item.metric === "Reverse DCF base FCF");
-      const reverseGrowth = impliedRows.find(item =>
-        (item.metric || "").startsWith("Reverse DCF: implied") &&
-        (item.metric || "").includes("FCF growth") &&
-        item.implied_value != null
-      ) || impliedRows.find(item =>
-        (item.metric || "").startsWith("Reverse DCF: implied") &&
-        item.implied_value != null
-      );
-      const fcfYield = impliedRows.find(item => item.metric === "Current free-cash-flow yield");
-      const reverseLabel = reverseGrowth && (reverseGrowth.metric || "").toLowerCase().includes("margin")
-        ? "Price-implied FCF margin"
-        : "Price-implied FCF growth";
-      const reverseSnapshot = implied.template === "Non-financial" ? `<h3>Reverse FCF / DCF Snapshot</h3>
+      const impliedSnapshot = current.ic_implied_snapshot || {};
+      const reverseSnapshot = implied.status ? `<h3>What the Market Must Believe <span class="muted">(Reverse FCF / DCF Snapshot)</span></h3>
         <div class="summary">
-          <div class="metric"><span>FCF base</span><strong>${reverseBase && reverseBase.implied_value != null ? `${number(reverseBase.implied_value)} ${esc(reverseBase.unit)}` : "Unavailable"}</strong></div>
-          <div class="metric"><span>Current FCF yield</span><strong>${fcfYield && fcfYield.implied_value != null ? `${number(fcfYield.implied_value)} ${esc(fcfYield.unit)}` : "Unavailable"}</strong></div>
-          <div class="metric"><span>${reverseLabel}</span><strong>${reverseGrowth && reverseGrowth.implied_value != null ? `${number(reverseGrowth.implied_value)} ${esc(reverseGrowth.unit)}` : "Unavailable"}</strong></div>
-          <div class="metric"><span>Confidence</span><strong>${esc(reverseGrowth ? reverseGrowth.confidence : "Unavailable")}</strong></div>
+          <div class="metric"><span>Current price</span><strong>${impliedSnapshot.current_price != null ? `${number(impliedSnapshot.current_price)} ${esc(impliedSnapshot.currency || "")}` : "Unknown"}</strong></div>
+          <div class="metric"><span>${esc(impliedSnapshot.operating_base_label || "Operating base")}</span><strong>${esc(impliedSnapshot.operating_base_value || "Unknown")}</strong></div>
+          <div class="metric"><span>${esc(impliedSnapshot.valuation_anchor_label || "Valuation anchor")}</span><strong>${esc(impliedSnapshot.valuation_anchor_value || "Unknown")}</strong></div>
+          <div class="metric"><span>${esc(impliedSnapshot.implied_variable_label || "Price-implied variable")}</span><strong>${esc(impliedSnapshot.implied_variable_value || "Unknown")}</strong></div>
+          <div class="metric"><span>Confidence</span><strong>${esc(impliedSnapshot.confidence || "Unknown")}</strong></div>
         </div>
-        <p class="muted">${esc(reverseGrowth ? reverseGrowth.interpretation : "Open Market & Expectations for exact missing reverse-DCF inputs.")}</p>
-        ${reverseBase ? '<p class="muted"><strong>FCF basis:</strong> ' + esc(reverseBase.status) + '. ' + esc(reverseBase.formula) + '. ' + esc(reverseBase.interpretation) + '</p>' : ""}` : "";
+        <p>${esc(impliedSnapshot.interpretation || implied.summary || "")}</p>
+        <p class="muted">${esc(impliedSnapshot.disagreement || "")} Weakest input: ${esc(impliedSnapshot.weakest_input || "None identified")}.</p>
+        <details><summary>Assumptions & Sensitivity</summary>
+          ${table((implied.assumptions || []).map(item => ({
+            assumption: item.name,
+            value: item.value == null ? "Unknown" : `${item.value} ${item.unit || ""}`,
+            provenance: item.provenance,
+            source: item.source
+          })), [["Assumption", "assumption"], ["Value", "value"], ["Provenance", "provenance"], ["Source", "source"]])}
+          <p class="muted">Edit assumptions through the market-implied assumptions API or Streamlit workspace. The full formula and provenance table remains under Market & Peers.</p>
+        </details>` : "";
       return `${demoBanner}<h2>IC Story</h2>
         <div class="summary">
-          <div class="metric"><span>Verdict</span><strong>${esc(onePager.verdict || brief.verdict || "n/a")}</strong></div>
-          <div class="metric"><span>Stage</span><strong>${esc(onePager.stage || brief.stage || "n/a")}</strong></div>
-          <div class="metric"><span>Direction</span><strong>${esc(onePager.direction || brief.direction || "n/a")}</strong></div>
-          <div class="metric"><span>Decision</span><strong>${esc(onePager.decision || "Research next")}</strong></div>
+          <div class="metric"><span>Verdict</span><strong>${esc(decision.verdict || onePager.verdict || brief.verdict || "n/a")}</strong></div>
+          <div class="metric"><span>Decision</span><strong>${esc(decision.decision || onePager.decision || "Research next")}</strong></div>
+          <div class="metric"><span>Direction</span><strong>${esc(decision.direction || onePager.direction || brief.direction || "n/a")}</strong></div>
+          <div class="metric"><span>Stage</span><strong>${esc(decision.stage || onePager.stage || brief.stage || "n/a")}</strong></div>
+          <div class="metric"><span>Confidence</span><strong>${esc(decision.confidence || "Unknown")}</strong></div>
         </div>
-        <p>${esc(onePager.thesis || brief.thesis || "No thesis generated.")}</p>
-        ${onePager.next_best_action ? `<div class="status"><strong>Next action:</strong> ${esc(onePager.next_best_action)}</div>` : ""}
-        ${reverseSnapshot}${profilePanel}${pipeline}${storyCards}${judgePanel}${formulas}${contributor}`;
+        <p><strong>Thesis:</strong> ${esc(decision.thesis || onePager.thesis || brief.thesis || "No thesis generated.")}</p>
+        <div class="story-grid">
+          <article class="story-card"><h3>Why now</h3><p>${esc(decision.why_now || "No time-sensitive catalyst has been validated.")}</p><p class="muted">${esc(decision.evidence_status || "")}</p><h3>Why research next</h3><p>${esc(decision.why_research_next || "No additional automatic research action is queued.")}</p></article>
+          <article class="story-card"><h3>Financial bridge</h3><p>${esc(decision.financial_bridge || onePager.causal_bridge || "Incomplete")}</p><p class="muted">Freshness: ${esc(decision.freshness || "Unknown")}</p></article>
+          <article class="story-card"><h3>Valuation</h3><p>${esc(decision.valuation || onePager.valuation || "Not decision-ready")}</p></article>
+          <article class="story-card"><h3>Principal risk</h3><p>${esc(decision.principal_risk || onePager.counter_thesis || "Under investigation")}</p></article>
+        </div>
+        ${(decision.next_decision || onePager.next_best_action) ? `<div class="status"><strong>Next decision:</strong> ${esc(decision.next_decision || onePager.next_best_action)}</div>` : ""}
+        ${reverseSnapshot}${profilePanel}${pipeline}${hybridResearchPanel()}${storyCards}${judgePanel}${formulas}${contributor}`;
+    }
+
+    function independentResearchQaPanel() {
+      const run = current.independent_research_qa || {};
+      const report = run.qa_report || {};
+      const score = report.score || {};
+      if (!run.status) return "";
+      const dimensions = (score.dimensions || []).map(item => ({
+        dimension: item.name,
+        score: `${item.score}/100`,
+        status: item.status,
+        explanation: item.explanation
+      }));
+      const gaps = (run.evidence_gaps || []).map(item => ({
+        gap: item.summary,
+        severity: item.severity,
+        status: item.status,
+        requests: (item.evidence_request_ids || []).join(", ")
+      }));
+      const revisions = (run.conclusion_revisions || []).map(item => ({
+        area: item.conclusion_area,
+        materiality: item.materiality,
+        before: item.before,
+        after: item.after,
+        reason: item.reason
+      }));
+      const setup = run.setup_preview || {};
+      return `<h3>Independent Research QA</h3>
+        <p class="muted">One shared evidence graph | status ${esc(run.status || "Unknown")} | evidence ${esc((run.evidence_hash || "").slice(0, 12) || "Unavailable")}</p>
+        <div class="summary">
+          <div class="metric"><span>QA score</span><strong>${esc(score.total_score ?? "Unscored")}${score.total_score == null ? "" : "/100"}</strong></div>
+          <div class="metric"><span>Audit status</span><strong>${esc(report.status || "Not run")}</strong></div>
+          <div class="metric"><span>Evidence gaps</span><strong>${esc(report.evidence_gaps_closed || 0)} closed / ${esc(report.evidence_gaps_unresolved || 0)} unresolved</strong></div>
+          <div class="metric"><span>Alternative hypotheses</span><strong>${esc(report.alternative_hypotheses_explored || 0)}</strong></div>
+          <div class="metric"><span>Validated additions</span><strong>${esc(report.additional_validated_sources || 0)}</strong></div>
+          <div class="metric"><span>Auditor</span><strong>${esc(setup.independent_qa_status || "Not configured")}</strong></div>
+        </div>
+        ${report.summary ? `<article class="story-card"><h3>QA conclusion</h3><p>${esc(report.summary)}</p></article>` : ""}
+        ${table(dimensions, [["Dimension", "dimension"], ["Score", "score"], ["Status", "status"], ["Basis", "explanation"]])}
+        ${gaps.length ? `<details><summary>Evidence gaps and resolution status</summary>${table(gaps, [["Gap", "gap"], ["Severity", "severity"], ["Status", "status"], ["Requests", "requests"]])}</details>` : ""}
+        ${revisions.length ? `<details><summary>Conclusions changed after audit</summary>${table(revisions, [["Area", "area"], ["Materiality", "materiality"], ["Before", "before"], ["After", "after"], ["Reason", "reason"]])}</details>` : ""}
+        ${(run.data_gaps || []).length ? `<p class="warning">${esc((run.data_gaps || []).join("; "))}</p>` : ""}`;
+    }
+
+    function hybridResearchPanel() {
+      const run = current.hybrid_research;
+      if (!run) return "";
+      const rows = (run.rounds || []).map(item => ({
+        round: item.round_number,
+        role: String(item.role || "").replaceAll("_", " "),
+        provider: `${item.provider || "Unknown"} / ${item.model || "Unknown"}`,
+        status: item.status,
+        latency: item.latency_ms == null ? "Unknown" : `${(item.latency_ms / 1000).toFixed(1)}s`,
+        evidence: item.artifact ? (item.artifact.evidence_ids || []).length : 0
+      }));
+      const final = run.final_artifact || {};
+      const retrievalRows = (run.retrieval_lifecycles || []).map(item => ({
+        request: item.request_id,
+        source: item.source_type || "Unknown",
+        status: item.status,
+        lifecycle: (item.history || []).join(" -> "),
+        failure: item.failure_code || "",
+        finding: item.message || ""
+      }));
+      const claimRows = (run.claim_evidence_audits || []).map(item => ({
+        claim: item.claim_text,
+        classification: item.classification,
+        status: item.status,
+        period: item.period_alignment,
+        origins: item.independent_origin_count,
+        numeric: item.numerical_reconciliation,
+        blocker: (item.blockers || []).join("; ")
+      }));
+      return `<h3>Research Workflow Trace</h3>
+        <p class="muted">Shared evidence graph | ${esc((run.execution_backend || {}).label || "Unknown backend")} | status ${esc(run.status || "Unknown")} | deterministic validation ${esc(run.deterministic_validation_status || "not_run")}</p>
+        ${table(rows, [["Round", "round"], ["Role", "role"], ["Provider", "provider"], ["Status", "status"], ["Latency", "latency"], ["Evidence", "evidence"]])}
+        ${retrievalRows.length ? `<details><summary>Auditable source retrieval</summary><p class="muted">Catalog matches are discovery only; facts require fetched/cached content, parsing, citation binding, and validation.</p>${table(retrievalRows, [["Request", "request"], ["Source family", "source"], ["Status", "status"], ["Lifecycle", "lifecycle"], ["Failure", "failure"], ["Finding", "finding"]])}</details>` : ""}
+        ${claimRows.length ? `<details><summary>Claim-level evidence audit</summary>${table(claimRows, [["Claim", "claim"], ["Class", "classification"], ["Status", "status"], ["Period", "period"], ["Origins", "origins"], ["Numeric", "numeric"], ["Blocker", "blocker"]])}</details>` : ""}
+        ${final.summary ? `<article class="story-card"><h3>Audited research result</h3><p>${esc(final.summary)}</p></article>` : ""}
+        ${(run.data_gaps || []).length ? `<p class="muted">${esc((run.data_gaps || []).join("; "))}</p>` : ""}`;
+    }
+
+    function dualModelSummary() {
+      const run = current.dual_model_research || {};
+      if (!run.status) return "";
+      const input = run.input_sufficiency || {};
+      const evidenceLabel = input.total_score == null
+        ? "Not scored"
+        : `${input.total_score}/100 | ${input.benchmark_ready ? "Benchmark-ready" : "Remediation needed"}`;
+      if (run.status === "frozen_fixture") {
+        const validated = run.provenance_class === "validated_live_model_run";
+        return `<h3>Model Research Comparison</h3>
+          <div class="summary">
+            <div class="metric"><span>Research status</span><strong>Frozen demo</strong></div>
+            <div class="metric"><span>Evidence pack</span><strong>${esc(evidenceLabel)}</strong></div>
+            <div class="metric"><span>Model execution at load</span><strong>None</strong></div>
+            <div class="metric"><span>Provenance</span><strong>${esc(String(run.provenance_class || "fixture").replaceAll("_", " "))}</strong></div>
+          </div>
+          <article class="story-card"><h3>${validated ? "Frozen validated model run" : "Sanitized deterministic fixture"}</h3>
+          <p>${esc(run.provenance_message || run.final_label || "Frozen research fixture")}</p>
+          ${validated ? "" : "<p class=\\"muted\\">Real live benchmarking is still needed to establish whether DeepSeek research quality approaches GPT-5.6 Sol across actual companies and sectors.</p>"}
+          </article>`;
+      }
+      if (["not_started", "not_started_missing_credentials", "unavailable"].includes(run.status) && !(run.stages || []).length) {
+        return `<h3>Model Research Comparison</h3>
+          <div class="summary">
+            <div class="metric"><span>Research status</span><strong>Paired research did not start</strong></div>
+            <div class="metric"><span>Evidence pack</span><strong>${esc(evidenceLabel)}</strong></div>
+            <div class="metric"><span>DeepSeek execution</span><strong>Not started</strong></div>
+            <div class="metric"><span>GPT-5.6 Sol execution</span><strong>Not started</strong></div>
+            <div class="metric"><span>Adjudication</span><strong>Not run</strong></div>
+          </div>
+          <p class="warning">${esc(run.execution_failure_reason || run.provenance_message || "Required providers were unavailable.")}</p>`;
+      }
+      const benchmark = run.benchmark || {};
+      const adjudication = run.adjudication || {};
+      const completed = run.completed_stage_count ?? (run.stages || []).filter(item => item.status === "completed").length;
+      const attempted = run.attempted_stage_count ?? (run.stages || []).filter(item => item.status !== "unavailable").length;
+      const winners = Object.entries(benchmark.stage_winners || {}).slice(0, 3)
+        .map(([stage, winner]) => `${stage.replaceAll("_", " ")}: ${winner}`).join(" | ");
+      const unresolved = (adjudication.unresolved_disagreements || []);
+      return `<h3>Model Research Comparison</h3>
+        <div class="summary">
+          <div class="metric"><span>Research status</span><strong>${esc(run.final_label || run.status)}</strong></div>
+          <div class="metric"><span>Evidence pack</span><strong>${esc(evidenceLabel)}</strong></div>
+          <div class="metric"><span>DeepSeek execution</span><strong>${esc(run.deepseek_execution_status || "not started")} | ${esc(run.deepseek_completed_stage_count || 0)}/5</strong></div>
+          <div class="metric"><span>GPT-5.6 Sol execution</span><strong>${esc(run.sol_execution_status || "not started")} | ${esc(run.sol_completed_stage_count || 0)}/5</strong></div>
+          <div class="metric"><span>Adjudication</span><strong>${esc(run.adjudication_status || "not run")}</strong></div>
+          <div class="metric"><span>Comparable stages</span><strong>${esc(completed)}/${esc(attempted)} attempted</strong></div>
+          <div class="metric"><span>Accepted Sol amendments</span><strong>${run.adjudication_status === "not_run" ? "Not evaluated" : esc((run.accepted_secondary_deltas || []).length)}</strong></div>
+        </div>
+        ${run.execution_failure_reason ? `<p class="warning">${esc(run.execution_failure_reason)}</p>` : ""}
+        ${run.benchmark ? `<p class="muted">DeepSeek ${esc(benchmark.deepseek_score ?? "Unscored")}/100; GPT-5.6 Sol ${esc(benchmark.sol_score ?? "Unscored")}/100. ${esc(winners)}</p>` : ""}
+        ${benchmark.status === "input_not_qualified" ? `<p class="warning">Model comparison is diagnostic only until inputs reach 80/100 with no critical identity, period, citation, or no-lookahead gap.</p>` : ""}
+        <p>${esc(adjudication.rationale || "Secondary adjudication did not complete.")}</p>
+        ${unresolved.length ? `<p class="warning">Unresolved: ${esc(unresolved.slice(0, 3).join("; "))}</p>` : ""}`;
+    }
+
+    function dualModelAuditPanel() {
+      const run = current.dual_model_research || {};
+      if (!run.status) return "";
+      const rows = (run.stages || []).map(item => ({
+        stage: item.label,
+        status: item.status,
+        deepseek: (item.comparison || {}).deepseek_score ?? "Unscored",
+        sol: (item.comparison || {}).sol_score ?? "Unscored",
+        stronger: (item.comparison || {}).stronger_model || "Unknown",
+        agreement: (item.comparison || {}).agreement || "Unavailable",
+        accepted: (item.accepted_secondary_deltas || []).length
+      }));
+      const gaps = (run.gap_diagnoses || []).map(item => ({
+        stage: item.stage_id.replaceAll("_", " "),
+        category: item.category,
+        severity: item.severity,
+        summary: item.summary,
+        fix: item.recommended_fix
+      }));
+      const input = run.input_sufficiency || {};
+      const evidence = run.evidence_pack_audit || {};
+      const usage = run.usage_summary || {};
+      const inputRows = (input.dimensions || []).map(item => ({
+        dimension: item.label,
+        status: item.status,
+        score: `${item.score}/${item.maximum}`,
+        finding: item.summary,
+        gap: (item.gaps || []).join("; ")
+      }));
+      return `<h3>DeepSeek / GPT-5.6 Sol Research Audit</h3>
+        <div class="summary">
+          <div class="metric"><span>Input sufficiency</span><strong>${input.total_score == null ? "Unscored" : `${esc(input.total_score)}/100`}</strong></div>
+          <div class="metric"><span>Searchable evidence</span><strong>${esc(evidence.searchable_count ?? "Unscored")}</strong></div>
+          <div class="metric"><span>Core evidence</span><strong>${esc(evidence.core_count ?? "Unscored")}</strong></div>
+          <div class="metric"><span>Total tokens</span><strong>${esc(usage.total_tokens ?? "Unscored")}</strong></div>
+        </div>
+        ${table(inputRows, [["Input dimension", "dimension"], ["Status", "status"], ["Score", "score"], ["Finding", "finding"], ["Gap", "gap"]])}
+        ${table(rows, [["Stage", "stage"], ["Status", "status"], ["DeepSeek", "deepseek"], ["Sol", "sol"], ["Stronger", "stronger"], ["Agreement", "agreement"], ["Accepted additions", "accepted"]])}
+        <details><summary>Gap diagnoses and reviewable improvements</summary>
+        ${table(gaps, [["Stage", "stage"], ["Category", "category"], ["Severity", "severity"], ["Diagnosis", "summary"], ["Proposed treatment", "fix"]])}
+        <p class="muted">Runtime model output cannot rewrite prompts or production code. Improvements require cross-ticker evaluation and human review.</p></details>`;
+    }
+
+    function historicalPerspective(compact = true) {
+      const report = current.historical_analogs || {};
+      const investigation = report.investigation_status || {};
+      const dossiers = (report.dossiers || []).filter(item => ["Audited Research Analog", "Frozen Demo Dossier", "Researched Episode"].includes(item.status));
+      const dossierRows = dossiers.slice(0, compact ? 1 : 3).map(item => ({
+        episode: item.episode,
+        period: `${item.start_date || "Unknown"} to ${item.end_date || "Unknown"}`,
+        confidence: item.confidence,
+        similarity: item.audited_similarity_score == null ? `${item.similarity_band || "Unscored"}; numeric score withheld pending audit` : `${item.similarity_band || "Unscored"} (${item.audited_similarity_score}/100)`,
+        audit: `${item.audit_status || "not_run"}; primary ${item.primary_model || "Unknown"}; secondary ${item.secondary_auditor_model || "Unknown"}`,
+        lesson: (item.lessons || [])[0] || "No lesson validated.",
+        operating: item.operating_outcome,
+        financing: item.financing_outcome,
+        valuation: item.valuation_outcome,
+        price: item.price_outcome,
+        differences: (item.material_differences || []).join("; "),
+        tests: [...(item.confirm_kpis || []).map(value => `Confirm: ${value}`), ...(item.reject_kpis || []).map(value => `Reject: ${value}`)].join("; "),
+        sources: (item.sources || []).map(source => source.title).join("; ")
+      }));
+      const dossierIds = new Set(dossiers.map(item => item.analog_id));
+      const rows = (report.assessments || []).filter(item => !dossierIds.has(item.analog_id)).slice(0, compact && dossiers.length ? 0 : compact ? 1 : 20).map(item => ({
+        episode: item.episode,
+        status: item.status,
+        class: item.classification,
+        similarity: item.similarity_score == null ? `${item.similarity_band || "Unscored"}; numeric score withheld pending audit` : `${item.similarity_score}/100`,
+        relevance: `${item.source_relevance_score || 0}/100`,
+        suggests: item.what_it_suggests,
+        differences: (item.material_differences || []).join("; "),
+        cannot: item.what_it_cannot_establish,
+        sources: (item.sources || []).map(source => source.title).join("; ") || "No qualifying source attached",
+        rejected: (item.rejected_sources || []).map(source =>
+          `${source.source_title || source.source_provider || "Retrieved source"}: ${source.rejection_summary || (source.rejection_reasons || []).join(", ")}`
+        ).join("; ")
+      }));
+      const brief = report.brief || {};
+      return `<h3>${compact ? "Historical Perspective" : "Historical Analog Lab"}</h3>
+        <p class="muted">Status: ${esc(report.status || "Unavailable")}; coverage: ${esc(report.coverage_status || "Historical analog research has not run.")}; LLM research: ${esc(investigation.code || report.llm_status || "not_selected_by_profile")}.</p>
+        ${investigation.reason ? `<p class="muted">${esc(investigation.reason)}</p>` : ""}
+        ${brief.episode ? `<article class="story-card"><h3>${esc(brief.episode)}</h3><p>${esc(brief.lesson || "")}</p><p class="muted">Material difference: ${esc(brief.material_difference || "Unknown")}. Monitor: ${esc(brief.linked_monitor || "Unknown")}. Evidence: ${esc(brief.evidence_status || "Unknown")}.</p></article>` : report.top_lesson ? `<p>${esc(report.top_lesson)}</p>` : ""}
+        ${table(dossierRows, [["Researched episode", "episode"], ["Period", "period"], ["Similarity", "similarity"], ["Audit", "audit"], ["Confidence", "confidence"], ["Lesson", "lesson"], ["Operating outcome", "operating"], ["Financing outcome", "financing"], ["Valuation outcome", "valuation"], ["Price context", "price"], ["Material differences", "differences"], ["Current tests", "tests"], ["Sources", "sources"]])}
+        ${table(rows, [["Episode", "episode"], ["Status", "status"], ["Class", "class"], ["Similarity", "similarity"], ["Source relevance", "relevance"], ["What it suggests", "suggests"], ["Material differences", "differences"], ["Cannot establish", "cannot"], ["Sources", "sources"], ["Rejected source diagnosis", "rejected"]])}`;
+    }
+
+    function newsDebate(compact = true) {
+      const report = current.news_intelligence || {};
+      const rows = (report.clusters || []).slice(0, compact ? 3 : 20).map(item => ({
+        theme: item.label,
+        stance: item.stance,
+        confidence: item.confidence,
+        origins: (item.source_origin_groups || []).length,
+        primary: item.primary_source_status,
+        summary: item.summary
+      }));
+      const sourceRows = compact ? [] : (report.registered_sources || []).map(item => ({
+        source: item.label,
+        provider: item.provider,
+        enabled: item.enabled ? "Yes" : "No",
+        configured: item.configured ? "Yes" : "No",
+        tier: item.default_tier,
+        licensing: item.licensing_policy
+      }));
+      return `<h3>${compact ? "News and Debate" : "LLM-Directed News Intelligence"}</h3>
+        <p class="muted">Status: ${esc(report.status || "Unavailable")}; coverage: ${esc(report.coverage_status || "News intelligence has not run.")}</p>
+        ${report.top_debate ? `<p>${esc(report.top_debate)}</p>` : ""}
+        ${table(rows, [["Theme", "theme"], ["Stance", "stance"], ["Confidence", "confidence"], ["Independent origins", "origins"], ["Primary check", "primary"], ["Summary", "summary"]])}
+        ${compact ? "" : `<details><summary>Registered source coverage</summary>${table(sourceRows, [["Source", "source"], ["Provider", "provider"], ["Enabled", "enabled"], ["Configured", "configured"], ["Tier", "tier"], ["Licensing", "licensing"]])}</details>`}`;
+    }
+
+    function llmGuardrailSummary() {
+      const manifest = current.llm_run_manifest || {};
+      return `<h3>LLM Guardrail Checklist</h3><div class="summary">
+        <div class="metric"><span>LLM Status</span><strong>${esc(manifest.status || "n/a")}</strong></div>
+        <div class="metric"><span>Execution</span><strong>${esc(manifest.llm_execution_status || "n/a")}</strong></div>
+        <div class="metric"><span>Guardrails</span><strong>${esc(manifest.llm_guardrail_status || "n/a")}</strong></div>
+        <div class="metric"><span>Score</span><strong>${esc(manifest.guardrail_score ?? "n/a")}/100</strong></div>
+      </div><p class="muted">${esc(manifest.message || "")}</p>`;
+    }
+
+    function freshnessPanel() {
+      const freshness = current.research_freshness || {};
+      if (!freshness.overall_status) return "";
+      const rows = (freshness.components || []).map(item => ({
+        component: item.component,
+        status: item.status,
+        sourceAsOf: displayDate(item.source_as_of),
+        observed: displayDate(item.observed_at),
+        source: item.source || "Unknown",
+        meaning: item.message || ""
+      }));
+      const top = rows.filter(item =>
+        ["Research run", "Market price", "Filings", "Consensus"].includes(item.component)
+      );
+      const rowByName = Object.fromEntries(rows.map(item => [item.component, item]));
+      const research = rowByName["Research run"] || {};
+      const price = rowByName["Market price"] || {};
+      const filings = rowByName["Filings"] || {};
+      const consensus = rowByName["Consensus"] || {};
+      const completion = freshness.result_type === "frozen_demo"
+        ? `frozen ${research.sourceAsOf || "on an unknown date"}`
+        : `completed ${relativeDate((freshness || {}).run_completed_at)} (${research.sourceAsOf || "Unknown"})`;
+      const concise = `${freshness.overall_status}. Research ${completion}; price through ${price.sourceAsOf || "unavailable"}; filings through ${filings.sourceAsOf || "unavailable"}; consensus ${consensus.sourceAsOf && consensus.sourceAsOf !== "Unknown" ? `through ${consensus.sourceAsOf}` : "unavailable"}.`;
+      const nextSetup = currentRunSetupText();
+      const setupNotice = displayedRunSetup === nextSetup
+        ? `Refresh setup: ${nextSetup}`
+        : `Displayed result: ${displayedRunSetup}. Next refresh: ${nextSetup}.`;
+      return `<h3>Data Freshness</h3>
+        <div class="status"><strong>${esc(concise)}</strong></div>
+        <div class="summary">${top.map(item => `
+          <div class="metric"><span>${esc(item.component)}</span><strong>${esc(item.status)} | ${esc(item.sourceAsOf)}</strong></div>
+        `).join("")}</div>
+        <p class="muted">${esc(setupNotice)} Disabled Macro or Wisburg layers are not fetched.</p>
+        <button type="button" id="refresh-current-setup">Refresh using current setup</button>
+        <details><summary>All source cutoffs</summary>
+          ${table(rows, [["Component", "component"], ["Status", "status"], ["Source as of", "sourceAsOf"], ["Retrieved / generated", "observed"], ["Source", "source"], ["Meaning", "meaning"]])}
+        </details>`;
+    }
+
+    function decisionDeltaPanel() {
+      const delta = current.decision_delta || {};
+      if (!delta.status) return "";
+      const rows = [
+        ...(delta.strengthening_changes || []).map(item => ({effect: "Strengthens", change: item})),
+        ...(delta.weakening_changes || []).map(item => ({effect: "Weakens", change: item})),
+        ...(delta.neutral_changes || []).map(item => ({effect: "Neutral", change: item}))
+      ];
+      const priorTimestamp = delta.compared_with_completed_at
+        ? `completed ${displayDate(delta.compared_with_completed_at)}`
+        : "saved; timestamp unavailable";
+      const priorProfile = delta.compared_with_profile
+        ? `, ${String(delta.compared_with_profile).replaceAll("_", " ")}`
+        : "";
+      return `<h3>Decision Delta</h3><div class="summary">
+        <div class="metric"><span>Status</span><strong>${esc(delta.status)}</strong></div>
+        <div class="metric"><span>Compared with</span><strong>${delta.compared_with_run_id ? `Prior ${esc(String(delta.compared_with_result_type || "live").replaceAll("_", " "))} run ${esc(priorTimestamp + priorProfile)}` : "First stored baseline"}</strong></div>
+      </div><p>${esc(delta.summary || "")}</p>
+      ${rows.length ? `<details><summary>What changed</summary>${table(rows, [["Effect", "effect"], ["Change", "change"]])}<p class="muted">Audit run ID: ${esc(delta.compared_with_run_id || "n/a")}.</p></details>` : ""}`;
+    }
+
+    function catalystClockPanel() {
+      const clock = current.catalyst_clock || {};
+      if (!clock.status) return "";
+      const cards = (clock.items || []).slice(0, 3).map((item, index) =>
+        `<article class="story-card"><h3>${index === 0 ? "Next" : "Then"}: ${esc(item.label || "Catalyst")}</h3>
+        <p>${esc(item.decision_relevance || "This event may change the current IC decision.")}</p>
+        <p class="muted">${esc(item.due_date || "Date not validated")} | ${esc(item.status || "Unknown")} | ${esc(item.source_label || item.source || "Registered source")}</p></article>`
+      ).join("");
+      return `<h3>Catalyst Clock</h3><p>${esc(clock.summary || "")}</p>
+        ${cards}`;
+    }
+
+    function prioritizedResearchQueuePanel() {
+      const queue = current.prioritized_research_queue || [];
+      if (!queue.length) return "";
+      return `<h3>Research Queue</h3><p class="muted">The three open tasks most likely to change the current IC decision.</p>
+        ${table(queue.slice(0, 3).map(item => ({
+          rank: item.rank,
+          task: item.title,
+          why: item.why_it_matters,
+          impact: item.decision_impact,
+          source: item.source_type,
+          automatic: item.auto_resolvable ? "Yes" : "No"
+        })), [["Rank", "rank"], ["Task", "task"], ["Why it matters", "why"], ["Decision impact", "impact"], ["Source", "source"], ["Automatic", "automatic"]])}`;
+    }
+
+    function creditLensSummary() {
+      const lens = current.credit_lens || {};
+      return `<h3>Credit Lens</h3><div class="summary">
+        <div class="metric"><span>Status</span><strong>${esc(lens.status || "Unavailable")}</strong></div>
+        <div class="metric"><span>Risk level</span><strong>${esc(lens.risk_level || "Unknown")}</strong></div>
+        <div class="metric"><span>Metrics</span><strong>${esc((lens.metrics || []).length)}</strong></div>
+      </div><p>${esc(lens.summary || "Credit analysis is unavailable for this run.")}</p>`;
+    }
+
+    function icBrief() {
+      return freshnessPanel() + storyFirstPanel() + independentResearchQaPanel() + decisionDeltaPanel() + catalystClockPanel() + prioritizedResearchQueuePanel() + llmGuardrailSummary() + historicalPerspective(true) + newsDebate(true) + creditLensSummary();
     }
 
     function icCopilot() {
@@ -1489,7 +1968,7 @@ HTML = r"""<!doctype html>
         ${table(profilingRows, [["Field", "field"], ["Value", "value"]])}
         ${table(profilingBottleneckRows, [["Slowest stage", "item"]])}
         ${table(profilingTreatmentRows, [["Bottleneck treatment", "item"]])}
-        <h3>Historical References</h3>
+        <h3>App Outcome Memory</h3>
         <p class="muted">Status: ${esc(historical.status || "Unavailable")}; scope: ${esc(historical.scope || "n/a")}; resolved sample: ${esc(historical.sample_size ?? 0)}/${esc(historical.minimum_sample_size ?? 0)}. ${esc(historical.summary || "")}</p>
         ${table(historicalRows, [["Ticker", "ticker"], ["Idea", "idea"], ["Stage", "stage"], ["Direction", "direction"], ["Similarity", "similarity"], ["Outcome", "outcome"], ["Realized", "realized"], ["Reasons", "reasons"]])}
         ${table(historicalGaps, [["Data gap", "item"]])}
@@ -2665,6 +3144,46 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
             return
+        if parsed.path == "/api/research-qa":
+            ticker = _ticker_from_query(parsed.query)
+            payload = ResearchStore().latest_decision_artifact(
+                ticker,
+                "independent_research_qa",
+            )
+            if payload is None:
+                self._send_json(
+                    {
+                        "ticker": ticker,
+                        "independent_research_qa": None,
+                        "message": "No Independent Research QA run is stored for this ticker.",
+                    },
+                    status=HTTPStatus.NOT_FOUND,
+                )
+            else:
+                self._send_json({
+                    "ticker": ticker,
+                    "independent_research_qa": payload,
+                    "qa_report": payload.get("qa_report"),
+                    "model_executions": payload.get("model_executions", []),
+                    "evidence_gaps": payload.get("evidence_gaps", []),
+                    "conclusion_revisions": payload.get("conclusion_revisions", []),
+                })
+            return
+        if (
+            parsed.path.startswith("/api/hybrid-research/jobs/")
+            or parsed.path.startswith("/api/dual-model-research/jobs/")
+            or parsed.path.startswith("/api/research-qa/jobs/")
+        ):
+            job_id = unquote(parsed.path.rstrip("/").split("/")[-1])
+            state = HYBRID_JOB_MANAGER.get(job_id)
+            if state is None:
+                self._send_json(
+                    {"error": "Hybrid research job not found"},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+            else:
+                self._send_json({"job": _jsonable(state)})
+            return
         if parsed.path == "/api/consensus":
             ticker = _ticker_from_query(parsed.query)
             self._send_json({"consensus": _jsonable(_stored_consensus(ticker))})
@@ -2722,9 +3241,85 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/llm-health":
             store = ResearchStore()
+            query = parse_qs(parsed.query)
+            ticker = str(query.get("ticker", [""])[0] or "").strip().upper()
             self._send_json({
                 "profiles": _jsonable(store.list_llm_profiles()),
                 "selection": store.get_llm_selection(),
+                "sol_audit": store.get_llm_audit_health("gpt-5.6-sol"),
+                "latest_dual_model_research": (
+                    store.latest_dual_model_research_run(ticker)
+                    if ticker else None
+                ),
+            })
+            return
+        if parsed.path in {
+            "/api/dual-model-research",
+            "/api/research-comparison",
+            "/api/input-sufficiency",
+            "/api/evidence-pack-audit",
+            "/api/benchmark-gap-decomposition",
+        }:
+            ticker = _ticker_from_query(parsed.query)
+            payload = ResearchStore().latest_dual_model_research_run(ticker)
+            if payload is None:
+                self._send_json(
+                    {
+                        "ticker": ticker,
+                        "dual_model_research": None,
+                        "message": "No paired-model run is stored for this ticker.",
+                    },
+                    status=HTTPStatus.NOT_FOUND,
+                )
+            else:
+                if parsed.path == "/api/input-sufficiency":
+                    response = {
+                        "ticker": ticker,
+                        "input_sufficiency": payload.get(
+                            "input_sufficiency"
+                        ),
+                        "benchmark_policy": (
+                            "A case qualifies for model-quality conclusions "
+                            "at 80/100 with no critical identity, period, "
+                            "citation, or no-lookahead gap."
+                        ),
+                    }
+                elif parsed.path == "/api/evidence-pack-audit":
+                    response = {
+                        "ticker": ticker,
+                        "evidence_pack_audit": payload.get(
+                            "evidence_pack_audit"
+                        ),
+                    }
+                elif parsed.path == "/api/benchmark-gap-decomposition":
+                    response = {
+                        "ticker": ticker,
+                        "gap_decomposition": payload.get(
+                            "gap_decomposition"
+                        ),
+                    }
+                else:
+                    response = {
+                        "ticker": ticker,
+                        "dual_model_research": payload,
+                        "stages": payload.get("stages", []),
+                        "adjudication": payload.get("adjudication"),
+                    }
+                self._send_json(response)
+            return
+        if parsed.path == "/api/research-improvements":
+            query = parse_qs(parsed.query)
+            status = str(query.get("status", [""])[0] or "").strip() or None
+            self._send_json({
+                "improvement_candidates": (
+                    ResearchStore().list_research_improvement_candidates(
+                        status=status,
+                    )
+                ),
+                "policy": (
+                    "Human review and cross-ticker evaluation are required. "
+                    "Runtime model output cannot mutate prompts or code."
+                ),
             })
             return
         if parsed.path == "/api/macro-health":
@@ -2764,6 +3359,38 @@ class Handler(BaseHTTPRequestHandler):
                 "attributions": ResearchStore().latest_attributions(ticker),
             })
             return
+        if parsed.path.startswith("/api/historical-analogs/"):
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) == 3:
+                ticker = _ticker_from_query(parsed.query)
+                analog_id = unquote(parts[2])
+                payload = ResearchStore().latest_decision_artifact(
+                    ticker,
+                    "historical_analogs",
+                )
+                dossiers = payload.get("dossiers", []) if isinstance(payload, dict) else []
+                assessments = payload.get("assessments", []) if isinstance(payload, dict) else []
+                dossier = next(
+                    (item for item in dossiers if item.get("analog_id") == analog_id),
+                    None,
+                )
+                assessment = next(
+                    (item for item in assessments if item.get("analog_id") == analog_id),
+                    None,
+                )
+                if dossier or assessment:
+                    self._send_json({
+                        "ticker": ticker,
+                        "analog_id": analog_id,
+                        "dossier": dossier,
+                        "assessment": assessment,
+                    })
+                else:
+                    self._send_json(
+                        {"error": "Historical analog not found for the latest run."},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+                return
         decision_routes = {
             "/api/evidence-closure": "evidence_closure",
             "/api/causal-thesis-graph": "causal_thesis_graph",
@@ -2777,6 +3404,14 @@ class Handler(BaseHTTPRequestHandler):
             "/api/expectation-events": "expectation_event_audits",
             "/api/earnings-surprise-proxy": "earnings_surprise_proxy",
             "/api/recent-market-context": "recent_market_context",
+            "/api/historical-analogs": "historical_analogs",
+            "/api/news-intelligence": "news_intelligence",
+            "/api/decision-delta": "decision_delta",
+            "/api/catalysts": "catalyst_clock",
+            "/api/prioritized-research-queue": "prioritized_research_queue",
+            "/api/retrieval-audit": "retrieval_audit",
+            "/api/regulatory-radar": "regulatory_momentum",
+            "/api/source-admission": "source_admission",
         }
         if parsed.path in decision_routes:
             ticker = _ticker_from_query(parsed.query)
@@ -2855,6 +3490,7 @@ class Handler(BaseHTTPRequestHandler):
             references = build_historical_references_for_ticker(ticker, ResearchStore())
             self._send_json({
                 "ticker": ticker,
+                "app_outcome_memory": _jsonable(references),
                 "historical_references": _jsonable(references),
             })
             return
@@ -3048,10 +3684,202 @@ class Handler(BaseHTTPRequestHandler):
             ticker = query.get("ticker", [None])[0]
             self._send_json({"calibration": _jsonable(build_calibration_report(ResearchStore(), ticker))})
             return
+        if parsed.path in {
+            "/api/source-retrieval",
+            "/api/claim-evidence-audit",
+            "/api/audit-repair-queue",
+            "/api/partial-research-rerun",
+            "/api/demo-freeze-decision",
+        }:
+            ticker = _ticker_from_query(parsed.query)
+            payload = ResearchStore().latest_hybrid_research_run(ticker) or {}
+            field_by_path = {
+                "/api/source-retrieval": (
+                    "retrieval_lifecycles",
+                    "normalized_sources",
+                ),
+                "/api/claim-evidence-audit": ("claim_evidence_audits",),
+                "/api/audit-repair-queue": ("audit_repair_queue",),
+                "/api/partial-research-rerun": (
+                    "partial_rerun_manifest",
+                ),
+                "/api/demo-freeze-decision": ("demo_freeze_decision",),
+            }
+            response = {"ticker": ticker}
+            for field in field_by_path[parsed.path]:
+                response[field] = payload.get(field)
+            self._send_json(response)
+            return
         self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/research-preview":
+            payload = self._read_json()
+            self._send_json({"preview": _research_preview_from_payload(payload)})
+            return
+        if parsed.path == "/api/retrieval-audit":
+            payload = self._read_json()
+            ticker = str(payload.get("ticker") or "").strip().upper()
+            if not ticker:
+                self._send_json(
+                    {"error": "ticker is required"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                report = run_retrieval_audit(
+                    ticker,
+                    profile=str(
+                        payload.get("profile") or "deep_initiation"
+                    ),
+                    refresh=bool(payload.get("refresh", False)),
+                    offline=bool(payload.get("offline", False)),
+                    output_dir=payload.get("output_dir"),
+                    write_reports=bool(
+                        payload.get("write_reports", True)
+                    ),
+                )
+            except Exception as exc:
+                self._send_json(
+                    {
+                        "ticker": ticker,
+                        "error": str(exc)[:500],
+                    },
+                    status=HTTPStatus.BAD_GATEWAY,
+                )
+                return
+            self._send_json({"retrieval_audit": _jsonable(report)})
+            return
+        if parsed.path in {
+            "/api/hybrid-research/jobs",
+            "/api/dual-model-research/jobs",
+            "/api/research-qa/jobs",
+        }:
+            payload = self._read_json()
+            ticker = str(payload.get("ticker") or "").strip().upper()
+            if not ticker:
+                self._send_json(
+                    {"error": "ticker is required"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            credential_preflight = _hybrid_credential_preflight(
+                payload,
+                allow_local=False,
+            )
+            if credential_preflight["status"] != "ready":
+                self._send_json(
+                    {
+                        "error": "Primary Research AI did not start.",
+                        "execution_preflight": credential_preflight,
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                planner, executor, backend = _hybrid_providers_from_payload(
+                    payload,
+                    allow_local=False,
+                )
+            except ValueError as exc:
+                self._send_json(
+                    {"error": str(exc)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            safe_payload = dict(payload)
+            safe_payload["enable_hybrid_research"] = True
+            safe_payload["enable_independent_research_qa"] = True
+            safe_payload["research_profile"] = str(
+                payload.get("research_profile") or "adaptive_ic"
+            )
+
+            preflight = build_hybrid_execution_preflight(
+                ticker,
+                deepseek_provider=planner,
+                sol_provider=executor,
+                research_profile=safe_payload["research_profile"],
+                deepseek_credential_source="session BYOK",
+                sol_credential_source="session BYOK",
+            )
+            if preflight.status != "ready":
+                self._send_json(
+                    {
+                        "error": "Primary Research AI did not start.",
+                        "execution_preflight": _jsonable(preflight),
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            def worker(cancel_event, progress_callback):
+                result = _research_result_from_payload(
+                    safe_payload,
+                    hybrid_planner_provider=planner,
+                    hybrid_executor_provider=executor,
+                    hybrid_execution_backend=backend,
+                    hybrid_cancel_event=cancel_event,
+                    hybrid_progress_callback=progress_callback,
+                )
+                if result.hybrid_research is None:
+                    raise RuntimeError(
+                        "Research QA workflow completed without an execution trace."
+                    )
+                return result.hybrid_research
+
+            state = HYBRID_JOB_MANAGER.start(
+                ticker,
+                worker,
+                providers=[planner, executor],
+                research_profile=safe_payload["research_profile"],
+                preflight=preflight,
+            )
+            self._send_json(
+                {"job": _jsonable(state)},
+                status=HTTPStatus.ACCEPTED,
+            )
+            return
+        if parsed.path.startswith("/api/historical-analogs/") and parsed.path.endswith("/investigate"):
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) == 4:
+                analog_id = unquote(parts[2])
+                payload = self._read_json()
+                ticker = str(payload.get("ticker") or "").strip().upper()
+                if not ticker:
+                    self._send_json(
+                        {"error": "ticker is required"},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                try:
+                    result = run_us_equity_research(
+                        ticker,
+                        research_profile=str(payload.get("research_profile") or "adaptive_ic"),
+                        investigate_analog_id=analog_id,
+                    )
+                    dossier = next(
+                        (
+                            item for item in result.historical_analogs.dossiers
+                            if item.analog_id == analog_id
+                        ),
+                        None,
+                    )
+                    self._send_json({
+                        "ticker": ticker,
+                        "analog_id": analog_id,
+                        "investigation_status": _jsonable(
+                            result.historical_analogs.investigation_status
+                        ),
+                        "dossier": _jsonable(dossier) if dossier else None,
+                        "historical_analogs": _jsonable(result.historical_analogs),
+                    })
+                except Exception as exc:
+                    self._send_json(
+                        {"error": str(exc)},
+                        status=HTTPStatus.BAD_GATEWAY,
+                    )
+                return
         if parsed.path.startswith("/api/llm-profiles/") and parsed.path.endswith("/test"):
             profile_id = unquote(parsed.path.strip("/").split("/")[2])
             store = ResearchStore()
@@ -3277,85 +4105,50 @@ class Handler(BaseHTTPRequestHandler):
                 payload["research_profile"] = "investigate_event"
             ticker = str(payload.get("ticker") or "AAPL").strip().upper() or "AAPL"
             fallback = bool(payload.get("fallback", False))
-            budget_mode = str(payload.get("budget_mode") or config.BUDGET_MODE)
-            fmp_key = str(payload.get("fmp_key") or "") if budget_allows_paid_data(budget_mode) else ""
-            store = ResearchStore()
-            provider = build_consensus_provider(
-                store=store,
-                alpha_vantage_key=str(payload.get("alpha_vantage_key") or "") or None,
-                finnhub_key=str(payload.get("finnhub_key") or "") or None,
-                fmp_key=fmp_key or None,
-                enable_nasdaq=bool(payload.get("enable_nasdaq", False)),
-                enable_tradingview=bool(payload.get("enable_tradingview", False)),
-                enable_yahoo=False,
-            )
-            external_provider = external_evidence_stack_from_config(
-                fred_api_key=str(payload.get("fred_key") or "") or None,
-                bea_api_key=str(payload.get("bea_key") or "") or None,
-                census_api_key=str(payload.get("census_key") or "") or None,
-                enable_default_macro=bool(payload.get("enable_default_macro", True)),
-                global_macro_mode=bool(payload.get("global_macro_mode", False)),
-                enable_gdelt=bool(payload.get("enable_gdelt", False)),
-                wisburg_api_key=str(payload.get("wisburg_key") or "") or None,
-                enable_wisburg=bool(payload.get("enable_wisburg", False)),
-                refresh_cache=bool(payload.get("refresh_macro_cache", False)),
-                store=store,
-            )
-            enable_llm = bool(payload.get("enable_llm", False))
-            primary_profile_id = str(payload.get("primary_llm_profile_id") or "")
-            secondary_profile_id = str(payload.get("secondary_llm_profile_id") or "")
-            enable_secondary_llm = bool(payload.get("enable_secondary_llm", True))
-            secondary_min_stage = str(payload.get("secondary_llm_min_stage") or config.SECONDARY_LLM_MIN_STAGE)
-            language_policy = str(payload.get("llm_language_policy") or config.LLM_LANGUAGE_POLICY)
-            research_profile = str(payload.get("research_profile") or config.RESEARCH_PROFILE)
-            investigate_event_id = str(payload.get("investigate_event_id") or "") or None
-            if primary_profile_id or secondary_profile_id:
-                store.save_llm_selection(
-                    primary_profile_id,
-                    secondary_profile_id,
-                    enable_secondary_llm,
-                    secondary_min_stage,
-                    language_policy,
+            if payload.get("enable_independent_research_qa", payload.get("enable_hybrid_research")):
+                credential_preflight = _hybrid_credential_preflight(
+                    payload,
+                    allow_local=False,
                 )
-            manager = LocalSecretsManager()
-            primary_profile = store.get_llm_profile(primary_profile_id)
-            secondary_profile = store.get_llm_profile(secondary_profile_id)
-            llm_provider = profile_to_provider(primary_profile, manager, enabled=enable_llm)
-            if enable_llm and primary_profile_id and llm_provider is None:
-                llm_provider = UnavailableLlmProvider(
-                    primary_profile.provider_preset if primary_profile else "selected_profile",
-                    primary_profile.model if primary_profile else "unknown",
-                    "Selected primary LLM profile is unavailable. Check that its API key and base URL are saved.",
-                )
-            elif llm_provider is None:
-                llm_provider = provider_from_config(enabled=enable_llm)
-            secondary_llm_provider = profile_to_provider(
-                secondary_profile,
-                manager,
-                enabled=enable_llm and enable_secondary_llm,
-            )
+                if credential_preflight["status"] != "ready":
+                    self._send_json(
+                        {
+                            "error": "Primary Research AI did not start.",
+                            "execution_preflight": credential_preflight,
+                        },
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
             try:
-                result = run_us_equity_research(
-                    ticker,
-                    sec_client=SecClient(user_agent=str(payload.get("sec_user_agent") or config.SEC_USER_AGENT)),
-                    price_client=StooqPriceClient(
-                        store=store,
-                        tiingo_key=str(payload.get("tiingo_key") or "") or None,
-                        eodhd_key=str(payload.get("eodhd_key") or "") or None,
-                    ),
-                    consensus=provider,
-                    external_evidence_provider=external_provider,
-                    llm_provider=llm_provider,
-                    secondary_llm_provider=secondary_llm_provider,
-                    enable_secondary_llm_review=enable_secondary_llm,
-                    secondary_llm_min_stage=secondary_min_stage,
-                    llm_language_policy=language_policy,
-                    budget_mode=budget_mode,
-                    store=store,
-                    research_profile=research_profile,
-                    investigate_event_id=investigate_event_id,
-                )
+                result = _research_result_from_payload(payload)
                 self._send_json({"result": _jsonable(result)})
+            except ValueError as exc:
+                if payload.get("enable_independent_research_qa", payload.get("enable_hybrid_research")):
+                    self._send_json(
+                        {
+                            "error": str(exc),
+                            "execution_preflight": {
+                                "status": "blocked",
+                                "deepseek": (
+                                    "ready"
+                                    if payload.get("hybrid_deepseek_key")
+                                    else "missing"
+                                ),
+                                "sol": (
+                                    "ready"
+                                    if payload.get("hybrid_openai_key")
+                                    else "missing"
+                                ),
+                                "adjudication": "not_run",
+                            },
+                        },
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                else:
+                    self._send_json(
+                        {"error": str(exc)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
             except Exception as exc:  # pragma: no cover - server boundary
                 if fallback:
                     self._send_json({
@@ -3459,6 +4252,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
+        if (
+            parsed.path.startswith("/api/hybrid-research/jobs/")
+            or parsed.path.startswith("/api/dual-model-research/jobs/")
+            or parsed.path.startswith("/api/research-qa/jobs/")
+        ):
+            job_id = unquote(parsed.path.rstrip("/").split("/")[-1])
+            state = HYBRID_JOB_MANAGER.cancel(job_id)
+            if state is None:
+                self._send_json(
+                    {"error": "Hybrid research job not found"},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+            else:
+                self._send_json({"job": _jsonable(state)})
+            return
         if parsed.path == "/api/market-implied-assumptions":
             ticker = _ticker_from_query(parsed.query)
             deleted = ResearchStore().clear_market_implied_assumptions(ticker)
@@ -3521,6 +4329,323 @@ class Handler(BaseHTTPRequestHandler):
             return json.loads(self.rfile.read(length).decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return {}
+
+
+def _hybrid_providers_from_payload(
+    payload: dict,
+    *,
+    allow_local: bool,
+):
+    backend_id = str(
+        payload.get("hybrid_execution_backend") or "openai_responses"
+    )
+    deepseek_key = str(payload.get("hybrid_deepseek_key") or "")
+    if not deepseek_key:
+        raise ValueError(
+            "A session-only DeepSeek key is required for primary research planning and analysis."
+        )
+    planner = OpenAICompatibleProvider(
+        api_key=deepseek_key,
+        model=str(
+            payload.get("hybrid_deepseek_model")
+            or config.HYBRID_DEEPSEEK_MODEL
+        ),
+        base_url="https://api.deepseek.com",
+        provider_name="deepseek",
+        timeout_seconds=config.HYBRID_RESEARCH_TIMEOUT_SECONDS,
+        max_tokens=config.HYBRID_DEEPSEEK_MAX_TOKENS,
+        reasoning_effort=config.HYBRID_DEEPSEEK_REASONING_EFFORT,
+        thinking_enabled=config.HYBRID_DEEPSEEK_THINKING,
+    )
+    if backend_id == "codex_local":
+        if not allow_local or not config.ENABLE_LOCAL_CODEX_EXECUTOR:
+            raise ValueError(
+                "codex_local is maintainer-only and is never available through "
+                "the public research API."
+            )
+        executor = CodexLocalProvider(
+            model=config.HYBRID_OPENAI_MODEL,
+            reasoning_effort="max",
+            timeout_seconds=config.HYBRID_RESEARCH_TIMEOUT_SECONDS,
+            executable=config.CODEX_EXECUTABLE,
+            enabled=True,
+        )
+        return planner, executor, CODEX_LOCAL_BACKEND
+    openai_key = str(payload.get("hybrid_openai_key") or "")
+    if not openai_key:
+        return planner, None, OPENAI_RESPONSES_BACKEND
+    executor = OpenAIResponsesProvider(
+        openai_key,
+        model=str(
+            payload.get("hybrid_openai_model") or config.HYBRID_OPENAI_MODEL
+        ),
+        reasoning_mode="pro",
+        reasoning_effort=config.HYBRID_SOL_REASONING_EFFORT,
+        max_output_tokens=config.HYBRID_SOL_MAX_OUTPUT_TOKENS,
+        timeout_seconds=config.HYBRID_RESEARCH_TIMEOUT_SECONDS,
+    )
+    return planner, executor, OPENAI_RESPONSES_BACKEND
+
+
+def _hybrid_credential_preflight(
+    payload: dict,
+    *,
+    allow_local: bool,
+) -> dict:
+    backend_id = str(
+        payload.get("hybrid_execution_backend") or "openai_responses"
+    )
+    deepseek_ready = bool(str(payload.get("hybrid_deepseek_key") or ""))
+    if backend_id == "codex_local":
+        sol_ready = bool(allow_local and config.ENABLE_LOCAL_CODEX_EXECUTOR)
+        sol_message = (
+            "Local Codex is ready."
+            if sol_ready else
+            "Local Codex is unavailable through this API."
+        )
+    else:
+        sol_ready = bool(str(payload.get("hybrid_openai_key") or ""))
+        sol_message = (
+            "Independent Research QA is ready."
+            if sol_ready else
+            "Independent audit is optional and is not configured."
+        )
+    blockers = []
+    if not deepseek_ready:
+        blockers.append(
+            "A session-only DeepSeek key is required for DeepSeek V4 Pro."
+        )
+    return {
+        "status": "ready" if not blockers else "blocked",
+        "deepseek": "ready" if deepseek_ready else "missing",
+        "sol": "ready" if sol_ready else "optional_not_configured",
+        "primary_ai": "ready" if deepseek_ready else "missing",
+        "independent_audit": "ready" if sol_ready else "optional_not_configured",
+        "evidence": "pending_deterministic_preflight",
+        "adjudication": "not_run",
+        "blockers": blockers,
+    }
+
+
+def _research_preview_from_payload(payload: dict) -> dict:
+    """Return a redacted, deterministic preview of the requested research run."""
+    profile = resolve_research_profile(
+        str(payload.get("research_profile") or config.RESEARCH_PROFILE)
+    )
+    macro_policy = str(payload.get("macro_policy") or "adaptive").strip().lower()
+    qa_enabled = bool(
+        payload.get(
+            "enable_independent_research_qa",
+            payload.get("enable_hybrid_research", False),
+        )
+    )
+    primary_ready = bool(str(payload.get("hybrid_deepseek_key") or ""))
+    auditor_ready = bool(str(payload.get("hybrid_openai_key") or ""))
+    configured_sources = [
+        "SEC filings and company disclosures",
+        "market prices",
+        "Treasury and default public macro",
+    ]
+    optional_source_fields = {
+        "alpha_vantage_key": "Alpha Vantage consensus",
+        "finnhub_key": "Finnhub consensus",
+        "fmp_key": "Financial Modeling Prep",
+        "fred_key": "FRED",
+        "bea_key": "BEA",
+        "census_key": "Census",
+        "wisburg_key": "Wisburg",
+    }
+    configured_sources.extend(
+        label for field, label in optional_source_fields.items()
+        if str(payload.get(field) or "")
+    )
+    if payload.get("enable_nasdaq"):
+        configured_sources.append("Nasdaq consensus")
+    if payload.get("enable_tradingview"):
+        configured_sources.append("TradingView consensus")
+    stages = [
+        "Deterministic bootstrap",
+        "Adaptive macro selection",
+        "Shared evidence graph construction",
+    ]
+    if qa_enabled:
+        stages.extend([
+            "Primary research planning and analysis",
+            "Independent audit" if auditor_ready else "Independent audit (optional; not configured)",
+            "Targeted evidence-gap retrieval",
+            "Investment Committee synthesis",
+        ])
+    return {
+        "ticker": str(payload.get("ticker") or "AAPL").strip().upper() or "AAPL",
+        "depth": profile.profile_id,
+        "depth_label": profile.label,
+        "data_status": "Best available from every configured and entitled source",
+        "configured_sources": list(dict.fromkeys(configured_sources)),
+        "macro_status": (
+            "Paused" if macro_policy == "off" else
+            "Global diagnostic" if macro_policy == "global" else
+            "Adaptive"
+        ),
+        "primary_ai_status": (
+            "Ready" if primary_ready else
+            "Not configured" if not qa_enabled else
+            "Required credential missing"
+        ),
+        "independent_qa_status": (
+            "Ready" if auditor_ready else "Optional; not configured"
+        ),
+        "expected_execution": "New run with cache reuse where policy-compatible",
+        "expected_stages": stages,
+        "estimated_provider_spend_usd": None,
+        "credential_values_included": False,
+    }
+
+
+def _research_result_from_payload(
+    payload: dict,
+    *,
+    hybrid_planner_provider=None,
+    hybrid_executor_provider=None,
+    hybrid_execution_backend=None,
+    hybrid_cancel_event=None,
+    hybrid_progress_callback=None,
+):
+    ticker = str(payload.get("ticker") or "AAPL").strip().upper() or "AAPL"
+    budget_mode = str(payload.get("budget_mode") or config.BUDGET_MODE)
+    fmp_key = str(payload.get("fmp_key") or "")
+    store = ResearchStore()
+    consensus_provider = build_consensus_provider(
+        store=store,
+        alpha_vantage_key=str(payload.get("alpha_vantage_key") or "") or None,
+        finnhub_key=str(payload.get("finnhub_key") or "") or None,
+        fmp_key=fmp_key or None,
+        enable_nasdaq=bool(payload.get("enable_nasdaq", False)),
+        enable_tradingview=bool(payload.get("enable_tradingview", False)),
+        enable_yahoo=False,
+    )
+    macro_policy = str(payload.get("macro_policy") or "").strip().lower()
+    if not macro_policy:
+        macro_policy = "adaptive"
+    macro_disabled = macro_policy == "off"
+    external_provider = external_evidence_stack_from_config(
+        fred_api_key=str(payload.get("fred_key") or "") or None,
+        enable_fred=False if macro_disabled else None,
+        enable_bls=False if macro_disabled else None,
+        bea_api_key=str(payload.get("bea_key") or "") or None,
+        enable_bea=False if macro_disabled else None,
+        census_api_key=str(payload.get("census_key") or "") or None,
+        enable_census=False if macro_disabled else None,
+        enable_treasury=False if macro_disabled else None,
+        enable_ofr=False if macro_disabled else None,
+        enable_world_bank=False if macro_disabled else None,
+        enable_imf=False if macro_disabled else None,
+        enable_default_macro=macro_policy in {"adaptive", "us_essentials", "global"},
+        global_macro_mode=macro_policy in {"adaptive", "global"},
+        enable_gdelt=bool(payload.get("enable_gdelt", False)),
+        wisburg_api_key=str(payload.get("wisburg_key") or "") or None,
+        enable_wisburg=bool(payload.get("enable_wisburg", False)),
+        refresh_cache=bool(payload.get("refresh_macro_cache", False)),
+        store=store,
+    )
+    enable_llm = bool(payload.get("enable_llm", False))
+    primary_profile_id = str(payload.get("primary_llm_profile_id") or "")
+    secondary_profile_id = str(payload.get("secondary_llm_profile_id") or "")
+    enable_secondary = bool(payload.get("enable_secondary_llm", True))
+    secondary_min_stage = str(
+        payload.get("secondary_llm_min_stage")
+        or config.SECONDARY_LLM_MIN_STAGE
+    )
+    language_policy = str(
+        payload.get("llm_language_policy") or config.LLM_LANGUAGE_POLICY
+    )
+    if primary_profile_id or secondary_profile_id:
+        store.save_llm_selection(
+            primary_profile_id,
+            secondary_profile_id,
+            enable_secondary,
+            secondary_min_stage,
+            language_policy,
+        )
+    manager = LocalSecretsManager()
+    primary_profile = store.get_llm_profile(primary_profile_id)
+    secondary_profile = store.get_llm_profile(secondary_profile_id)
+    llm_provider = profile_to_provider(
+        primary_profile, manager, enabled=enable_llm
+    )
+    if enable_llm and primary_profile_id and llm_provider is None:
+        llm_provider = UnavailableLlmProvider(
+            primary_profile.provider_preset if primary_profile else "selected_profile",
+            primary_profile.model if primary_profile else "unknown",
+            "Selected primary LLM profile is unavailable. Check its key and base URL.",
+        )
+    elif llm_provider is None:
+        llm_provider = provider_from_config(enabled=enable_llm)
+    secondary_provider = profile_to_provider(
+        secondary_profile,
+        manager,
+        enabled=enable_llm and enable_secondary,
+    )
+    enable_hybrid = bool(
+        payload.get(
+            "enable_independent_research_qa",
+            payload.get("enable_hybrid_research", False),
+        )
+    )
+    if enable_hybrid and (
+        hybrid_planner_provider is None or hybrid_executor_provider is None
+    ):
+        (
+            hybrid_planner_provider,
+            hybrid_executor_provider,
+            hybrid_execution_backend,
+        ) = _hybrid_providers_from_payload(payload, allow_local=False)
+    if enable_hybrid and hybrid_planner_provider is None:
+        raise ValueError(
+            "Primary Research AI is unavailable; configure a DeepSeek profile or session key."
+        )
+    return run_us_equity_research(
+        ticker,
+        sec_client=SecClient(
+            user_agent=str(
+                payload.get("sec_user_agent") or config.SEC_USER_AGENT
+            )
+        ),
+        price_client=StooqPriceClient(
+            store=store,
+            tiingo_key=str(payload.get("tiingo_key") or "") or None,
+            eodhd_key=str(payload.get("eodhd_key") or "") or None,
+        ),
+        consensus=consensus_provider,
+        external_evidence_provider=external_provider,
+        llm_provider=llm_provider,
+        secondary_llm_provider=secondary_provider,
+        enable_secondary_llm_review=enable_secondary,
+        secondary_llm_min_stage=secondary_min_stage,
+        llm_language_policy=language_policy,
+        budget_mode=budget_mode,
+        store=store,
+        research_profile=str(
+            payload.get("research_profile") or config.RESEARCH_PROFILE
+        ),
+        investigate_event_id=(
+            str(payload.get("investigate_event_id") or "") or None
+        ),
+        investigate_analog_id=(
+            str(payload.get("investigate_analog_id") or "") or None
+        ),
+        enable_hybrid_research=enable_hybrid,
+        enable_independent_research_qa=enable_hybrid,
+        # Public/browser requests never authorize the expensive duplicated
+        # choreography. Maintainers invoke that benchmark directly offline.
+        enable_two_choreography_benchmark=False,
+        hybrid_planner_provider=hybrid_planner_provider,
+        hybrid_executor_provider=hybrid_executor_provider,
+        hybrid_checker_provider=hybrid_planner_provider,
+        hybrid_critic_provider=None,
+        hybrid_execution_backend=hybrid_execution_backend,
+        hybrid_cancel_event=hybrid_cancel_event,
+        hybrid_progress_callback=hybrid_progress_callback,
+    )
 
 
 def main() -> None:

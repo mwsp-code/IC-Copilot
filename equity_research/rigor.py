@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from collections import Counter
+from dataclasses import asdict
 from datetime import datetime, timezone
 from statistics import mean
 
@@ -288,6 +289,12 @@ def build_run_manifest(
     llm_extraction_manifest: LlmExtractionManifest | None = None,
     research_profile_summary: dict | None = None,
     effective_history_summary: dict | None = None,
+    research_execution_policy: object | None = None,
+    data_access_policy: object | None = None,
+    source_policy_fingerprint: object | None = None,
+    evidence_graph: object | None = None,
+    research_ai_plan: object | None = None,
+    independent_research_qa: object | None = None,
 ) -> RunManifest:
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     reproducible_input = {
@@ -350,6 +357,96 @@ def build_run_manifest(
         ),
         research_profile_summary=research_profile_summary or {},
         effective_history_summary=effective_history_summary or {},
+        research_execution_policy=(
+            asdict(research_execution_policy)
+            if research_execution_policy is not None else {}
+        ),
+        data_access_policy=(
+            asdict(data_access_policy)
+            if data_access_policy is not None else {}
+        ),
+        source_policy_fingerprint=str(
+            getattr(source_policy_fingerprint, "fingerprint", "") or ""
+        ),
+        admitted_evidence_hash=str(
+            getattr(evidence_graph, "evidence_hash", "") or ""
+        ),
+        evidence_graph_version=str(
+            getattr(evidence_graph, "graph_version", "") or ""
+        ),
+        model_role_assignments=[
+            asdict(item)
+            for item in getattr(research_ai_plan, "assignments", [])
+        ],
+        independent_research_qa_summary=(
+            {
+                "status": getattr(independent_research_qa, "status", ""),
+                "score": getattr(
+                    getattr(
+                        getattr(independent_research_qa, "qa_report", None),
+                        "score",
+                        None,
+                    ),
+                    "total_score",
+                    None,
+                ),
+                "evidence_gaps_unresolved": getattr(
+                    getattr(independent_research_qa, "qa_report", None),
+                    "evidence_gaps_unresolved",
+                    0,
+                ),
+            }
+            if independent_research_qa is not None else {}
+        ),
+        research_requests=[
+            asdict(item)
+            for item in getattr(independent_research_qa, "research_requests", [])
+        ],
+        candidate_discovery=[
+            asdict(item)
+            for item in getattr(independent_research_qa, "candidate_discovery_items", [])
+        ],
+        evidence_admission_log=[
+            asdict(item)
+            for item in getattr(evidence_graph, "admission_decisions", [])
+        ] + [
+            {
+                "candidate_id": item.candidate_id,
+                "status": item.status,
+                "decision_id": item.admission_decision_id,
+                "evidence_ids": list(item.admitted_evidence_ids),
+                "reason": (
+                    item.status_history[-1].reason
+                    if item.status_history else ""
+                ),
+                "origin_role": item.origin_role,
+                "origin_provider": item.origin_provider,
+                "pipeline_completed": item.status in {"admitted", "rejected"},
+            }
+            for item in getattr(
+                independent_research_qa,
+                "candidate_discovery_items",
+                [],
+            )
+        ],
+        primary_audit_responses=[
+            asdict(item)
+            for item in getattr(independent_research_qa, "primary_audit_responses", [])
+        ],
+        closure_audit_summary=(
+            asdict(getattr(independent_research_qa, "closure_result"))
+            if getattr(independent_research_qa, "closure_result", None) is not None
+            else {}
+        ),
+        recursion_depth=int(
+            getattr(independent_research_qa, "recursion_depth", 0) or 0
+        ),
+        estimated_research_cost_usd=getattr(
+            independent_research_qa, "estimated_cost_usd", None
+        ),
+        research_stopping_reason=str(
+            getattr(independent_research_qa, "stopping_reason", "") or ""
+        ),
     )
 
 

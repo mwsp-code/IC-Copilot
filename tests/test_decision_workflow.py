@@ -106,6 +106,74 @@ def _empty_context():
     }
 
 
+def test_reit_market_implied_model_solves_ffo_growth_and_cap_rate():
+    identity = CompanyIdentity(
+        "REITX",
+        "0000000002",
+        "Test REIT",
+        sic="6798",
+        sic_description="Real estate investment trust",
+    )
+    metrics = [
+        _metric("Shares", 100.0, "shares"),
+        _metric("Funds From Operations", 500.0),
+        _metric("Net Operating Income", 700.0),
+        _metric("Cash", 100.0),
+        _metric("Current Debt", 200.0),
+        _metric("Long-term Debt", 1_000.0),
+    ]
+    valuation = ValuationResult(template="REIT", status="Insufficient data", currency="USD")
+    model = build_company_model_workspace(identity, metrics, valuation)
+
+    implied = build_market_implied_expectations(
+        identity,
+        metrics,
+        100.0,
+        valuation,
+        model,
+    )
+    rows = {row.metric: row for row in implied.expectations}
+
+    assert rows["Implied FFO growth"].implied_value is not None
+    assert rows["Implied property cap-rate proxy"].implied_value is not None
+    assert {item.key for item in implied.assumptions} == {
+        "terminal_p_ffo_multiple",
+        "forecast_years",
+    }
+
+
+def test_insurer_market_implied_model_keeps_reserve_proxy_explicit():
+    identity = CompanyIdentity(
+        "INSX",
+        "0000000003",
+        "Test Insurer",
+        sic="6331",
+        sic_description="Fire, marine, and casualty insurance",
+    )
+    metrics = [
+        _metric("Shares", 100.0, "shares"),
+        _metric("Stockholders' Equity", 2_000.0),
+        _metric("Net Income", 250.0),
+        _metric("Insurance Losses", 800.0),
+        _metric("Insurance Premiums", 1_500.0),
+    ]
+    valuation = ValuationResult(template="Insurer", status="Insufficient data", currency="USD")
+    model = build_company_model_workspace(identity, metrics, valuation)
+
+    implied = build_market_implied_expectations(
+        identity,
+        metrics,
+        25.0,
+        valuation,
+        model,
+    )
+    rows = {row.metric: row for row in implied.expectations}
+
+    assert rows["Implied insurer sustainable ROE"].implied_value is not None
+    assert rows["Implied reserve and claims burden proxy"].implied_value is not None
+    assert rows["Implied reserve and claims burden proxy"].confidence == "Low"
+
+
 def test_evidence_closure_resolves_normalized_metric_and_classifies_consensus_boundary():
     work_order = EvidenceWorkOrder(
         "Open",

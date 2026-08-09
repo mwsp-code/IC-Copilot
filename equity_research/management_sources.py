@@ -64,6 +64,18 @@ ISSUER_IR_ARTIFACT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "agm_egm_material": ("annual general meeting", "agm", "egm", "extraordinary general meeting", "special meeting"),
     "proxy_statement": ("proxy", "notice of annual general meeting", "voting results", "poll results"),
     "sec_hkex_filing": ("6-k", "20-f", "hkex", "sec filing", "annual report"),
+    "issuer_announcement": (
+        "announces",
+        "announcement",
+        "agreement",
+        "investment",
+        "partnership",
+        "supplier",
+        "capacity",
+        "commitment",
+        "launches",
+        "introduces",
+    ),
 }
 
 CLAIM_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -223,7 +235,15 @@ class CsvTranscriptProvider(ManagementSourceAdapter):
     def __init__(self, directory: Path | None = None) -> None:
         self.directory = directory or TRANSCRIPT_CSV_DIR
 
-    def fetch_documents(self, ticker: str) -> tuple[list[ManagementDocument], list[TranscriptTurn], list[ProviderStatus]]:
+    def fetch_documents(
+        self,
+        ticker: str,
+        history_limit: int | None = None,
+    ) -> tuple[
+        list[ManagementDocument],
+        list[TranscriptTurn],
+        list[ProviderStatus],
+    ]:
         observed_at = _utc_now()
         csv_path = self.directory / f"{ticker.upper()}.csv"
         json_path = self.directory / f"{ticker.upper()}.json"
@@ -267,7 +287,15 @@ class IssuerIrArtifactProvider(ManagementSourceAdapter):
         self.metadata_limit_per_seed = metadata_limit_per_seed if metadata_limit_per_seed is not None else config.ISSUER_IR_METADATA_LIMIT_PER_SEED
         self.fetcher = fetcher or self._fetch_text
 
-    def fetch_documents(self, ticker: str) -> tuple[list[ManagementDocument], list[TranscriptTurn], list[ProviderStatus]]:
+    def fetch_documents(
+        self,
+        ticker: str,
+        history_limit: int | None = None,
+    ) -> tuple[
+        list[ManagementDocument],
+        list[TranscriptTurn],
+        list[ProviderStatus],
+    ]:
         observed_at = _utc_now()
         seeds = _issuer_ir_sources(ticker, self.sources_csv)
         if not seeds:
@@ -283,6 +311,14 @@ class IssuerIrArtifactProvider(ManagementSourceAdapter):
         turns: list[TranscriptTurn] = []
         statuses: list[ProviderStatus] = []
         seen_urls: set[str] = set()
+        document_limit = max(
+            self.max_documents_per_seed,
+            min(max(0, history_limit or 0), 12),
+        )
+        metadata_limit = max(
+            self.metadata_limit_per_seed,
+            min(max(0, history_limit or 0), 20),
+        )
         for seed_type, seed_url in seeds:
             try:
                 index_text = self.fetcher(seed_url)
@@ -306,8 +342,8 @@ class IssuerIrArtifactProvider(ManagementSourceAdapter):
                 if url in seen_urls:
                     continue
                 seen_urls.add(url)
-                if added >= self.max_documents_per_seed:
-                    if metadata_added < self.metadata_limit_per_seed:
+                if added >= document_limit:
+                    if metadata_added < metadata_limit:
                         documents.append(_issuer_ir_metadata_document(
                             ticker, source_type, title, url, observed_at,
                         ))
@@ -1220,6 +1256,7 @@ def _artifact_priority(source_type: str) -> int:
         "agm_egm_material": 70,
         "proxy_statement": 65,
         "investor_day": 60,
+        "issuer_announcement": 55,
         "sec_hkex_filing": 50,
     }.get(source_type, 0)
 

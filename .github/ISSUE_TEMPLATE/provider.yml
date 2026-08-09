@@ -1,0 +1,38 @@
+name: Provider adapter issue
+description: Add or correct an LLM, market-data, research, or local-execution provider.
+title: "[Provider]: "
+labels: [provider]
+body:
+  - type: input
+    id: identity
+    attributes:
+      label: Provider, endpoint family, and model/source
+    validations:
+      required: true
+  - type: textarea
+    id: role
+    attributes:
+      label: Supported role and expected research benefit
+    validations:
+      required: true
+  - type: textarea
+    id: trust
+    attributes:
+      label: Authentication, entitlement, licensing, retention, and trust boundary
+    validations:
+      required: true
+  - type: textarea
+    id: failure
+    attributes:
+      label: Timeout, retry, cancellation, and failure behavior
+  - type: checkboxes
+    id: contract
+    attributes:
+      label: Extension contract
+      options:
+        - label: Provider-specific logic remains inside an adapter or registry.
+          required: true
+        - label: Fixtures require no live key and contain no licensed payload.
+          required: true
+        - label: Missing provider access cannot disable deterministic research.
+          required: true

@@ -7,7 +7,7 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-15803d.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-2563eb.svg)](https://www.python.org/)
 
-[Try the live demo](https://ic-copilot.streamlit.app/) | **[Give Feedback](https://github.com/mwsp-code/IC-Copilot/discussions/5)** | [Quickstart](docs/quickstart.md) | [Methodology](docs/methodology.md) | [Roadmap](ROADMAP.md) | [Contribute](CONTRIBUTING.md)
+[Try the live demo](https://ic-copilot.streamlit.app/) | **[Give Feedback](https://github.com/mwsp-code/IC-Copilot/discussions/3)** | [Quickstart](docs/quickstart.md) | [Methodology](docs/methodology.md) | [Roadmap](ROADMAP.md) | [Contribute](CONTRIBUTING.md)
 
 [![IC Copilot AAPL research walkthrough](docs/assets/demo/ic-copilot-aapl-demo.gif)](docs/assets/demo/ic-copilot-aapl-demo.mp4)
 
@@ -20,6 +20,8 @@ Most AI research tools are good at producing text. IC Copilot is designed to pro
 - **Exact evidence:** filing section, period, metric, unit, source tier, URL, and parser status.
 - **Causal reasoning:** source event -> business driver -> KPI -> earnings/FCF -> valuation -> catalyst.
 - **Adversarial review:** Bull, Bear, and Judge views with unresolved contradictions kept visible.
+- **Historical perspective:** same-company, industry, mechanism, and case-study analogs with source-independence checks.
+- **News intelligence:** registered-source discovery, syndication-aware debate clustering, and primary-source corroboration.
 - **Market-implied expectations:** reverse DCF and implied operating assumptions when historical consensus is unavailable.
 - **A real ability to say no:** boilerplate, stale facts, unmapped drivers, and unsupported LLM claims do not become high-conviction ideas.
 
@@ -51,6 +53,12 @@ flowchart LR
 
 Every connection is scored separately. A weak link identifies the exact missing evidence instead of turning into generic uncertainty.
 
+Results use four decision-oriented destinations. **Decision** answers the
+investment question first; **Research** holds mechanisms and scenarios;
+**Evidence** exposes validated claims, contradictions, requests, and quarantined
+candidates; **Audit** shows Independent Research QA and the reproducible
+integrity timeline. Technical identifiers stay behind progressive disclosure.
+
 ## Demo Gallery
 
 | Demo | Research lesson |
@@ -73,6 +81,16 @@ cd IC-Copilot
 python -m pip install -r requirements.txt
 streamlit run app.py
 ```
+
+### Audit evidence before a paid model run
+
+```powershell
+python scripts/audit_historical_retrieval.py --ticker AAPL --profile deep_initiation --refresh
+```
+
+This preflight uses no LLM. It reports which filings and sources were fetched,
+which material claims are citation-ready, and which gaps are unavailable,
+licensed/manual, or executable through another registered retrieval task.
 
 Windows users can run the preflighted launcher instead:
 
@@ -118,6 +136,127 @@ SEC and issuer evidence remain the backbone. Official macro, market data, paid p
 LLMs may plan registered sources, triage documents, draft structured extractions, compare evidence, and write an IC narrative. They cannot invent citations, targets, calibrated probabilities, or promotion decisions. Deterministic validation remains authoritative.
 
 API keys are optional for the demos. For live work, save credentials through the OS keychain, environment variables, or Streamlit secrets. Never commit keys or licensed payloads. See [Provider Configuration](docs/providers.md).
+
+| Integration class | Required? | Retention and authority |
+|---|---:|---|
+| SEC and public deterministic sources | Live research only | Normalized facts and citations; common no-lookahead checks apply |
+| LLM API profile | No | Structured analysis only; cannot admit evidence |
+| Local Codex | No | Ephemeral read-only QA; authentication tokens are never accessed |
+| Wisburg/licensed research | No | Entitlement-aware metadata/excerpts; quarantined until common admission |
+| Market/consensus provider | No | Provider terms apply; cache is policy/workspace isolated |
+
+Optional Python development tools are declared under `.[dev]`; normal fixtures
+and frozen demos require no vendor credentials. Each connector must document
+its licensing and raw-payload retention policy.
+
+### Quality-First Adaptive Research and Independent Research QA
+
+Production research uses one deterministic bootstrap and one shared evidence
+graph. Models have distinct jobs instead of duplicating the entire research
+pipeline:
+
+1. Deterministic adapters bootstrap, parse, validate, and admit the initial
+   shared evidence graph.
+2. The configured primary model plans and performs the primary analysis.
+3. A distinct secondary model or authenticated local Codex independently audits
+   the frozen artifact before it can see later discovery.
+4. The secondary then acts as an adversarial scout and expresses gaps as
+   versioned Research Requests.
+5. Discovered URLs, snippets, contradictions, mappings, and specialist leads
+   remain quarantined. Registered connectors retrieve them, and the common
+   admission gateway alone can create evidence IDs.
+6. The primary responds to every finding, revises conclusions using admitted
+   evidence, and the secondary performs final closure checking.
+
+Fast Screening, Adaptive IC, Deep Initiation, and Investigate This Event control
+research breadth, investigative loops, and latency. They do not silently remove
+configured and entitled evidence sources. Adaptive Macro is the default and
+selects at most three material company exposures from domestic and global
+context; macro cannot independently create or promote a thesis.
+
+Each run records its source-policy fingerprint, admitted-evidence hash, evidence
+graph version, model-role assignments, execution records, audit findings,
+evidence gaps and resolutions, conclusion revisions, unresolved risks, and a
+dimension-level Research QA score. Cached evidence can influence a run only when
+it remains admissible under the current source policy and matches its source,
+entitlement, cutoff, parser, and workspace isolation key.
+
+Public Streamlit runs require explicit opt-in and a session-only primary key.
+The independent auditor is optional: if its credential is absent, primary
+research still completes and the QA report clearly states that independent
+audit did not run. Keys are held only by the active process and are excluded
+from SQLite, result JSON, logs, and manifests. Public execution uses configured
+API providers; `codex_local` remains a trusted-workstation backend and is never
+exposed through the public server API. Locally, authenticated Codex is
+detected from the CLI or Codex Desktop runtime and preselected as auditor. If a
+one-time connection is needed, the app launches the official `codex login`
+flow; no additional API key is needed and the app never accesses authentication
+tokens.
+
+The previous two-choreography comparison remains available only through the
+explicit `enable_two_choreography_benchmark` maintainer flag and offline
+benchmark tooling. It is not part of the normal user workflow.
+
+Every live result also carries a source-specific freshness summary for the
+research run, filings, market price, consensus, news/external research, macro,
+and LLM output. Audit records remain in UTC; the UI can display timestamps in a
+user-selected timezone.
+
+The models do not browse arbitrary URLs. They request registered source families; deterministic adapters and the normalized evidence cache perform the two shared retrieval passes. Historical candidates are scored by mechanism, operating economics, financing, valuation, competitive structure, macro regime, and source quality. Numeric similarity is withheld until a two-origin dossier passes Sol and deterministic audits.
+
+Stage-level comparisons classify recurring gaps as evidence, retrieval,
+normalization, playbook, prompt, reasoning, schema, or presentation issues.
+Suggested improvements are stored in a human-reviewable queue and must pass
+cross-ticker evaluation. Runtime model output can never rewrite prompts or
+production code.
+
+### Quality-First Input Benchmark
+
+Model quality is evaluated only after the evidence input qualifies. The app
+keeps a materiality-ranked core prompt, a complete searchable evidence catalog,
+current/prior period pairs, contradiction retention, and an exclusion reason
+for every item outside the core. Identity, primary evidence, history, causal
+KPIs, peers, management, valuation/credit, market context, contradictions, and
+citation/period integrity form a 100-point input score. Model-quality
+conclusions require at least 80/100 with no critical identity, period, citation,
+or no-lookahead gap.
+
+Quality-first Deep Initiation uses DeepSeek thinking/high reasoning and GPT-5.6
+Sol Pro/max reasoning. There is no fixed pilot dollar cap. Ten model calls, two
+deduplicated retrieval passes, one audited-call retry, cancellation, and a
+greater-than-2x preflight review trigger remain visible. Token, cache, reasoning,
+latency, retry, retrieval, and provider-charge observations inform later
+profile-specific budgets.
+
+Preview the six development cases without making provider calls:
+
+```bash
+python scripts/run_quality_benchmark.py --cohort development
+```
+
+Live execution is explicit:
+
+```bash
+python scripts/run_quality_benchmark.py --cohort development --execute
+```
+
+Add `--sol-open-reference` to run a separate web-enabled Sol source-scout lane.
+Its URLs and claims remain discovery work orders; they are never admitted to the
+app evidence pack until a registered deterministic adapter validates source,
+date, ownership, licensing, and factual content.
+
+The development cohort is AAPL, NVDA, BABA, JPM, XOM, and NVO. ORCL, TSLA, GS,
+PLD, TSM, and PBR form the untuned validation cohort. The 30-case benchmark
+remains blocked until at least five development cases are input-qualified and
+the selection, period, contradiction, citation, and no-lookahead gates pass.
+
+Maintainers can generate a validated frozen demo locally:
+
+```bash
+python scripts/generate_hybrid_demo.py --ticker AAPL --executor codex_local
+```
+
+Enable local Codex execution only on a trusted workstation with `ENABLE_LOCAL_CODEX_EXECUTOR=true`. Frozen artifacts contain provenance and validated output, but strip credentials, raw licensed payloads, hidden reasoning, and unsupported claims.
 
 ## Research Integrity Benchmark
 

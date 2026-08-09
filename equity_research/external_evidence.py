@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 
 from . import config
 from .adr_profiles import adr_profile_for
+from .domain.cache_policy import CacheIsolationKey
 from .models import (
     ChangeEvent,
     Citation,
@@ -128,10 +129,12 @@ class ExternalEvidenceStack:
         store: Any | None = None,
         use_cache: bool = True,
         refresh_cache: bool = False,
+        cache_isolation: CacheIsolationKey | None = None,
     ) -> None:
         self.store = store
         self.use_cache = use_cache
         self.refresh_cache = refresh_cache
+        self.cache_isolation = cache_isolation or CacheIsolationKey()
         self.providers = providers or [
             SecOwnershipEvidenceProvider(),
             KenFrenchFactorProvider(),
@@ -157,8 +160,30 @@ class ExternalEvidenceStack:
             return ExternalEvidenceBundle(identity.ticker.upper(), "Unavailable", [], [], [])
 
         def fetch_one(provider: ExternalEvidenceProvider) -> ExternalEvidenceBundle:
-            if self.store and self.use_cache and not self.refresh_cache and _is_macro_provider(provider):
-                cached = self.store.cached_macro_evidence(identity.ticker, provider.provider_name)
+            cacheable = _is_cacheable_external_provider(provider)
+            force_cache_only = bool(
+                provider.provider_name == "Wisburg research"
+                and not getattr(provider, "api_key", "")
+            )
+            if (
+                self.store
+                and self.use_cache
+                and cacheable
+                and (not self.refresh_cache or force_cache_only)
+            ):
+                cached = (
+                    self.store.cached_external_evidence(
+                        identity.ticker,
+                        provider.provider_name,
+                        cache_isolation=self.cache_isolation,
+                    )
+                    if provider.provider_name == "Wisburg research"
+                    and hasattr(self.store, "cached_external_evidence")
+                    else self.store.cached_macro_evidence(
+                        identity.ticker,
+                        provider.provider_name,
+                    )
+                )
                 if cached:
                     return cached
             try:
@@ -169,9 +194,12 @@ class ExternalEvidenceStack:
                     identity.ticker, provider.provider_name, "Unavailable", False,
                     observed_at, f"{provider.provider_name} failed: {exc}", "provider_error",
                 )
-            if self.store and package.evidence and _is_macro_provider(provider):
+            if self.store and package.evidence and cacheable:
                 try:
-                    self.store.save_external_evidence(package)
+                    self.store.save_external_evidence(
+                        package,
+                        cache_isolation=self.cache_isolation,
+                    )
                 except Exception:
                     pass
             return package
@@ -230,6 +258,7 @@ def external_evidence_stack_from_config(
     store: Any | None = None,
     use_cache: bool = True,
     refresh_cache: bool = False,
+    cache_isolation: CacheIsolationKey | None = None,
 ) -> ExternalEvidenceStack:
     return ExternalEvidenceStack([
         SecOwnershipEvidenceProvider(),
@@ -249,7 +278,8 @@ def external_evidence_stack_from_config(
         OptionsExpectationPlaceholder(),
         WisburgEvidenceProvider(api_key=wisburg_api_key, enabled=enable_wisburg),
         PaidMarketDataPlaceholder(),
-    ], store=store, use_cache=use_cache, refresh_cache=refresh_cache)
+    ], store=store, use_cache=use_cache, refresh_cache=refresh_cache,
+       cache_isolation=cache_isolation)
 
 
 def default_macro_source_settings(
@@ -1370,6 +1400,10 @@ def _default_enabled(override: bool | None, default: bool) -> bool:
 
 def _is_macro_provider(provider: ExternalEvidenceProvider) -> bool:
     return provider.provider_name in MACRO_PROVIDER_NAMES
+
+
+def _is_cacheable_external_provider(provider: ExternalEvidenceProvider) -> bool:
+    return _is_macro_provider(provider) or provider.provider_name == "Wisburg research"
 
 
 def _global_macro_relevant(

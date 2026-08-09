@@ -193,6 +193,64 @@ class RigorousResearchTests(unittest.TestCase):
         self.assertEqual(result.status, "insufficient_history")
         self.assertEqual(result.rows, [])
 
+    def test_historical_price_selection_bypasses_short_first_provider(self) -> None:
+        class HistoricalCoverageClient(StooqPriceClient):
+            def _fetch_stooq_rows(self, ticker):
+                return _DailyRowsResult(
+                    "Stooq daily prices", "provider_blocked", "Blocked", []
+                )
+
+            def _fetch_alpha_vantage_rows(self, ticker):
+                return _DailyRowsResult(
+                    "Alpha Vantage daily prices", "disabled", "No key", []
+                )
+
+            def _fetch_tiingo_rows(
+                self,
+                ticker,
+                *,
+                start_date=None,
+                end_date=None,
+            ):
+                return _DailyRowsResult(
+                    "Tiingo EOD prices",
+                    "available",
+                    "Full requested history.",
+                    [
+                        {"date": date(2018, 1, 2), "close": 40.0, "volume": 1},
+                        {"date": date(2020, 12, 30), "close": 130.0, "volume": 1},
+                    ],
+                    adjusted=True,
+                )
+
+        client = HistoricalCoverageClient(
+            tiingo_key="configured",
+            eodhd_key="",
+            enable_yahoo_price=False,
+        )
+        short = [
+            {"date": date(2026, 1, 2), "close": 100.0, "volume": 1},
+            {"date": date(2026, 1, 5), "close": 101.0, "volume": 1},
+        ]
+        client._rows_cache["AAPL"] = short
+        client._result_cache["AAPL"] = _DailyRowsResult(
+            "EODHD EOD prices",
+            "available",
+            "Trailing year only.",
+            short,
+            adjusted=True,
+        )
+
+        result = client.historical_rows_result(
+            "AAPL",
+            date(2018, 1, 1),
+            date(2020, 12, 31),
+        )
+
+        self.assertEqual(result.provider, "Tiingo EOD prices")
+        self.assertEqual(result.status, "available")
+        self.assertEqual(result.rows[0]["date"], date(2018, 1, 2))
+
     def test_csv_fallback_produces_event_window_when_stooq_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             csv_dir = Path(temporary)

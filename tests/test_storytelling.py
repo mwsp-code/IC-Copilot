@@ -6,6 +6,7 @@ from pathlib import Path
 from equity_research.contributor_tools import build_contribution_pack, save_contribution_pack
 from equity_research.models import ChangeEvent, MetricResolutionAudit, ProbabilityProvenance
 from equity_research.sample_data import demo_result
+from equity_research.presentation.view_models import build_decision_brief_view_model
 from equity_research.storytelling import _event_drawers, build_bull_bear_judge, demo_cases
 
 
@@ -125,6 +126,11 @@ def test_aapl_demo_contains_one_convincing_citation_bound_showcase_thesis() -> N
     assert top.market_capture is not None
     assert top.market_capture.capture_mode == "Price-only"
     assert top.market_capture.consensus_revision_pct is None
+    assert "latest material thesis input" in result.ic_decision_brief.why_now
+    assert result.ic_decision_brief.why_now_evidence_ids
+    assert "incomplete, unmapped, or normalization-sensitive" not in (
+        result.ic_decision_brief.why_now
+    )
 
 
 def test_demo_stage_remains_authoritative_after_work_order_closure() -> None:
@@ -157,7 +163,11 @@ def test_latest_showcase_demos_use_deep_premium_macro_and_wisburg_fixtures() -> 
         assert result.wisburg_lens.coverage_audit is not None, ticker
         assert result.wisburg_lens.structured_claims, ticker
         assert result.wisburg_lens.research_tasks, ticker
-        assert result.llm_research_manifest.status.startswith("Available"), ticker
+        assert result.llm_research_manifest.status.startswith(
+            "Deterministic frozen fixture"
+        ), ticker
+        assert result.llm_research_manifest.provider == "deterministic_frozen_demo", ticker
+        assert result.llm_research_manifest.model == "no_live_model", ticker
         assert result.llm_run_manifest.status != "Disabled", ticker
         assert result.market_implied_expectations is not None, ticker
         assert any(card.title == "What Price Appears to Assume" for card in result.story_cards), ticker
@@ -201,6 +211,29 @@ def test_demo_result_exposes_story_first_presentation_fields() -> None:
     assert result.bull_bear_judge.status == "Available"
     assert result.bull_bear_judge.judge_accepts
     assert result.formula_traces
+    assert result.ic_decision_brief is not None
+    assert result.ic_decision_brief.thesis
+    assert result.ic_decision_brief.next_decision
+    assert result.news_intelligence.coverage_status
+    assert len(result.news_intelligence.clusters) <= 3
+    assert result.historical_analogs.coverage_status
+    assert len(result.historical_analogs.assessments) >= 1
+    assert result.ic_implied_snapshot is not None
+    assert result.decision_delta is not None
+    assert result.catalyst_clock is not None
+    # The domain keeps the complete canonical queue for Evidence and Audit;
+    # only the decision-facing view is bounded to the top three actions.
+    assert result.prioritized_research_queue
+    assert len(build_decision_brief_view_model(result).investigation_actions) <= 3
+
+
+def test_oracle_demo_exposes_cloud_capacity_historical_analog_candidates() -> None:
+    result = demo_result("ORCL")
+    episodes = [item.episode for item in result.historical_analogs.assessments]
+
+    assert any("AWS capacity conversion" in item for item in episodes)
+    assert any("Telecom and fiber capacity overbuild" in item for item in episodes)
+    assert result.news_intelligence.coverage_status
 
 
 def test_judge_separates_auto_resolution_from_uncalibrated_ranking() -> None:

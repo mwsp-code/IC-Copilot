@@ -23,20 +23,36 @@ _BANK_DEFAULTS = {
     "sustainable_roe_anchor_pct": 10.0,
     "pb_roe_sensitivity_pct": 4.0,
 }
+_INSURER_DEFAULTS = {
+    "sustainable_roe_anchor_pct": 11.0,
+    "pb_roe_sensitivity_pct": 4.0,
+}
+_REIT_DEFAULTS = {
+    "terminal_p_ffo_multiple": 15.0,
+    "forecast_years": 5.0,
+}
 
 
 def _assumptions_for_template(
     template: str,
     values: dict[str, float],
 ) -> list[MarketImpliedAssumption]:
-    if template == "Bank":
+    if template in {"Bank", "Insurer"}:
         definitions = [
             ("sustainable_roe_anchor_pct", "Sustainable ROE anchor", "%", 0.0, 30.0, 0.5,
              "Editable P/B-to-ROE heuristic assumption"),
             ("pb_roe_sensitivity_pct", "P/B-to-ROE sensitivity", "percentage points", 0.0, 20.0, 0.5,
              "ROE change associated with each turn of P/B above or below 1x"),
         ]
-        defaults = _BANK_DEFAULTS
+        defaults = _BANK_DEFAULTS if template == "Bank" else _INSURER_DEFAULTS
+    elif template == "REIT":
+        definitions = [
+            ("terminal_p_ffo_multiple", "Terminal P/FFO multiple", "x", 5.0, 35.0, 0.5,
+             "Editable reverse P/FFO assumption"),
+            ("forecast_years", "Explicit forecast period", "years", 1.0, 10.0, 1.0,
+             "Reverse P/FFO horizon"),
+        ]
+        defaults = _REIT_DEFAULTS
     elif template == "Non-financial":
         definitions = [
             ("discount_rate_pct", "Discount rate", "%", 1.0, 30.0, 0.5,
@@ -79,6 +95,14 @@ def _validated_assumption_overrides(template: str, raw: dict[str, float]) -> dic
         "Bank": {
             "sustainable_roe_anchor_pct": (0.0, 30.0),
             "pb_roe_sensitivity_pct": (0.0, 20.0),
+        },
+        "Insurer": {
+            "sustainable_roe_anchor_pct": (0.0, 30.0),
+            "pb_roe_sensitivity_pct": (0.0, 20.0),
+        },
+        "REIT": {
+            "terminal_p_ffo_multiple": (5.0, 35.0),
+            "forecast_years": (1.0, 10.0),
         },
     }.get(template, {})
     values: dict[str, float] = {}
@@ -137,6 +161,10 @@ def build_market_implied_expectations(
     expectations: list[MarketImpliedExpectation] = []
     if template == "Bank":
         expectations.extend(_bank_expectations(latest, market_cap, current_price, normalized_overrides))
+    elif template == "Insurer":
+        expectations.extend(_insurer_expectations(latest, market_cap, normalized_overrides))
+    elif template == "REIT":
+        expectations.extend(_reit_expectations(latest, market_cap, current_price, normalized_overrides))
     elif template == "Non-financial":
         expectations.extend(_non_financial_expectations(
             latest,
@@ -448,19 +476,41 @@ def _bank_expectations(metrics, market_cap, current_price, assumptions):
         roe_anchor = assumptions.get("sustainable_roe_anchor_pct", _BANK_DEFAULTS["sustainable_roe_anchor_pct"]) / 100
         pb_sensitivity = assumptions.get("pb_roe_sensitivity_pct", _BANK_DEFAULTS["pb_roe_sensitivity_pct"]) / 100
         implied_roe = roe_anchor + (pb - 1.0) * pb_sensitivity
-        rows.append(MarketImpliedExpectation(
-            metric="Implied sustainable ROE",
-            status="Derived",
-            implied_value=implied_roe * 100,
-            unit="%",
-            formula=(
-                f"{roe_anchor * 100:.1f}% anchor + (P/B - 1) x "
-                f"{pb_sensitivity * 100:.1f} percentage points"
+        rows.extend([
+            MarketImpliedExpectation(
+                metric="Book value",
+                status="Observed",
+                implied_value=equity.value,
+                unit=equity.unit,
+                formula="Latest normalized stockholders' equity",
+                interpretation="The reported capital base used by the price-to-book and sustainable-ROE screen.",
+                confidence="High",
+                required_inputs=["Stockholders' Equity"],
             ),
-            interpretation="A transparent P/B-to-ROE heuristic for scenario framing, not a calibrated bank valuation model.",
-            confidence="Low",
-            required_inputs=["Price", "Shares", "Stockholders' Equity"],
-        ))
+            MarketImpliedExpectation(
+                metric="Current price / book",
+                status="Derived",
+                implied_value=pb,
+                unit="x",
+                formula="Market capitalization / stockholders' equity",
+                interpretation="The market multiple assigned to the reported equity base.",
+                confidence="Medium",
+                required_inputs=["Price", "Shares", "Stockholders' Equity"],
+            ),
+            MarketImpliedExpectation(
+                metric="Implied sustainable ROE",
+                status="Derived",
+                implied_value=implied_roe * 100,
+                unit="%",
+                formula=(
+                    f"{roe_anchor * 100:.1f}% anchor + (P/B - 1) x "
+                    f"{pb_sensitivity * 100:.1f} percentage points"
+                ),
+                interpretation="A transparent P/B-to-ROE heuristic for scenario framing, not a calibrated bank valuation model.",
+                confidence="Low",
+                required_inputs=["Price", "Shares", "Stockholders' Equity"],
+            ),
+        ])
         if net_income and provision and _same_currency(net_income, provision):
             target_income = equity.value * implied_roe
             implied_provision = max(0.0, net_income.value + provision.value - target_income)
@@ -482,6 +532,192 @@ def _bank_expectations(metrics, market_cap, current_price, assumptions):
             ))
     else:
         rows.append(_unavailable("Implied sustainable ROE", ["Price", "Shares", "Stockholders' Equity"], ["Shares or Stockholders' Equity"]))
+    return rows
+
+
+def _insurer_expectations(metrics, market_cap, assumptions):
+    equity = metrics.get("Stockholders' Equity")
+    net_income = metrics.get("Net Income")
+    premiums = (
+        metrics.get("Insurance Premiums")
+        or metrics.get("Premiums Earned")
+        or metrics.get("Premium Revenue")
+    )
+    claims = (
+        metrics.get("Insurance Losses")
+        or metrics.get("Policyholder Benefits")
+        or metrics.get("Losses and Loss Adjustment Expenses")
+    )
+    rows = []
+    if market_cap and equity and equity.value > 0:
+        pb = market_cap / equity.value
+        roe_anchor = assumptions.get(
+            "sustainable_roe_anchor_pct",
+            _INSURER_DEFAULTS["sustainable_roe_anchor_pct"],
+        ) / 100
+        sensitivity = assumptions.get(
+            "pb_roe_sensitivity_pct",
+            _INSURER_DEFAULTS["pb_roe_sensitivity_pct"],
+        ) / 100
+        implied_roe = roe_anchor + (pb - 1.0) * sensitivity
+        rows.extend([
+            MarketImpliedExpectation(
+                metric="Book value",
+                status="Observed",
+                implied_value=equity.value,
+                unit=equity.unit,
+                formula="Latest normalized stockholders' equity",
+                interpretation="The reported capital base used by the insurer price-to-book and sustainable-ROE screen.",
+                confidence="High",
+                required_inputs=["Stockholders' Equity"],
+            ),
+            MarketImpliedExpectation(
+                metric="Implied insurer price-to-book",
+                status="Derived",
+                implied_value=pb,
+                unit="x",
+                formula="Market capitalization / stockholders' equity",
+                interpretation="Shows the book-value multiple the market assigns to underwriting, investment income, reserve quality, and capital return.",
+                confidence="Medium",
+                required_inputs=["Price", "Shares", "Stockholders' Equity"],
+            ),
+            MarketImpliedExpectation(
+                metric="Implied insurer sustainable ROE",
+                status="Derived",
+                implied_value=implied_roe * 100,
+                unit="%",
+                formula=(
+                    f"{roe_anchor * 100:.1f}% anchor + (P/B - 1) x "
+                    f"{sensitivity * 100:.1f} percentage points"
+                ),
+                interpretation="A transparent P/B-to-ROE heuristic; reserve adequacy and investment leverage must be tested separately.",
+                confidence="Low",
+                required_inputs=["Price", "Shares", "Stockholders' Equity"],
+            ),
+        ])
+        if net_income and claims and _same_currency(net_income, claims):
+            target_income = equity.value * implied_roe
+            implied_claim_burden = max(0.0, net_income.value + claims.value - target_income)
+            rows.append(MarketImpliedExpectation(
+                metric="Implied reserve and claims burden proxy",
+                status="Derived",
+                implied_value=implied_claim_burden,
+                unit=claims.unit,
+                formula="Reported net income + reported claims expense - income implied by sustainable ROE",
+                interpretation="A coarse reserve/underwriting burden proxy holding investment income, tax, and other expenses constant.",
+                confidence="Low",
+                required_inputs=["Equity", "Net Income", "Claims or Policyholder Benefits"],
+            ))
+        elif premiums and claims and premiums.value:
+            rows.append(MarketImpliedExpectation(
+                metric="Current claims-to-premium reference",
+                status="Derived",
+                implied_value=claims.value / premiums.value * 100,
+                unit="%",
+                formula="Reported claims or policyholder benefits / reported premiums",
+                interpretation="A source-derived underwriting reference, not a full combined ratio or reserve-development model.",
+                confidence="Low",
+                required_inputs=["Premiums", "Claims or Policyholder Benefits"],
+            ))
+        else:
+            rows.append(_unavailable(
+                "Implied reserve and claims burden proxy",
+                ["Equity", "Net Income", "Claims or Policyholder Benefits"],
+                ["Claims, policyholder benefits, or premium facts"],
+            ))
+    else:
+        rows.append(_unavailable(
+            "Implied insurer sustainable ROE",
+            ["Price", "Shares", "Stockholders' Equity"],
+            ["Shares or Stockholders' Equity"],
+        ))
+    return rows
+
+
+def _reit_expectations(metrics, market_cap, current_price, assumptions):
+    shares = metrics.get("Shares")
+    ffo = (
+        metrics.get("Funds From Operations")
+        or metrics.get("FFO")
+        or metrics.get("Adjusted Funds From Operations")
+        or metrics.get("AFFO")
+    )
+    noi = metrics.get("Net Operating Income") or metrics.get("Property Net Operating Income")
+    debt = _sum_values(metrics, ("Current Debt", "Long-term Debt"))
+    cash = metrics.get("Cash").value if metrics.get("Cash") else 0.0
+    rows = []
+    if ffo and shares and shares.value > 0 and current_price:
+        ffo_per_share = ffo.value / shares.value
+        if ffo_per_share > 0:
+            current_multiple = current_price / ffo_per_share
+            terminal_multiple = assumptions.get(
+                "terminal_p_ffo_multiple",
+                _REIT_DEFAULTS["terminal_p_ffo_multiple"],
+            )
+            years = int(round(assumptions.get(
+                "forecast_years",
+                _REIT_DEFAULTS["forecast_years"],
+            )))
+            implied_growth = (
+                (current_multiple / terminal_multiple) ** (1 / years) - 1
+                if terminal_multiple > 0 and years > 0 else None
+            )
+            rows.extend([
+                MarketImpliedExpectation(
+                    metric="FFO",
+                    status="Observed",
+                    implied_value=ffo.value,
+                    unit=ffo.unit,
+                    formula="Latest normalized FFO or AFFO source field",
+                    interpretation="The reported property cash-earnings base used by the reverse P/FFO screen.",
+                    confidence="High",
+                    required_inputs=["FFO or AFFO"],
+                ),
+                MarketImpliedExpectation(
+                    metric="Current price / FFO",
+                    status="Derived",
+                    implied_value=current_multiple,
+                    unit="x",
+                    formula="Current price / reported FFO per share",
+                    interpretation="A current cash-earnings multiple before testing maintenance capex, leasing costs, or AFFO adjustments.",
+                    confidence="Medium",
+                    required_inputs=["Price", "Shares", "FFO or AFFO"],
+                ),
+                MarketImpliedExpectation(
+                    metric="Implied FFO growth",
+                    status="Derived",
+                    implied_value=implied_growth * 100 if implied_growth is not None else None,
+                    unit="%",
+                    formula=f"(Current P/FFO / {terminal_multiple:.1f}x terminal P/FFO)^(1/{years}) - 1",
+                    interpretation="The annual FFO growth rate required to converge to the selected terminal multiple, before dividends.",
+                    confidence="Low",
+                    required_inputs=["Price", "Shares", "FFO or AFFO", "Terminal P/FFO"],
+                ),
+            ])
+    else:
+        rows.append(_unavailable(
+            "Implied FFO growth",
+            ["Price", "Shares", "FFO or AFFO"],
+            ["Price, Shares, or FFO/AFFO"],
+        ))
+    enterprise_value = market_cap + debt - cash if market_cap is not None else None
+    if noi and enterprise_value and enterprise_value > 0:
+        rows.append(MarketImpliedExpectation(
+            metric="Implied property cap-rate proxy",
+            status="Derived",
+            implied_value=noi.value / enterprise_value * 100,
+            unit="%",
+            formula="Reported property NOI / (market capitalization + debt - cash)",
+            interpretation="A coarse public-market cap-rate proxy; joint ventures, development assets, and non-property operations require normalization.",
+            confidence="Low",
+            required_inputs=["NOI", "Price", "Shares", "Debt", "Cash"],
+        ))
+    else:
+        rows.append(_unavailable(
+            "Implied property cap-rate proxy",
+            ["NOI", "Price", "Shares", "Debt", "Cash"],
+            ["Property NOI or normalized enterprise value"],
+        ))
     return rows
 
 

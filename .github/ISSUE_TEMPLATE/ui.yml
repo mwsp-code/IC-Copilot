@@ -1,0 +1,33 @@
+name: Decision UI and accessibility issue
+description: Report readability, navigation, responsive-layout, or accessibility problems.
+title: "[UI]: "
+labels: [ui]
+body:
+  - type: dropdown
+    id: route
+    attributes:
+      label: Route
+      options: [Run setup, Decision, Research, Evidence, Audit, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is hard to understand or use?
+    validations:
+      required: true
+  - type: input
+    id: viewport
+    attributes:
+      label: Browser, viewport/device, and assistive technology
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected decision-first behavior
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Screenshot safety
+      options:
+        - label: Attachments contain no API keys, private data, or licensed full text.
+          required: true

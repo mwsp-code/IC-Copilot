@@ -18,14 +18,17 @@ from equity_research.external_evidence import (
     WisburgMcpError,
     WorldBankMacroProvider,
     default_macro_source_settings,
+    external_evidence_stack_from_config,
 )
 from equity_research import config
+from equity_research.domain.cache_policy import build_cache_isolation_key
 from equity_research.models import (
     ChangeEvent,
     Citation,
     CompanyIdentity,
     ExternalEvidence,
     ExternalEvidenceBundle,
+    ProviderStatus,
 )
 from equity_research.research_store import ResearchStore
 
@@ -102,6 +105,47 @@ class ExternalEvidenceTests(unittest.TestCase):
         config.BLS_MACRO_OVERRIDE = False
         defaults = default_macro_source_settings("AAPL", enable_default_macro=True)
         self.assertFalse(defaults["bls"])
+
+    def test_explicit_run_level_off_overrides_enabled_environment_defaults(self) -> None:
+        config.FRED_MACRO_OVERRIDE = True
+        config.BLS_MACRO_OVERRIDE = True
+        config.BEA_MACRO_OVERRIDE = True
+        config.CENSUS_MACRO_OVERRIDE = True
+        config.TREASURY_MACRO_OVERRIDE = True
+        config.OFR_MACRO_OVERRIDE = True
+        config.WORLD_BANK_MACRO_OVERRIDE = True
+        config.IMF_MACRO_OVERRIDE = True
+
+        stack = external_evidence_stack_from_config(
+            enable_fred=False,
+            enable_bls=False,
+            enable_bea=False,
+            enable_census=False,
+            enable_treasury=False,
+            enable_ofr=False,
+            enable_world_bank=False,
+            enable_imf=False,
+            enable_default_macro=False,
+            global_macro_mode=False,
+        )
+        macro_providers = {
+            type(provider).__name__: provider
+            for provider in stack.providers
+            if hasattr(provider, "enabled")
+            and type(provider).__name__ in {
+                "FredMacroProvider",
+                "BlsMacroProvider",
+                "BeaMacroProvider",
+                "CensusMacroProvider",
+                "TreasuryMacroProvider",
+                "OfrMacroProvider",
+                "WorldBankMacroProvider",
+                "ImfMacroProvider",
+            }
+        }
+
+        self.assertEqual(len(macro_providers), 8)
+        self.assertTrue(all(not provider.enabled for provider in macro_providers.values()))
 
     def test_fred_macro_provider_parses_point_in_time_change(self) -> None:
         provider = FredMacroProvider(
@@ -277,6 +321,124 @@ class ExternalEvidenceTests(unittest.TestCase):
             self.assertEqual(package.evidence[0].metric_name, "DGS10")
             self.assertEqual(package.provider_statuses[0].entitlement_status, "cached")
             self.assertEqual(provider.calls, 0)
+
+    def test_wisburg_without_key_uses_eligible_cache_and_makes_no_live_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = ResearchStore(Path(temporary) / "research.db")
+            observed_at = _today_observed_at()
+            store.save_external_evidence(ExternalEvidenceBundle(
+                "AAPL",
+                "Available",
+                [ExternalEvidence(
+                    provider="Wisburg research",
+                    source_type="external_analyst_context",
+                    title="Apple services diligence",
+                    summary="External analyst context retained as a research lead.",
+                    observed_at=observed_at,
+                    source_as_of=observed_at[:10],
+                    source_tier=4,
+                    official=False,
+                    confidence="Medium",
+                    licensing_policy="metadata_and_excerpt_only",
+                )],
+                [ProviderStatus(
+                    "Wisburg research",
+                    "Available",
+                    False,
+                    "available",
+                    observed_at,
+                    "Live fixture was available.",
+                )],
+                [],
+            ))
+            provider = WisburgEvidenceProvider(
+                api_key="",
+                enabled=True,
+                client=_FailingWisburgClient(
+                    "The live client must not be called.",
+                    "network_error",
+                ),
+            )
+            package = ExternalEvidenceStack(
+                [provider],
+                store=store,
+                refresh_cache=True,
+            ).fetch(_identity(), [_event()])
+
+            self.assertEqual(package.status, "Available")
+            self.assertEqual(package.evidence[0].provider, "Wisburg research")
+            self.assertEqual(
+                package.provider_statuses[0].entitlement_status,
+                "cached",
+            )
+
+    def test_external_cache_isolated_by_policy_entitlement_cutoff_and_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = ResearchStore(Path(temporary) / "research.db")
+            package = ExternalEvidenceBundle(
+                "AAPL",
+                "Available",
+                [ExternalEvidence(
+                    provider="Wisburg research",
+                    source_type="external_analyst_context",
+                    title="Apple services lead",
+                    summary="Quarantined external context.",
+                    observed_at=_today_observed_at(),
+                    source_as_of=_today_observed_at()[:10],
+                    source_tier=4,
+                    official=False,
+                    confidence="Medium",
+                )],
+                [],
+                [],
+            )
+            admitted_scope = build_cache_isolation_key(
+                enabled_source_families=("sec", "wisburg"),
+                entitlement_rules={"wisburg": "metadata_and_excerpt_only"},
+                data_cutoff="2026-07-31",
+                workspace_scope="workspace-a",
+            )
+            store.save_external_evidence(
+                package,
+                cache_isolation=admitted_scope,
+            )
+
+            assert store.cached_external_evidence(
+                "AAPL",
+                "Wisburg research",
+                cache_isolation=admitted_scope,
+            ) is not None
+            for incompatible_scope in (
+                build_cache_isolation_key(
+                    enabled_source_families=("sec",),
+                    entitlement_rules={"wisburg": "metadata_and_excerpt_only"},
+                    data_cutoff="2026-07-31",
+                    workspace_scope="workspace-a",
+                ),
+                build_cache_isolation_key(
+                    enabled_source_families=("sec", "wisburg"),
+                    entitlement_rules={"wisburg": "not_entitled"},
+                    data_cutoff="2026-07-31",
+                    workspace_scope="workspace-a",
+                ),
+                build_cache_isolation_key(
+                    enabled_source_families=("sec", "wisburg"),
+                    entitlement_rules={"wisburg": "metadata_and_excerpt_only"},
+                    data_cutoff="2026-07-30",
+                    workspace_scope="workspace-a",
+                ),
+                build_cache_isolation_key(
+                    enabled_source_families=("sec", "wisburg"),
+                    entitlement_rules={"wisburg": "metadata_and_excerpt_only"},
+                    data_cutoff="2026-07-31",
+                    workspace_scope="workspace-b",
+                ),
+            ):
+                assert store.cached_external_evidence(
+                    "AAPL",
+                    "Wisburg research",
+                    cache_isolation=incompatible_scope,
+                ) is None
 
     def test_wisburg_provider_normalizes_external_context_without_raw_payloads(self) -> None:
         client = _FakeWisburgClient({

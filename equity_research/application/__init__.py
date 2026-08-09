@@ -1,0 +1,103 @@
+"""Application use cases coordinating research without UI dependencies."""
+
+from .research_runs import (
+    ResearchJobRepository,
+    ResearchReadiness,
+    ResearchRunCommand,
+    ResearchRunEvent,
+    ResearchRunService,
+    ResearchRunSnapshot,
+    ResearchRunner,
+    RunStatus,
+)
+from .contracts import (
+    audit_finding_from_payload,
+    candidate_discovery_from_payload,
+    closure_audit_from_payload,
+    evidence_admission_from_payload,
+    evidence_request_from_payload,
+    primary_audit_response_from_payload,
+    research_request_from_payload,
+    run_manifest_from_payload,
+)
+from .research_requests import (
+    ConnectorAttempt,
+    RegisteredResearchConnector,
+    ResearchRequestDispatcher,
+    ResearchRequestExecution,
+)
+from .credentials import (
+    CredentialLeaseError,
+    CredentialLeaseReference,
+    EphemeralCredentialBroker,
+    InMemoryEphemeralCredentialBroker,
+)
+from .investigation_actions import (
+    InvestigationActionCommand,
+    InvestigationActionResult,
+    InvestigationActionService,
+    parse_event_price_csv,
+    price_csv_template,
+)
+from .readiness import (
+    ProviderConnectionStatus,
+    build_provider_connection_statuses,
+    preview_research_readiness,
+)
+from .publication_readiness import (
+    CallableRepairStrategy,
+    build_source_lineage_graph,
+    DurableRepairJobRepository,
+    InMemoryRepairJobRepository,
+    PublicationGateEvaluator,
+    RepairControllerResult,
+    RepairExecutionContext,
+    RepairExecutionResult,
+    RepairStrategy,
+    RepairStrategyRegistry,
+    ResearchRequestRepairStrategy,
+    ResearchRepairController,
+    SemanticQualityScorer,
+    compile_repair_actions,
+    independent_origin_requirements,
+    invalidate_derived_artifacts,
+)
+
+__all__ = [
+    "ResearchJobRepository",
+    "ResearchReadiness",
+    "ResearchRunCommand",
+    "ResearchRunEvent",
+    "ResearchRunService",
+    "ResearchRunSnapshot",
+    "ResearchRunner",
+    "RunStatus",
+    "CredentialLeaseError",
+    "CredentialLeaseReference",
+    "EphemeralCredentialBroker",
+    "InMemoryEphemeralCredentialBroker",
+    "InvestigationActionCommand",
+    "InvestigationActionResult",
+    "InvestigationActionService",
+    "ProviderConnectionStatus",
+    "build_provider_connection_statuses",
+    "parse_event_price_csv",
+    "price_csv_template",
+    "preview_research_readiness",
+    "DurableRepairJobRepository",
+    "CallableRepairStrategy",
+    "build_source_lineage_graph",
+    "InMemoryRepairJobRepository",
+    "PublicationGateEvaluator",
+    "RepairControllerResult",
+    "RepairExecutionContext",
+    "RepairExecutionResult",
+    "RepairStrategy",
+    "RepairStrategyRegistry",
+    "ResearchRequestRepairStrategy",
+    "ResearchRepairController",
+    "SemanticQualityScorer",
+    "compile_repair_actions",
+    "independent_origin_requirements",
+    "invalidate_derived_artifacts",
+]

@@ -4,6 +4,28 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from .domain.research_integrity import (
+    AuditFinding,
+    AuditResolution,
+    CandidateDiscoveryItem,
+    CandidateStatus,
+    CandidateType,
+    ClosureAuditResult,
+    ClosureState,
+    EvidenceAdmissionDecision,
+    EvidenceRequest,
+    PrimaryAuditResponse,
+    PrimaryResponseState,
+    ResearchRequest,
+)
+from .domain.publication_readiness import (
+    DerivedArtifactDependency,
+    PublicationGateEvaluation,
+    ResearchRepairAction,
+    SemanticQualityEvaluation,
+    ScopeInvalidationResult,
+)
+
 
 @dataclass(frozen=True)
 class CompanyIdentity:
@@ -181,6 +203,9 @@ class FinancialMetric:
     trailing_period_end: str | None = None
     trailing_method: str = ""
     trailing_confidence: str = "Unknown"
+    period_start: str | None = None
+    duration_days: int | None = None
+    fiscal_frame: str | None = None
 
 
 @dataclass
@@ -1340,6 +1365,121 @@ class NewsClaim:
     created_at: str = ""
 
 
+@dataclass(frozen=True)
+class RegisteredNewsSource:
+    source_id: str
+    label: str
+    provider: str
+    source_family: str
+    default_tier: int
+    licensing_policy: str
+    enabled: bool
+    configured: bool
+    retrieval_mode: str = "metadata_and_excerpt"
+    ownership_group: str = ""
+    notes: str = ""
+
+
+@dataclass
+class NewsResearchPlan:
+    ticker: str
+    status: str
+    generated_at: str
+    aliases: list[str] = field(default_factory=list)
+    event_queries: list[str] = field(default_factory=list)
+    driver_queries: list[str] = field(default_factory=list)
+    peer_queries: list[str] = field(default_factory=list)
+    languages: list[str] = field(default_factory=lambda: ["en"])
+    event_start: str | None = None
+    event_end: str | None = None
+    provider: str = "deterministic"
+    prompt_version: str = ""
+    allowed_source_ids: list[str] = field(default_factory=list)
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SyndicationFingerprint:
+    fingerprint: str
+    canonical_url: str
+    normalized_headline: str
+    source_origin_group: str
+    duplicate_observation_ids: tuple[str, ...] = ()
+
+
+@dataclass
+class NewsArticleObservation:
+    observation_id: str
+    ticker: str
+    provider: str
+    source_id: str
+    publisher: str
+    source_origin_group: str
+    article_type: str
+    headline: str
+    url: str
+    published_at: str | None
+    observed_at: str
+    source_tier: int
+    licensing_policy: str
+    excerpt: str = ""
+    language: str = "unknown"
+    geography: str = ""
+    topic_tags: list[str] = field(default_factory=list)
+    causal_driver: str = "external_narrative"
+    event_window_match: bool = False
+    full_text_status: str = "metadata_only"
+    syndication_fingerprint: str = ""
+    evidence_id: str = ""
+
+
+@dataclass
+class NewsEventCluster:
+    cluster_id: str
+    ticker: str
+    label: str
+    causal_driver: str
+    stance: str
+    article_ids: list[str] = field(default_factory=list)
+    source_origin_groups: list[str] = field(default_factory=list)
+    summary: str = ""
+    primary_source_status: str = "Unverified"
+    confidence: str = "Low"
+
+
+@dataclass
+class NewsClaimAssessment:
+    assessment_id: str
+    ticker: str
+    claim_id: str
+    claim: str
+    status: str
+    article_ids: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    source_origin_groups: list[str] = field(default_factory=list)
+    source_tier: int = 4
+    affected_driver: str = "external_narrative"
+    primary_evidence_ids: list[str] = field(default_factory=list)
+    explanation: str = ""
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class NewsIntelligenceReport:
+    ticker: str
+    status: str
+    coverage_status: str
+    summary: str
+    plan: NewsResearchPlan
+    registered_sources: list[RegisteredNewsSource] = field(default_factory=list)
+    articles: list[NewsArticleObservation] = field(default_factory=list)
+    clusters: list[NewsEventCluster] = field(default_factory=list)
+    claim_assessments: list[NewsClaimAssessment] = field(default_factory=list)
+    syndication: list[SyndicationFingerprint] = field(default_factory=list)
+    top_debate: str = ""
+    data_gaps: list[str] = field(default_factory=list)
+
+
 @dataclass
 class PrimarySourceObservation:
     observation_id: str
@@ -1911,6 +2051,11 @@ class ResearchSourceOutcome:
     source_url: str | None = None
     message: str = ""
     citation: Citation | None = None
+    retrieval_status: str = ""
+    parser_status: str = ""
+    validation_status: str = ""
+    failure_code: str = ""
+    lifecycle: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -2260,6 +2405,27 @@ class ICOnePager:
     go_no_go_reason: str = ""
 
 
+@dataclass
+class ICDecisionBrief:
+    ticker: str
+    verdict: str
+    decision: str
+    direction: str
+    stage: str
+    confidence: str
+    horizon: str
+    thesis: str
+    why_now: str
+    financial_bridge: str
+    valuation: str
+    principal_risk: str
+    next_decision: str
+    freshness: str = "Unknown"
+    evidence_status: str = "Unknown"
+    why_research_next: str = ""
+    why_now_evidence_ids: list[str] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class DemoCase:
     demo_id: str
@@ -2347,6 +2513,7 @@ class JudgeResolutionItem:
     user_action: str = ""
     blocking_scope: str = "High-Conviction"
     auto_resolvable: bool = False
+    action_id: str = ""
 
 
 @dataclass
@@ -2475,6 +2642,931 @@ class LlmComparison:
 
 
 @dataclass(frozen=True)
+class ExecutionBackend:
+    backend_id: str
+    label: str
+    model: str
+    public: bool
+    reasoning_mode: str = ""
+    supports_background: bool = False
+    local_only: bool = False
+
+
+@dataclass(frozen=True)
+class HybridResearchProfile:
+    profile_id: str
+    label: str
+    round_count: int = 5
+    planner_model: str = "deepseek-v4-pro"
+    executor_model: str = "gpt-5.6-sol"
+    checker_model: str = "deepseek-v4-pro"
+    critic_model: str = "gpt-5.6-sol"
+    reasoning_mode: str = "pro"
+    requires_deep_initiation: bool = True
+
+
+@dataclass
+class ResearchRoundArtifact:
+    artifact_id: str
+    artifact_type: str
+    status: str
+    summary: str = ""
+    payload: dict[str, Any] = field(default_factory=dict)
+    evidence_ids: list[str] = field(default_factory=list)
+    citation_ids: list[str] = field(default_factory=list)
+    source_request_ids: list[str] = field(default_factory=list)
+    validation_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ResearchAuditFinding:
+    finding_id: str
+    category: str
+    severity: str
+    summary: str
+    evidence_ids: list[str] = field(default_factory=list)
+    recommended_source_types: list[str] = field(default_factory=list)
+    evidence_request_ids: list[str] = field(default_factory=list)
+    affected_claim_ids: list[str] = field(default_factory=list)
+    what_would_change_assessment: str = ""
+    resolved: bool = False
+
+
+@dataclass
+class ResearchRound:
+    round_number: int
+    role: str
+    provider: str
+    model: str
+    backend: str
+    status: str
+    started_at: str = ""
+    completed_at: str = ""
+    latency_ms: int | None = None
+    prompt_hash: str = ""
+    artifact: ResearchRoundArtifact | None = None
+    findings: list[ResearchAuditFinding] = field(default_factory=list)
+    message: str = ""
+    token_usage: dict[str, int] = field(default_factory=dict)
+    provider_cost_usd: float | None = None
+    retry_count: int = 0
+    quality_score: int | None = None
+    quality_gain: int | None = None
+
+
+@dataclass
+class SharedRetrievalManifest:
+    evidence_hash: str
+    initial_request_ids: list[str] = field(default_factory=list)
+    follow_up_request_ids: list[str] = field(default_factory=list)
+    initial_outcomes: list[dict[str, Any]] = field(default_factory=list)
+    follow_up_outcomes: list[dict[str, Any]] = field(default_factory=list)
+    source_registry_version: str = ""
+    shared_by_variants: bool = True
+
+
+@dataclass
+class AnalogAuditDecision:
+    status: str
+    decision: str
+    auditor_provider: str = ""
+    auditor_model: str = ""
+    retry_count: int = 0
+    failure_class: str = ""
+    critical_failures: list[str] = field(default_factory=list)
+    unresolved_findings: list[str] = field(default_factory=list)
+    last_success_at: str = ""
+
+
+@dataclass
+class AnalogQualityScorecard:
+    total_score: int
+    status: str
+    current_baseline: int = 0
+    exact_episode: int = 0
+    chronology: int = 0
+    mechanism: int = 0
+    similarities: int = 0
+    differences: int = 0
+    outcome_path: int = 0
+    hidden_risks: int = 0
+    lessons_and_monitors: int = 0
+    citation_relevance: int = 0
+    critical_failures: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AnalogResearchVariant:
+    variant_id: str
+    label: str
+    status: str
+    primary_provider: str
+    investigator_model: str
+    auditor_provider: str
+    auditor_model: str
+    rounds: list[ResearchRound] = field(default_factory=list)
+    final_artifact: ResearchRoundArtifact | None = None
+    audit_decision: AnalogAuditDecision | None = None
+    quality_scorecard: AnalogQualityScorecard | None = None
+    latency_ms: int = 0
+    cache_status: str = "miss"
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AnalogComparison:
+    status: str
+    primary_variant_id: str
+    challenger_variant_id: str
+    agreement: str = "Unknown"
+    primary_quality_score: int | None = None
+    challenger_quality_score: int | None = None
+    agreements: list[str] = field(default_factory=list)
+    disagreements: list[str] = field(default_factory=list)
+    evidence_coverage_differences: list[str] = field(default_factory=list)
+
+
+@dataclass
+class EvidenceExclusionRecord:
+    evidence_id: str
+    kind: str
+    reason: str
+    score: float
+    source_type: str = ""
+    source_tier: int | None = None
+    period: str = ""
+    paired_evidence_id: str = ""
+    retained_in_search_catalog: bool = True
+
+
+@dataclass
+class EvidencePackAudit:
+    ticker: str
+    status: str
+    available_count: int
+    core_count: int
+    searchable_count: int
+    core_evidence_ids: list[str] = field(default_factory=list)
+    searchable_evidence_ids: list[str] = field(default_factory=list)
+    exclusions: list[EvidenceExclusionRecord] = field(default_factory=list)
+    current_prior_pairs: list[list[str]] = field(default_factory=list)
+    unpaired_change_ids: list[str] = field(default_factory=list)
+    core_missing_period_ids: list[str] = field(default_factory=list)
+    core_missing_provenance_ids: list[str] = field(default_factory=list)
+    source_family_counts: dict[str, int] = field(default_factory=dict)
+    duplicate_count: int = 0
+    selection_policy: str = ""
+    order_invariant: bool = True
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SourceRetrievalLifecycle:
+    request_id: str
+    source_id: str
+    status: str
+    source_type: str = ""
+    history: list[str] = field(default_factory=list)
+    failure_code: str = ""
+    message: str = ""
+    attempted_at: str = ""
+    completed_at: str = ""
+
+
+@dataclass
+class NormalizedSourceRecord:
+    source_id: str
+    ticker: str
+    entity_name: str
+    security_id: str
+    source_family: str
+    source_type: str
+    document_id: str
+    source_url: str
+    publication_date: str
+    reporting_period: str
+    section: str
+    page_or_table: str
+    exact_excerpt: str
+    metric_or_claim: str
+    value: float | str | None
+    unit: str
+    currency: str
+    source_tier: int | None
+    origin_group: str
+    licensing_policy: str
+    retrieval_status: str
+    parser_status: str
+    validation_status: str
+    citation_id: str = ""
+    accession: str = ""
+    form: str = ""
+    content_hash: str = ""
+    formula: str = ""
+    derived_from_source_ids: list[str] = field(default_factory=list)
+    observed_at: str = ""
+    period_start: str = ""
+    duration_days: int | None = None
+    fiscal_period: str = ""
+    fiscal_year: int | None = None
+    fiscal_frame: str = ""
+    failure_code: str = ""
+    message: str = ""
+
+
+@dataclass
+class HistoricalFinancialPath:
+    ticker: str
+    metric: str
+    status: str
+    observations: list[dict[str, Any]] = field(default_factory=list)
+    formula: str = ""
+    source_ids: list[str] = field(default_factory=list)
+    no_lookahead_safe: bool = True
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HistoricalValuationObservation:
+    ticker: str
+    observation_date: str
+    price: float | None
+    diluted_shares: float | None
+    market_cap: float | None
+    enterprise_value: float | None
+    revenue_ttm: float | None
+    earnings_ttm: float | None
+    fcf_ttm: float | None
+    cash: float | None
+    debt: float | None
+    currency: str
+    formula_traces: dict[str, str] = field(default_factory=dict)
+    source_ids: list[str] = field(default_factory=list)
+    confidence: str = "Unknown"
+    no_lookahead_safe: bool = True
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ContractualExposureObservation:
+    exposure_id: str
+    ticker: str
+    exposure_type: str
+    status: str
+    description: str
+    amount: float | None = None
+    unit: str = ""
+    currency: str = ""
+    period: str = ""
+    counterparty: str = ""
+    cancellation_terms: str = ""
+    source_ids: list[str] = field(default_factory=list)
+    confidence: str = "Unknown"
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RegulatoryEventObservation:
+    event_id: str
+    ticker: str
+    proceeding: str
+    event_date: str
+    jurisdiction: str
+    status: str
+    remedy: str = ""
+    affected_business: str = ""
+    affected_geography: str = ""
+    issuer_response: str = ""
+    financial_mechanism: str = ""
+    source_ids: list[str] = field(default_factory=list)
+    confidence: str = "Unknown"
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ClaimEvidencePolicy:
+    policy_id: str
+    claim_type: str
+    label: str
+    required_fields: tuple[str, ...]
+    preferred_source_types: tuple[str, ...]
+    minimum_independent_origins: int = 1
+    primary_or_official_required: bool = False
+    current_prior_required: bool = False
+    numerical_reconciliation_required: bool = False
+    no_lookahead_required: bool = True
+    notes: str = ""
+
+
+@dataclass
+class DiscoveredSourceCandidate:
+    candidate_id: str
+    ticker: str
+    url: str
+    title: str
+    publisher: str
+    ownership_group: str
+    proposed_source_family: str
+    proposed_source_type: str
+    publication_date: str = ""
+    language: str = "unknown"
+    discovery_provider: str = ""
+    discovery_method: str = "model_or_search"
+    claimed_relevance: str = ""
+    claim_to_test: str = ""
+    excerpt: str = ""
+    licensing_policy: str = "metadata_only"
+    full_text_status: str = "metadata_only"
+    syndication_fingerprint: str = ""
+    evidence_ids: list[str] = field(default_factory=list)
+    candidate_type: str = "source_candidate"
+    materiality: str = "Medium"
+    research_request_id: str = ""
+    proposed_mapping: str = ""
+    company_or_expert: str = ""
+
+
+@dataclass
+class SourceAdmissionDecision:
+    decision_id: str
+    candidate_id: str
+    ticker: str
+    status: str
+    admitted_as: str
+    canonical_url: str
+    source_family: str
+    source_type: str
+    source_tier: int | None
+    allowed_stage: str
+    ownership_group: str
+    licensing_policy: str
+    retrieval_status: str
+    parser_status: str
+    validation_status: str
+    citation_bound: bool = False
+    prompt_injection_quarantined: bool = False
+    reasons: list[str] = field(default_factory=list)
+    evidence_id: str = ""
+    decided_at: str = ""
+
+
+@dataclass
+class RegulatoryProspectObservation:
+    prospect_id: str
+    ticker: str
+    headline: str
+    jurisdiction: str
+    authority: str
+    procedural_stage: str
+    classification: str
+    affected_business: str = ""
+    affected_geography: str = ""
+    expected_milestone: str = ""
+    event_date: str = ""
+    financial_mechanisms: list[str] = field(default_factory=list)
+    source_ids: list[str] = field(default_factory=list)
+    source_origin_groups: list[str] = field(default_factory=list)
+    official_source_ids: list[str] = field(default_factory=list)
+    semi_official_source_ids: list[str] = field(default_factory=list)
+    external_source_ids: list[str] = field(default_factory=list)
+    allowed_stage: str = "Candidate"
+    confidence: str = "Low"
+    status: str = "Unverified"
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RegulatoryMomentumAssessment:
+    ticker: str
+    status: str
+    summary: str
+    highest_stage: str
+    prospect_count: int
+    official_milestone_count: int
+    independent_external_origin_count: int
+    next_milestones: list[str] = field(default_factory=list)
+    prospects: list[RegulatoryProspectObservation] = field(default_factory=list)
+    coverage_status: str = "Unavailable"
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ClaimEvidenceAudit:
+    claim_id: str
+    claim_text: str
+    classification: str
+    materiality: str
+    claim_type: str = ""
+    required_evidence_fields: list[str] = field(default_factory=list)
+    supporting_evidence_ids: list[str] = field(default_factory=list)
+    contradicting_evidence_ids: list[str] = field(default_factory=list)
+    period_alignment: str = "Unknown"
+    entity_alignment: str = "Unknown"
+    independent_origin_count: int = 0
+    numerical_reconciliation: str = "not_applicable"
+    status: str = "unreviewed"
+    blockers: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AuditRepairItem:
+    repair_id: str
+    claim_id: str
+    rejection_reason: str
+    missing_source_type: str
+    missing_metric: str
+    retrieval_request: dict[str, Any]
+    retrieval_status: str = "planned"
+    retrieval_outcome_ids: list[str] = field(default_factory=list)
+    resolution: str = "unresolved"
+    revised_claim: str = ""
+    final_audit_status: str = "not_run"
+
+
+@dataclass
+class AuditRepairQueue:
+    ticker: str
+    status: str
+    items: list[AuditRepairItem] = field(default_factory=list)
+    critical_open_count: int = 0
+    generated_at: str = ""
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class PartialResearchRerunManifest:
+    parent_run_id: str
+    parent_evidence_hash: str
+    new_evidence_hash: str
+    changed_evidence_ids: list[str] = field(default_factory=list)
+    reused_round_numbers: list[int] = field(default_factory=list)
+    rerun_round_numbers: list[int] = field(default_factory=list)
+    idempotency_key: str = ""
+    audit_retry_history: list[str] = field(default_factory=list)
+    status: str = "not_applicable"
+
+
+@dataclass
+class DemoFreezeDecision:
+    ticker: str
+    status: str
+    allowed: bool
+    evaluated_at: str
+    failed_claim_ids: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+    next_actions: list[str] = field(default_factory=list)
+    output_path: str = ""
+    evidence_hash: str = ""
+    validation_status: str = "not_run"
+    source_run_id: str = ""
+    source_run_completed_at: str = ""
+    qa_closure_state: str = ""
+    policy_version: str = "demo-quality-policy-v2"
+    artifact_schema_version: str = "demo-hybrid-artifact-v2"
+    sanitization_status: str = "not_run"
+    research_profile: str = ""
+    source_policy_summary: str = ""
+    publication_gate_evaluation: PublicationGateEvaluation | None = None
+    repair_actions: list[ResearchRepairAction] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DemoQualityPolicy:
+    policy_version: str = "demo-quality-policy-v2"
+    artifact_schema_version: str = "demo-hybrid-artifact-v2"
+    require_completed_run: bool = True
+    require_deterministic_validation: bool = True
+    require_closed_qa: bool = True
+    require_audited_analog: bool = True
+    require_independent_quantified_origins: int = 2
+    require_no_failed_material_claims: bool = True
+    require_no_promoted_quarantined_metadata: bool = True
+    require_sanitized_artifact: bool = True
+    ticker_minimum_scores: dict[str, int] = field(
+        default_factory=lambda: {"AAPL": 85}
+    )
+    ticker_required_paths: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: {
+            "AAPL": (
+                "Free Cash Flow TTM",
+                "Long-term Debt",
+                "Share Repurchases",
+            ),
+        }
+    )
+    default_coverage_profile_id: str = "operating_company"
+    enforce_coverage_profile_paths: bool = False
+    validation_policy_version: str = "deterministic-validation-v1"
+    parser_version: str = "registered-parser-v1"
+
+
+@dataclass
+class RetrievalAuditReport:
+    ticker: str
+    profile: str
+    status: str
+    benchmark_ready: bool
+    generated_at: str
+    summary: str
+    entity_complete: bool
+    input_sufficiency_score: int
+    claim_ready_count: int
+    claim_blocked_count: int
+    source_status_counts: dict[str, int] = field(default_factory=dict)
+    source_origin_count: int = 0
+    critical_blockers: list[str] = field(default_factory=list)
+    manual_requirements: list[str] = field(default_factory=list)
+    next_actions: list[str] = field(default_factory=list)
+    retrieval_lifecycles: list[SourceRetrievalLifecycle] = field(
+        default_factory=list
+    )
+    normalized_sources: list[NormalizedSourceRecord] = field(
+        default_factory=list
+    )
+    claim_audits: list[ClaimEvidenceAudit] = field(default_factory=list)
+    repair_queue: AuditRepairQueue | None = None
+    regulatory_momentum: RegulatoryMomentumAssessment | None = None
+    semantic_evidence_hash: str = ""
+    output_json: str = ""
+    output_markdown: str = ""
+    no_llm_calls: bool = True
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class InputSufficiencyDimension:
+    dimension_id: str
+    label: str
+    score: int
+    maximum: int
+    status: str
+    summary: str
+    gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class InputSufficiencyScore:
+    ticker: str
+    status: str
+    total_score: int
+    benchmark_ready: bool
+    threshold: int = 80
+    dimensions: list[InputSufficiencyDimension] = field(default_factory=list)
+    critical_gaps: list[str] = field(default_factory=list)
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ResearchUsageSummary:
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    reasoning_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    model_calls: int = 0
+    retries: int = 0
+    retrieval_calls: int = 0
+    wall_clock_ms: int = 0
+    provider_cost_usd: float | None = None
+    preflight_estimated_tokens: int = 0
+    preflight_multiple: float | None = None
+    review_required: bool = False
+
+
+@dataclass
+class HybridProviderReadiness:
+    role: str
+    provider: str
+    model: str
+    status: str
+    credential_source: str = ""
+    message: str = ""
+
+
+@dataclass
+class HybridExecutionPreflight:
+    ticker: str
+    status: str
+    research_profile: str
+    deepseek: HybridProviderReadiness
+    sol: HybridProviderReadiness
+    evidence_status: str = "Pending deterministic preflight"
+    execution_status: str = "new"
+    expected_model_calls: int = 10
+    expected_retrieval_passes: int = 2
+    cache_status: str = "unknown"
+    blockers: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HybridJobProgress:
+    status: str = "queued"
+    current_stage: str = "Preparing deterministic research"
+    current_round: int = 0
+    attempted_model_calls: int = 0
+    completed_model_calls: int = 0
+    provider: str = ""
+    model: str = ""
+    started_at: str = ""
+    elapsed_seconds: float = 0.0
+    retry_count: int = 0
+    failure_class: str = ""
+    message: str = ""
+
+
+@dataclass
+class DisplayedResultContext:
+    result_type: str
+    label: str
+    ticker: str
+    run_id: str = ""
+    generated_at: str = ""
+    active_job_id: str = ""
+    active_job_ticker: str = ""
+    message: str = ""
+
+
+@dataclass
+class SourceFreshnessStatus:
+    component: str
+    status: str
+    source_as_of: str = ""
+    observed_at: str = ""
+    source: str = ""
+    message: str = ""
+
+
+@dataclass
+class ResearchFreshnessSummary:
+    overall_status: str
+    summary: str
+    run_generated_at: str = ""
+    run_completed_at: str = ""
+    result_type: str = "live"
+    components: list[SourceFreshnessStatus] = field(default_factory=list)
+    stale_components: list[str] = field(default_factory=list)
+    unavailable_components: list[str] = field(default_factory=list)
+
+
+@dataclass
+class BenchmarkGapDecomposition:
+    ticker: str
+    status: str
+    original_input_score: int
+    enriched_input_score: int
+    original_deepseek_score: int | None = None
+    enriched_deepseek_score: int | None = None
+    original_sol_score: int | None = None
+    enriched_sol_score: int | None = None
+    input_uplift: int = 0
+    residual_reasoning_gap: int | None = None
+    input_gap_categories: list[str] = field(default_factory=list)
+    retrieval_gap_categories: list[str] = field(default_factory=list)
+    reasoning_gap_categories: list[str] = field(default_factory=list)
+    presentation_gap_categories: list[str] = field(default_factory=list)
+    accepted_fixes: list[str] = field(default_factory=list)
+    unresolved_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HybridResearchRun:
+    run_id: str
+    ticker: str
+    status: str
+    profile: HybridResearchProfile
+    execution_backend: ExecutionBackend
+    rounds: list[ResearchRound] = field(default_factory=list)
+    final_artifact: ResearchRoundArtifact | None = None
+    audit_findings: list[ResearchAuditFinding] = field(default_factory=list)
+    evidence_hash: str = ""
+    source_registry_version: str = ""
+    prompt_version: str = ""
+    generated_at: str = ""
+    completed_at: str = ""
+    # Empty means the artifact predates the versioned lifecycle contract.
+    # New run constructors set an explicit state; deserializers preserve the
+    # distinction so historical policy decisions remain reproducible.
+    lifecycle_state: str = ""
+    research_attempt_finished_at: str = ""
+    validation_completed_at: str = ""
+    audit_completed_at: str = ""
+    revision_completed_at: str = ""
+    closure_completed_at: str = ""
+    publishable_at: str = ""
+    published_at: str = ""
+    terminal_at: str = ""
+    cache_status: str = "miss"
+    deterministic_validation_status: str = "not_run"
+    generation_provenance: dict[str, str] = field(default_factory=dict)
+    data_gaps: list[str] = field(default_factory=list)
+    variants: list[AnalogResearchVariant] = field(default_factory=list)
+    selected_primary_variant_id: str = ""
+    shared_retrieval_manifest: SharedRetrievalManifest | None = None
+    analog_comparison: AnalogComparison | None = None
+    audit_failure_streak: int = 0
+    last_successful_audit_at: str = ""
+    evidence_pack_audit: EvidencePackAudit | None = None
+    input_sufficiency: InputSufficiencyScore | None = None
+    usage_summary: ResearchUsageSummary | None = None
+    gap_decomposition: BenchmarkGapDecomposition | None = None
+    normalized_sources: list[NormalizedSourceRecord] = field(
+        default_factory=list
+    )
+    retrieval_lifecycles: list[SourceRetrievalLifecycle] = field(
+        default_factory=list
+    )
+    claim_evidence_audits: list[ClaimEvidenceAudit] = field(
+        default_factory=list
+    )
+    audit_repair_queue: AuditRepairQueue | None = None
+    historical_financial_paths: list[HistoricalFinancialPath] = field(
+        default_factory=list
+    )
+    historical_valuation_observations: list[
+        HistoricalValuationObservation
+    ] = field(default_factory=list)
+    contractual_exposures: list[ContractualExposureObservation] = field(
+        default_factory=list
+    )
+    regulatory_events: list[RegulatoryEventObservation] = field(
+        default_factory=list
+    )
+    source_candidates: list[DiscoveredSourceCandidate] = field(
+        default_factory=list
+    )
+    source_admission_decisions: list[SourceAdmissionDecision] = field(
+        default_factory=list
+    )
+    regulatory_momentum: RegulatoryMomentumAssessment | None = None
+    evidence_fingerprints: dict[str, str] = field(default_factory=dict)
+    partial_rerun_manifest: PartialResearchRerunManifest | None = None
+    demo_freeze_decision: DemoFreezeDecision | None = None
+    publication_gate_evaluations: list[PublicationGateEvaluation] = field(
+        default_factory=list
+    )
+    repair_actions: list[ResearchRepairAction] = field(default_factory=list)
+    semantic_quality_history: list[SemanticQualityEvaluation] = field(
+        default_factory=list
+    )
+    derived_artifact_dependencies: list[DerivedArtifactDependency] = field(
+        default_factory=list
+    )
+    scope_invalidations: list[ScopeInvalidationResult] = field(
+        default_factory=list
+    )
+
+
+@dataclass
+class ModelResearchArtifact:
+    artifact_id: str
+    stage_id: str
+    role: str
+    provider: str
+    model: str
+    status: str
+    summary: str = ""
+    evidence_ids: list[str] = field(default_factory=list)
+    citation_ids: list[str] = field(default_factory=list)
+    source_request_ids: list[str] = field(default_factory=list)
+    validation_gaps: list[str] = field(default_factory=list)
+    latency_ms: int | None = None
+    token_usage: dict[str, int] = field(default_factory=dict)
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ResearchGapDiagnosis:
+    gap_id: str
+    stage_id: str
+    category: str
+    severity: str
+    summary: str
+    stronger_model: str = "Unresolved"
+    evidence_ids: list[str] = field(default_factory=list)
+    recommended_fix: str = ""
+    status: str = "open"
+
+
+@dataclass
+class AcceptedSecondaryDelta:
+    delta_id: str
+    stage_id: str
+    summary: str
+    evidence_ids: list[str] = field(default_factory=list)
+    validation_status: str = "rejected"
+    adoption_status: str = "not_adopted"
+    reason: str = ""
+
+
+@dataclass
+class AdjudicationDecision:
+    status: str
+    selected_interpretation: str
+    rationale: str
+    adjudicator_provider: str = ""
+    adjudicator_model: str = ""
+    accepted_delta_ids: list[str] = field(default_factory=list)
+    unresolved_disagreements: list[str] = field(default_factory=list)
+    prohibited_overrides: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ResearchOutputComparison:
+    stage_id: str
+    status: str
+    agreement: str
+    deepseek_score: int
+    sol_score: int
+    stronger_model: str
+    dimension_scores: dict[str, dict[str, int]] = field(default_factory=dict)
+    agreements: list[str] = field(default_factory=list)
+    disagreements: list[str] = field(default_factory=list)
+    sol_additions: list[str] = field(default_factory=list)
+    deepseek_additions: list[str] = field(default_factory=list)
+    gap_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DualModelStage:
+    stage_id: str
+    label: str
+    status: str
+    deepseek_artifact: ModelResearchArtifact | None = None
+    sol_artifact: ModelResearchArtifact | None = None
+    comparison: ResearchOutputComparison | None = None
+    accepted_secondary_deltas: list[AcceptedSecondaryDelta] = field(
+        default_factory=list
+    )
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ResearchImprovementCandidate:
+    candidate_id: str
+    category: str
+    title: str
+    proposed_change: str
+    supporting_gap_ids: list[str] = field(default_factory=list)
+    required_benchmark_tickers: list[str] = field(default_factory=list)
+    activation_status: str = "review_required"
+    runtime_mutation_allowed: bool = False
+
+
+@dataclass
+class ResearchQualityBenchmark:
+    status: str
+    deepseek_score: int
+    sol_score: int
+    combined_score: int
+    stage_winners: dict[str, str] = field(default_factory=dict)
+    critical_failures: list[str] = field(default_factory=list)
+    benchmark_dimensions: dict[str, dict[str, int]] = field(
+        default_factory=dict
+    )
+
+
+@dataclass
+class DualModelResearchRun:
+    run_id: str
+    ticker: str
+    status: str
+    research_profile: str
+    evidence_hash: str
+    generated_at: str
+    completed_at: str = ""
+    final_label: str = "Paired research not started"
+    stages: list[DualModelStage] = field(default_factory=list)
+    gap_diagnoses: list[ResearchGapDiagnosis] = field(default_factory=list)
+    accepted_secondary_deltas: list[AcceptedSecondaryDelta] = field(
+        default_factory=list
+    )
+    adjudication: AdjudicationDecision | None = None
+    benchmark: ResearchQualityBenchmark | None = None
+    improvement_candidates: list[ResearchImprovementCandidate] = field(
+        default_factory=list
+    )
+    cache_status: str = "miss"
+    deterministic_validation_status: str = "not_run"
+    execution_backend: str = ""
+    provenance_class: str = "live_run"
+    provenance_message: str = ""
+    data_gaps: list[str] = field(default_factory=list)
+    evidence_pack_audit: EvidencePackAudit | None = None
+    input_sufficiency: InputSufficiencyScore | None = None
+    usage_summary: ResearchUsageSummary | None = None
+    gap_decomposition: BenchmarkGapDecomposition | None = None
+    deepseek_execution_status: str = "not_started"
+    sol_execution_status: str = "not_started"
+    adjudication_status: str = "not_run"
+    attempted_stage_count: int = 0
+    completed_stage_count: int = 0
+    deepseek_completed_stage_count: int = 0
+    sol_completed_stage_count: int = 0
+    execution_failure_reason: str = ""
+
+
+@dataclass(frozen=True)
 class PeerDefinition:
     ticker: str
     rationale: str
@@ -2564,7 +3656,7 @@ class EvidenceClaim:
 class EvidenceLedger:
     claims: list[EvidenceClaim] = field(default_factory=list)
     items: list[EvidenceItem] = field(default_factory=list)
-    strongest_counter_thesis: str = "No material counter-evidence identified."
+    strongest_counter_thesis: str = "Counter-thesis not established — diligence gap."
     unresolved_material_contradictions: int = 0
 
 
@@ -2760,6 +3852,327 @@ class RunManifest:
     llm_extraction_summary: dict[str, Any] = field(default_factory=dict)
     research_profile_summary: dict[str, Any] = field(default_factory=dict)
     effective_history_summary: dict[str, Any] = field(default_factory=dict)
+    research_execution_policy: dict[str, Any] = field(default_factory=dict)
+    data_access_policy: dict[str, Any] = field(default_factory=dict)
+    source_policy_fingerprint: str = ""
+    admitted_evidence_hash: str = ""
+    evidence_graph_version: str = ""
+    model_role_assignments: list[dict[str, Any]] = field(default_factory=list)
+    independent_research_qa_summary: dict[str, Any] = field(default_factory=dict)
+    research_requests: list[dict[str, Any]] = field(default_factory=list)
+    candidate_discovery: list[dict[str, Any]] = field(default_factory=list)
+    evidence_admission_log: list[dict[str, Any]] = field(default_factory=list)
+    primary_audit_responses: list[dict[str, Any]] = field(default_factory=list)
+    closure_audit_summary: dict[str, Any] = field(default_factory=dict)
+    recursion_depth: int = 0
+    estimated_research_cost_usd: float | None = None
+    research_stopping_reason: str = ""
+    research_integrity_version: str = "research-integrity-v1"
+
+
+@dataclass
+class ResearchExecutionPolicy:
+    research_depth: str
+    adaptive_macro: bool = True
+    use_all_entitled_sources: bool = True
+    retrieval_pass_limit: int = 1
+    evidence_gap_loop_limit: int = 1
+    specialist_roles: list[str] = field(default_factory=list)
+    permitted_model_roles: list[str] = field(default_factory=list)
+    max_model_spend_usd: float | None = None
+    cache_bypass: bool = False
+    legacy_budget_mode: str = ""
+    max_investigation_cycles: int = 1
+    focused_mapping_escalation_limit: int = 0
+    stop_on_no_new_evidence: bool = True
+    policy_version: str = "research-execution-policy-v1"
+
+
+@dataclass
+class DataAccessPolicy:
+    enabled_source_families: list[str] = field(default_factory=list)
+    disabled_source_families: list[str] = field(default_factory=list)
+    provider_entitlements: dict[str, bool] = field(default_factory=dict)
+    allowed_licensing_policies: list[str] = field(default_factory=list)
+    market: str = "US-listed"
+    jurisdiction: str = "US"
+    data_cutoff: str = ""
+    allow_cached_evidence: bool = True
+    policy_version: str = "data-access-policy-v1"
+
+
+@dataclass
+class SourcePolicyFingerprint:
+    fingerprint: str
+    enabled_source_families: list[str] = field(default_factory=list)
+    provider_entitlements: dict[str, bool] = field(default_factory=dict)
+    licensing_rules: list[str] = field(default_factory=list)
+    research_depth: str = "adaptive_ic"
+    adaptive_macro_factors: list[str] = field(default_factory=list)
+    market: str = "US-listed"
+    jurisdiction: str = "US"
+    data_cutoff: str = ""
+    permitted_model_roles: list[str] = field(default_factory=list)
+    prompt_version: str = ""
+    source_registry_version: str = ""
+
+
+@dataclass
+class EvidenceNode:
+    node_id: str
+    node_type: str
+    entity: str
+    statement: str
+    source: str = ""
+    citation: str = ""
+    publication_timestamp: str = ""
+    event_timestamp: str = ""
+    retrieval_timestamp: str = ""
+    reporting_period: str = ""
+    metric: str = ""
+    value: float | str | None = None
+    unit: str = ""
+    currency: str = ""
+    licensing_classification: str = ""
+    provider: str = ""
+    freshness: str = "Unknown"
+    source_policy_admission_state: str = "excluded"
+    no_lookahead_status: str = "Unknown"
+    confidence: str = "Unknown"
+    validation_state: str = "Unknown"
+
+
+@dataclass
+class EvidenceRelationship:
+    relationship_id: str
+    source_node_id: str
+    target_node_id: str
+    relationship_type: str
+    confidence: str = "Unknown"
+
+
+@dataclass
+class EvidenceGraph:
+    ticker: str
+    graph_version: str
+    evidence_hash: str
+    source_policy_fingerprint: str
+    nodes: list[EvidenceNode] = field(default_factory=list)
+    relationships: list[EvidenceRelationship] = field(default_factory=list)
+    admission_decisions: list[EvidenceAdmissionDecision] = field(default_factory=list)
+    admitted_evidence_ids: list[str] = field(default_factory=list)
+    excluded_evidence_ids: list[str] = field(default_factory=list)
+    generated_at: str = ""
+
+
+@dataclass
+class CompanyMacroExposure:
+    exposure_id: str
+    factor: str
+    materiality: int
+    causal_relevance: int
+    affected_business_driver: str
+    time_horizon: str
+    current_signal: str = "Unknown"
+    direction: str = "uncertain"
+    rationale: str = ""
+    evidence_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AdaptiveMacroResearchPlan:
+    ticker: str
+    status: str
+    baseline_factors: list[str] = field(default_factory=list)
+    selected_exposures: list[CompanyMacroExposure] = field(default_factory=list)
+    excluded_factors: list[str] = field(default_factory=list)
+    selection_policy: str = ""
+    company_evidence_required: bool = True
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ResearchRoleAssignment:
+    role: str
+    provider: str
+    model: str
+    status: str
+    required: bool = True
+    deterministic: bool = False
+    message: str = ""
+
+
+@dataclass
+class PrimaryModelReadiness:
+    status: str
+    provider: str = ""
+    model: str = ""
+    credential_source: str = ""
+    message: str = ""
+
+
+@dataclass
+class IndependentAuditReadiness:
+    status: str
+    provider: str = ""
+    model: str = ""
+    credential_source: str = ""
+    optional: bool = True
+    message: str = ""
+
+
+@dataclass
+class ResearchAiExecutionPlan:
+    status: str
+    assignments: list[ResearchRoleAssignment] = field(default_factory=list)
+    primary_readiness: PrimaryModelReadiness | None = None
+    independent_audit_readiness: IndependentAuditReadiness | None = None
+    expected_model_calls: int = 0
+    expected_retrieval_passes: int = 0
+    expected_gap_loops: int = 0
+    deterministic_fallback: bool = False
+
+
+@dataclass
+class ResearchSetupPreview:
+    depth: str
+    data_status: str
+    source_count: int
+    macro_status: str
+    primary_ai_status: str
+    independent_qa_status: str
+    expected_execution: str
+    expected_stages: list[str] = field(default_factory=list)
+    excluded_evidence_count: int = 0
+    estimated_provider_spend_usd: float | None = None
+
+
+@dataclass
+class ResearchHypothesis:
+    hypothesis_id: str
+    statement: str
+    status: str = "open"
+    confirming_evidence_ids: list[str] = field(default_factory=list)
+    contradicting_evidence_ids: list[str] = field(default_factory=list)
+    falsification_test: str = ""
+
+
+@dataclass
+class EvidenceGap:
+    gap_id: str
+    summary: str
+    severity: str
+    status: str = "open"
+    evidence_request_ids: list[str] = field(default_factory=list)
+    affected_claim_ids: list[str] = field(default_factory=list)
+    resolution_evidence_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ResearchQaDimension:
+    name: str
+    score: int
+    weight: float
+    status: str
+    explanation: str
+    deductions: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ResearchQaScore:
+    total_score: int
+    status: str
+    dimensions: list[ResearchQaDimension] = field(default_factory=list)
+    deductions: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ModelExecutionRecord:
+    role: str
+    provider: str
+    model: str
+    status: str
+    started_at: str = ""
+    completed_at: str = ""
+    latency_ms: int | None = None
+    prompt_hash: str = ""
+    evidence_hash: str = ""
+    token_usage: dict[str, int] = field(default_factory=dict)
+    provider_cost_usd: float | None = None
+    failure_class: str = ""
+    message: str = ""
+
+
+@dataclass
+class ConclusionRevision:
+    revision_id: str
+    conclusion_area: str
+    before: str
+    after: str
+    reason: str
+    evidence_ids: list[str] = field(default_factory=list)
+    materiality: str = "Medium"
+
+
+@dataclass
+class UnresolvedResearchRisk:
+    risk_id: str
+    summary: str
+    severity: str
+    affected_conclusions: list[str] = field(default_factory=list)
+    required_evidence: list[str] = field(default_factory=list)
+    confidence_impact: str = ""
+
+
+@dataclass
+class ResearchQaReport:
+    ticker: str
+    status: str
+    score: ResearchQaScore
+    primary_thesis_challenged: bool = False
+    alternative_hypotheses_explored: int = 0
+    unsupported_claims_removed: int = 0
+    evidence_gaps_identified: int = 0
+    evidence_gaps_closed: int = 0
+    evidence_gaps_partially_resolved: int = 0
+    evidence_gaps_unresolved: int = 0
+    additional_validated_sources: int = 0
+    market_capture_challenged: bool = False
+    confidence_before: str = "Unknown"
+    confidence_after: str = "Unknown"
+    summary: str = ""
+
+
+@dataclass
+class IndependentResearchQaRun:
+    run_id: str
+    ticker: str
+    status: str
+    generated_at: str
+    completed_at: str = ""
+    evidence_hash: str = ""
+    source_policy_fingerprint: str = ""
+    execution_plan: ResearchAiExecutionPlan | None = None
+    setup_preview: ResearchSetupPreview | None = None
+    evidence_graph: EvidenceGraph | None = None
+    hypotheses: list[ResearchHypothesis] = field(default_factory=list)
+    audit_findings: list[AuditFinding] = field(default_factory=list)
+    evidence_requests: list[EvidenceRequest] = field(default_factory=list)
+    research_requests: list[ResearchRequest] = field(default_factory=list)
+    candidate_discovery_items: list[CandidateDiscoveryItem] = field(default_factory=list)
+    evidence_gaps: list[EvidenceGap] = field(default_factory=list)
+    primary_audit_responses: list[PrimaryAuditResponse] = field(default_factory=list)
+    audit_resolutions: list[AuditResolution] = field(default_factory=list)
+    model_executions: list[ModelExecutionRecord] = field(default_factory=list)
+    conclusion_revisions: list[ConclusionRevision] = field(default_factory=list)
+    unresolved_risks: list[UnresolvedResearchRisk] = field(default_factory=list)
+    qa_report: ResearchQaReport | None = None
+    closure_result: ClosureAuditResult | None = None
+    final_artifact: ResearchRoundArtifact | None = None
+    recursion_depth: int = 0
+    estimated_cost_usd: float | None = None
+    stopping_reason: str = ""
+    data_gaps: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -2865,6 +4278,273 @@ class HistoricalReferenceSet:
     mean_realized_return_pct: float | None = None
     data_gaps: list[str] = field(default_factory=list)
     summary: str = ""
+
+
+@dataclass
+class HistoricalCompanyBaseline:
+    business_model: str = "Unknown"
+    segments: list[str] = field(default_factory=list)
+    owned_capacity: str = "Unknown"
+    contracted_capacity: str = "Unknown"
+    capex: str = "Unknown"
+    research_and_development: str = "Unknown"
+    inventory: str = "Unknown"
+    purchase_obligations: str = "Unknown"
+    guarantees_and_leases: str = "Unknown"
+    debt_and_liquidity: str = "Unknown"
+    free_cash_flow: str = "Unknown"
+    valuation: str = "Unknown"
+    competition: str = "Unknown"
+    management_changes: str = "Unknown"
+    macro_regime: str = "Unknown"
+    evidence_ids: list[str] = field(default_factory=list)
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HistoricalAnalogSignature:
+    ticker: str
+    driver: str
+    industry: str
+    revenue_growth_pct: float | None = None
+    backlog_growth_pct: float | None = None
+    capex_intensity_pct: float | None = None
+    utilization_signal: str = "Unknown"
+    fcf_conversion_pct: float | None = None
+    leverage_signal: str = "Unknown"
+    valuation_signal: str = "Unknown"
+    competition_signal: str = "Unknown"
+    macro_regime: str = "Unknown"
+    evidence_ids: list[str] = field(default_factory=list)
+    current_baseline: HistoricalCompanyBaseline = field(
+        default_factory=HistoricalCompanyBaseline
+    )
+
+
+@dataclass
+class AnalogSourceObservation:
+    source_id: str
+    provider: str
+    title: str
+    source_class: str
+    source_origin_group: str
+    published_at: str | None
+    url: str
+    evidence_id: str
+    source_tier: int
+    licensing_policy: str
+    excerpt: str = ""
+    quantitative: bool = False
+    contemporaneous: bool = False
+    citation: Citation | None = None
+
+
+@dataclass
+class AnalogSourceLink:
+    source_id: str
+    analog_id: str
+    relevance_score: int
+    status: str
+    matched_entities: list[str] = field(default_factory=list)
+    matched_mechanisms: list[str] = field(default_factory=list)
+    episode_period_match: str = "Unknown"
+    outcome_coverage: list[str] = field(default_factory=list)
+    source_quality_score: int = 0
+    rejection_reasons: list[str] = field(default_factory=list)
+    source_title: str = ""
+    source_provider: str = ""
+    source_published_at: str | None = None
+    rejection_summary: str = ""
+
+
+@dataclass
+class HistoricalAnalogWorkOrder:
+    work_order_id: str
+    analog_id: str
+    episode: str
+    status: str
+    entities: list[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
+    period_start: str = ""
+    period_end: str = ""
+    mechanism: str = ""
+    expected_outcomes: list[str] = field(default_factory=list)
+    required_source_types: list[str] = field(default_factory=list)
+    attempted_source_types: list[str] = field(default_factory=list)
+    resolved_source_ids: list[str] = field(default_factory=list)
+    blocker: str = ""
+    next_action: str = ""
+
+
+@dataclass
+class HistoricalAnalogBrief:
+    status: str
+    episode: str
+    lesson: str
+    material_difference: str
+    linked_monitor: str
+    evidence_status: str
+    analog_id: str = ""
+
+
+@dataclass
+class HistoricalOutcomePath:
+    operating_outcome: str = "Unknown"
+    financing_outcome: str = "Unknown"
+    valuation_outcome: str = "Unknown"
+    price_outcome: str = "Unknown"
+    quantitative_verified: bool = False
+
+
+@dataclass
+class HistoricalAnalogCandidate:
+    analog_id: str
+    analog_class: str
+    episode: str
+    companies: list[str]
+    selection_rationale: str
+    search_terms: list[str] = field(default_factory=list)
+    proposed_by: str = "deterministic"
+    status: str = "Exploratory Candidate"
+    mechanism: str = ""
+    period_start: str = ""
+    period_end: str = ""
+    period_precision: str = "unknown"
+    expected_outcomes: list[str] = field(default_factory=list)
+    required_source_types: list[str] = field(default_factory=list)
+    reference_tickers: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HistoricalAnalogAssessment:
+    analog_id: str
+    analog_class: str
+    status: str
+    classification: str
+    episode: str
+    companies: list[str]
+    selection_rationale: str
+    similarity_score: int | None
+    dimension_scores: dict[str, int] = field(default_factory=dict)
+    similarity_band: str = "Unscored"
+    source_relevance_score: int = 0
+    source_links: list[AnalogSourceLink] = field(default_factory=list)
+    rejected_sources: list[AnalogSourceLink] = field(default_factory=list)
+    material_differences: list[str] = field(default_factory=list)
+    outcome: HistoricalOutcomePath = field(default_factory=HistoricalOutcomePath)
+    what_it_suggests: str = ""
+    what_it_cannot_establish: str = ""
+    lessons: list[str] = field(default_factory=list)
+    confirm_kpis: list[str] = field(default_factory=list)
+    reject_kpis: list[str] = field(default_factory=list)
+    sources: list[AnalogSourceObservation] = field(default_factory=list)
+    source_quality: str = "Exploratory"
+    confidence: str = "Low"
+
+
+@dataclass
+class AnalogDimensionComparison:
+    dimension: str
+    current_value: str
+    historical_value: str
+    score: int
+    assessment: str
+    evidence_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HistoricalEpisodeDossier:
+    analog_id: str
+    status: str
+    episode: str
+    start_date: str
+    end_date: str
+    companies: list[str] = field(default_factory=list)
+    securities: list[str] = field(default_factory=list)
+    triggering_decisions: list[str] = field(default_factory=list)
+    operating_outcome: str = "Unknown"
+    financing_outcome: str = "Unknown"
+    valuation_outcome: str = "Unknown"
+    price_outcome: str = "Unknown"
+    macro_context: str = "Unknown"
+    competitive_context: str = "Unknown"
+    dimensions: list[AnalogDimensionComparison] = field(default_factory=list)
+    material_differences: list[str] = field(default_factory=list)
+    lessons: list[str] = field(default_factory=list)
+    limitations: list[str] = field(default_factory=list)
+    confirm_kpis: list[str] = field(default_factory=list)
+    reject_kpis: list[str] = field(default_factory=list)
+    linked_monitor_rules: list[str] = field(default_factory=list)
+    source_ids: list[str] = field(default_factory=list)
+    sources: list[AnalogSourceObservation] = field(default_factory=list)
+    source_quality: str = "Exploratory"
+    confidence: str = "Low"
+    quantitative_verified: bool = False
+    researched_at: str = ""
+    cache_key: str = ""
+    period_precision: str = "day"
+    similarity_band: str = "Unscored"
+    audited_similarity_score: int | None = None
+    primary_provider: str = ""
+    primary_model: str = ""
+    secondary_auditor_provider: str = ""
+    secondary_auditor_model: str = ""
+    audit_status: str = "not_run"
+    audit_decision: AnalogAuditDecision | None = None
+    rejected_sources: list[AnalogSourceLink] = field(default_factory=list)
+    hidden_risks: list[str] = field(default_factory=list)
+    quality_scorecard: AnalogQualityScorecard | None = None
+    generation_provenance: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class AnalogInvestigationStatus:
+    code: str
+    reason: str
+    requested_count: int = 0
+    attempted_count: int = 0
+    completed_count: int = 0
+    cache_hits: int = 0
+
+
+@dataclass
+class AnalogResearchManifest:
+    ticker: str
+    status: str
+    profile_id: str
+    prompt_version: str
+    generated_at: str
+    selected_analog_ids: list[str] = field(default_factory=list)
+    source_ids: list[str] = field(default_factory=list)
+    provider: str = ""
+    model: str = ""
+    cache_hits: int = 0
+    validation_failures: list[str] = field(default_factory=list)
+    data_gaps: list[str] = field(default_factory=list)
+    evidence_hash: str = ""
+    source_registry_version: str = ""
+    primary_variant_id: str = ""
+    challenger_variant_id: str = ""
+
+
+@dataclass
+class HistoricalAnalogIntelligence:
+    ticker: str
+    status: str
+    coverage_status: str
+    signature: HistoricalAnalogSignature
+    assessments: list[HistoricalAnalogAssessment] = field(default_factory=list)
+    dossiers: list[HistoricalEpisodeDossier] = field(default_factory=list)
+    top_lesson: str = ""
+    llm_status: str = "not_selected_by_profile"
+    investigation_status: AnalogInvestigationStatus | None = None
+    research_manifest: AnalogResearchManifest | None = None
+    data_gaps: list[str] = field(default_factory=list)
+    primary_variant: AnalogResearchVariant | None = None
+    challenger_variant: AnalogResearchVariant | None = None
+    comparison: AnalogComparison | None = None
+    work_orders: list[HistoricalAnalogWorkOrder] = field(default_factory=list)
+    brief: HistoricalAnalogBrief | None = None
 
 
 @dataclass
@@ -3050,6 +4730,102 @@ class MarketImpliedExpectations:
     price_as_of: str | None = None
     financial_basis: str = "Latest normalized filing facts"
     financial_period: str | None = None
+
+
+@dataclass
+class IcImpliedExpectationsSnapshot:
+    ticker: str
+    status: str
+    template: str
+    title: str
+    current_price: float | None = None
+    price_as_of: str | None = None
+    currency: str = "USD"
+    operating_base_label: str = ""
+    operating_base_value: str = "Unknown"
+    valuation_anchor_label: str = ""
+    valuation_anchor_value: str = "Unknown"
+    implied_variable_label: str = ""
+    implied_variable_value: str = "Unknown"
+    internal_base_label: str = ""
+    internal_base_value: str = "Unknown"
+    disagreement: str = "Unknown"
+    confidence: str = "Unknown"
+    weakest_input: str = ""
+    interpretation: str = ""
+    assumption_keys: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DecisionDelta:
+    ticker: str
+    status: str
+    summary: str
+    compared_with_run_id: str | None = None
+    strengthening_changes: list[str] = field(default_factory=list)
+    weakening_changes: list[str] = field(default_factory=list)
+    neutral_changes: list[str] = field(default_factory=list)
+    observed_at: str = ""
+    current_run_id: str | None = None
+    current_completed_at: str | None = None
+    current_result_type: str = "live"
+    compared_with_completed_at: str | None = None
+    compared_with_result_type: str | None = None
+    compared_with_profile: str | None = None
+    comparison_label: str = ""
+
+
+@dataclass
+class CatalystClockItem:
+    catalyst_type: str
+    label: str
+    due_date: str | None
+    status: str
+    source: str
+    related_idea_id: str | None = None
+    related_idea_ids: list[str] = field(default_factory=list)
+    decision_relevance: str = ""
+    source_label: str = ""
+
+
+@dataclass
+class CatalystClock:
+    ticker: str
+    status: str
+    summary: str
+    items: list[CatalystClockItem] = field(default_factory=list)
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass
+class PrioritizedResearchAction:
+    rank: int
+    action_id: str
+    title: str
+    why_it_matters: str
+    source_type: str
+    status: str
+    decision_impact: str
+    auto_resolvable: bool = False
+    blocks_stage: str = ""
+    related_idea_ids: list[str] = field(default_factory=list)
+    action_kind: str = "primary_source_validation"
+    objective: str = ""
+    materiality: str = "Medium"
+    execution_mode: str = "automatic"
+    event_id: str = ""
+    related_work_order_ids: list[str] = field(default_factory=list)
+    related_research_request_ids: list[str] = field(default_factory=list)
+    related_claim_ids: list[str] = field(default_factory=list)
+    related_finding_ids: list[str] = field(default_factory=list)
+    required_source_families: list[str] = field(default_factory=list)
+    preferred_connectors: list[str] = field(default_factory=list)
+    completion_criteria: list[str] = field(default_factory=list)
+    attempt_summary: str = ""
+    blocking_reason: str = ""
+    resolution_summary: str = ""
+    origin_labels: list[str] = field(default_factory=list)
+    semantic_key: str = ""
 
 
 @dataclass

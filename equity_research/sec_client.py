@@ -19,6 +19,7 @@ SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 SEC_SUBMISSIONS_ARCHIVE_URL = "https://data.sec.gov/submissions/{name}"
 SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 SEC_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession}/{doc}"
+SEC_FILING_INDEX_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession}/index.json"
 SEC_REQUEST_INTERVAL_SECONDS = 0.12
 
 _SEC_REQUEST_LOCK = Lock()
@@ -36,15 +37,20 @@ class SecClient:
         cache_dir: Path | None = None,
         timeout_seconds: int | None = None,
         ticker_snapshot_path: Path | None = None,
+        offline: bool = False,
+        force_refresh: bool = False,
     ) -> None:
         self.user_agent = user_agent or config.SEC_USER_AGENT
         self.cache_dir = cache_dir or config.CACHE_DIR
         self.timeout_seconds = timeout_seconds or config.REQUEST_TIMEOUT_SECONDS
         self.ticker_snapshot_path = ticker_snapshot_path or SEC_TICKER_SNAPSHOT_PATH
+        self.offline = offline
+        self.force_refresh = force_refresh and not offline
         self.ticker_map_source = "not_loaded"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._text_memory_cache: dict[str, str] = {}
         self._json_memory_cache: dict[str, dict] = {}
+        self._force_refreshed_urls: set[str] = set()
         self._lock_registry_guard = Lock()
         self._url_locks: dict[str, Lock] = {}
 
@@ -180,32 +186,93 @@ class SecClient:
     def get_filing_text(self, filing: FilingRecord) -> str:
         return self.get_text(filing.url, ttl_seconds=7 * 24 * 60 * 60)
 
+    def is_text_cached(self, url: str) -> bool:
+        if url in self._text_memory_cache:
+            return True
+        return self._cache_path(url).exists()
+
+    def get_filing_documents(
+        self,
+        filing: FilingRecord,
+    ) -> list[dict[str, str]]:
+        """Return the SEC filing index document list with canonical URLs."""
+        accession = filing.accession.replace("-", "")
+        cik_int = str(int(self._cik_from_filing_url(filing.url)))
+        index_url = SEC_FILING_INDEX_URL.format(
+            cik_int=cik_int,
+            accession=accession,
+        )
+        payload = self.get_json(index_url, ttl_seconds=7 * 24 * 60 * 60)
+        directory = payload.get("directory", {}) if isinstance(payload, dict) else {}
+        items = directory.get("item", []) if isinstance(directory, dict) else []
+        result = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            if not name:
+                continue
+            result.append({
+                "name": name,
+                "type": str(item.get("type") or ""),
+                "size": str(item.get("size") or ""),
+                "last_modified": str(item.get("last-modified") or ""),
+                "url": SEC_ARCHIVES_URL.format(
+                    cik_int=cik_int,
+                    accession=accession,
+                    doc=name,
+                ),
+            })
+        return result
+
     def get_json(self, url: str, ttl_seconds: int) -> dict:
         cached = self._json_memory_cache.get(url)
-        if cached is not None:
+        if cached is not None and (
+            not self.force_refresh or url in self._force_refreshed_urls
+        ):
             return cached
         with self._url_lock(f"json:{url}"):
             cached = self._json_memory_cache.get(url)
-            if cached is not None:
+            if cached is not None and (
+                not self.force_refresh or url in self._force_refreshed_urls
+            ):
                 return cached
             text = self.get_text(url, ttl_seconds=ttl_seconds)
             payload = json.loads(text)
             self._json_memory_cache[url] = payload
+            self._force_refreshed_urls.add(url)
             return payload
 
     def get_text(self, url: str, ttl_seconds: int) -> str:
         cached = self._text_memory_cache.get(url)
-        if cached is not None:
+        if cached is not None and (
+            not self.force_refresh or url in self._force_refreshed_urls
+        ):
             return cached
         with self._url_lock(url):
             cached = self._text_memory_cache.get(url)
-            if cached is not None:
+            if cached is not None and (
+                not self.force_refresh or url in self._force_refreshed_urls
+            ):
                 return cached
             cache_path = self._cache_path(url)
-            if cache_path.exists() and time.time() - cache_path.stat().st_mtime < ttl_seconds:
+            if (
+                not self.force_refresh
+                and cache_path.exists()
+                and time.time() - cache_path.stat().st_mtime < ttl_seconds
+            ):
                 text = cache_path.read_text(encoding="utf-8", errors="ignore")
                 self._text_memory_cache[url] = text
                 return text
+            if self.offline:
+                if cache_path.exists():
+                    text = cache_path.read_text(encoding="utf-8", errors="ignore")
+                    self._text_memory_cache[url] = text
+                    self._force_refreshed_urls.add(url)
+                    return text
+                raise SecClientError(
+                    f"Offline cache miss for {url}; live retrieval was not attempted."
+                )
 
             req = Request(
                 url,
@@ -224,11 +291,13 @@ class SecClient:
                 if cache_path.exists():
                     text = cache_path.read_text(encoding="utf-8", errors="ignore")
                     self._text_memory_cache[url] = text
+                    self._force_refreshed_urls.add(url)
                     return text
                 raise SecClientError(f"Could not fetch {url}: {exc}") from exc
 
             cache_path.write_text(text, encoding="utf-8")
             self._text_memory_cache[url] = text
+            self._force_refreshed_urls.add(url)
             return text
 
     def _url_lock(self, url: str) -> Lock:
@@ -242,6 +311,20 @@ class SecClient:
     def _cache_path(self, url: str) -> Path:
         digest = hashlib.sha1(url.encode("utf-8")).hexdigest()
         return self.cache_dir / f"{digest}.cache"
+
+    @staticmethod
+    def _cik_from_filing_url(url: str) -> str:
+        marker = "/edgar/data/"
+        lowered = url.lower()
+        if marker not in lowered:
+            raise SecClientError(
+                "Cannot derive CIK from a non-EDGAR filing URL."
+            )
+        suffix = url[lowered.index(marker) + len(marker):]
+        cik = suffix.split("/", 1)[0]
+        if not cik.isdigit():
+            raise SecClientError("SEC filing URL contains no numeric CIK.")
+        return cik
 
 
 def _safe_idx(values: list, idx: int, default: str) -> str:

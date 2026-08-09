@@ -54,3 +54,36 @@ Daily provider observations become valid point-in-time history for future compar
 
 Wisburg and news providers are external context. They may suggest debate themes and follow-up sources but are not official consensus and cannot independently create High-Conviction evidence.
 
+## Local Codex for Independent Research QA
+
+On a trusted local workstation, Codex is detected and preselected as the
+independent auditor. On Windows, detection checks an explicit configured path,
+the current and registered PATH, and the user-accessible Codex Desktop runtime;
+first-time users normally do not need to configure `CODEX_EXECUTABLE`. No
+OpenAI API key is required for this path. If authentication is missing, use the
+app's **Connect local Codex** action or run:
+
+```bash
+codex login
+```
+
+IC Copilot invokes `codex login status` to determine readiness. It never reads,
+copies, displays, or persists authentication tokens. Audit, scouting, and
+closure each run in a fresh read-only context with repository instructions,
+writes, direct browsing, shell retrieval, MCP tools, and plugins disabled.
+
+If Codex is absent or unavailable, deterministic and primary research remain
+enabled and the result states `Independent QA not run`.
+
+## Adding a provider
+
+Provider-specific construction belongs in
+`equity_research/infrastructure/provider_registry.py`, not in orchestration or
+Streamlit rendering. Implement the structured-completion contract, register the
+adapter, and add fixture tests for readiness, timeout/failure classification,
+usage, and model identity. Use
+[`examples/minimal_llm_provider.py`](../examples/minimal_llm_provider.py) as the
+smallest starting point.
+
+Two profiles resolving to the same provider endpoint and model are labeled
+`same-model second pass`; they are not presented as independent QA.

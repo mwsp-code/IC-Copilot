@@ -163,6 +163,21 @@ class ThesisAccountabilityTests(unittest.TestCase):
         self.assertIn("diligence gap", counter_step.summary)
         self.assertIn("Counter-thesis", idea.thesis_audit_chain.broken_links)
 
+    def test_counter_thesis_not_established_label_remains_a_diligence_gap(self) -> None:
+        idea = deepcopy(demo_result("AAPL").ideas[0])
+        idea.strongest_counter_thesis = (
+            "Counter-thesis not established — diligence gap."
+        )
+
+        attach_thesis_audit_chains([idea], _valuation())
+        counter_step = next(
+            step for step in idea.thesis_audit_chain.steps
+            if step.step == "Counter-thesis"
+        )
+
+        self.assertEqual(counter_step.status, "Weak")
+        self.assertIn("Counter-thesis", idea.thesis_audit_chain.broken_links)
+
     def test_event_workflow_combines_filing_consensus_source_plan_and_monitors(self) -> None:
         identity = CompanyIdentity("AAPL", "0000320193", "Apple Inc.")
         event = ChangeEvent(

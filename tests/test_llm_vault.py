@@ -9,6 +9,8 @@ from equity_research.llm_vault import (
     build_llm_profile,
     delete_llm_profile_with_secret,
     list_llm_presets,
+    profile_supports_role,
+    profiles_are_genuinely_distinct,
     profile_to_provider,
     save_llm_profile_with_secret,
     test_llm_profile as validate_llm_profile,
@@ -101,9 +103,51 @@ class LlmVaultTests(unittest.TestCase):
         self.assertIsNone(self.manager.get(profile.secret_ref))
         self.assertEqual(self.store.list_llm_profiles(), [])
 
-    def test_presets_include_deepseek(self) -> None:
-        ids = {preset.preset_id for preset in list_llm_presets()}
+    def test_presets_include_deepseek_and_sol_responses(self) -> None:
+        presets = {preset.preset_id: preset for preset in list_llm_presets()}
+        ids = set(presets)
         self.assertIn("deepseek", ids)
+        self.assertIn("openai_sol", ids)
+        self.assertEqual(presets["openai_sol"].adapter, "openai_responses")
+        self.assertEqual(presets["openai_sol"].default_model, "gpt-5.6-sol")
+
+    def test_hybrid_role_eligibility_is_explicit(self) -> None:
+        planner = build_llm_profile(
+            display_name="Planner",
+            provider_preset="deepseek",
+            role_eligibility="planner checker",
+        )
+        investigator = build_llm_profile(
+            display_name="Investigator",
+            provider_preset="openai_sol",
+            role_eligibility="investigator critic",
+        )
+        self.assertTrue(profile_supports_role(planner, "planner"))
+        self.assertTrue(profile_supports_role(planner, "checker"))
+        self.assertFalse(profile_supports_role(planner, "critic"))
+        self.assertTrue(profile_supports_role(investigator, "investigator"))
+        self.assertTrue(profile_supports_role(investigator, "critic"))
+        self.assertFalse(profile_supports_role(investigator, "planner"))
+
+    def test_independence_uses_provider_endpoint_and_model_not_profile_row(self) -> None:
+        primary = build_llm_profile(
+            display_name="DeepSeek primary",
+            provider_preset="deepseek",
+            profile_id="primary-row",
+        )
+        duplicate = build_llm_profile(
+            display_name="DeepSeek review",
+            provider_preset="deepseek",
+            profile_id="secondary-row",
+        )
+        distinct = build_llm_profile(
+            display_name="OpenAI review",
+            provider_preset="openai_sol",
+            profile_id="openai-row",
+        )
+
+        self.assertFalse(profiles_are_genuinely_distinct(primary, duplicate))
+        self.assertTrue(profiles_are_genuinely_distinct(primary, distinct))
 
 
 if __name__ == "__main__":

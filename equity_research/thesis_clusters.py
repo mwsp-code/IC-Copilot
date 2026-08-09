@@ -176,8 +176,23 @@ def _why_now(top: TradeIdea) -> str:
     event_date = event.event_date if event else None
     capture = top.market_capture.category if top.market_capture else "Unknown"
     driver = _driver_name(top)
+    period = (
+        str(event.metrics.get("period_end") or "")
+        if event and isinstance(event.metrics, dict) else ""
+    )
+    event_label = str(event.title or "source event") if event else "source event"
     if _is_watch_or_unmapped(top):
-        return "Follow up now because the source signal is incomplete, unmapped, or normalization-sensitive."
+        if event_date:
+            period_text = f" for reporting period {period}" if period else ""
+            return (
+                f"The {event_label} dated {event_date}{period_text} flagged "
+                f"{driver}, but its direction or normalization is not yet "
+                "validated. This is a research trigger, not a timing signal."
+            )
+        return (
+            f"{driver} remains an investigation item because its source date "
+            "or normalization is not validated; no immediate timing edge is established."
+        )
     if event_date:
         return (
             f"{driver} changed in source evidence dated {event_date}; "

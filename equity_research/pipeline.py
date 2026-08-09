@@ -20,7 +20,7 @@ from .analysis import (
     annotate_change_importance,
     html_to_text,
 )
-from .budget import build_budget_policy, budget_allows_paid_data
+from .budget import build_budget_policy
 from .claim_validation import validate_events
 from .company_economics import attach_economic_context, build_company_economics
 from .playbook_portfolio import build_playbook_portfolio
@@ -35,6 +35,7 @@ from .evidence_work_order import build_evidence_work_order
 from .evidence_closure import execute_evidence_work_order
 from .expectations import attach_revision_history, build_expectations_bridge
 from .external_evidence import ExternalEvidenceProvider, ExternalEvidenceStack
+from .freshness import build_research_freshness
 from .global_peers import (
     GlobalPeerFinancialProvider,
     coverage_metrics_as_financial_metrics,
@@ -46,6 +47,28 @@ from .global_coverage import (
     source_coverage_matrix_for,
 )
 from .historical_references import build_historical_references
+from .historical_analogs import (
+    apply_hybrid_analog_results,
+    build_historical_analog_intelligence,
+)
+from .auditable_retrieval import (
+    AuditableEvidenceRetriever,
+    partial_rerun_eligible,
+    semantic_evidence_hash,
+    source_record_to_evidence,
+)
+from .hybrid_research import (
+    DEFAULT_HYBRID_PROFILE,
+    HYBRID_PROMPT_VERSION,
+    OPENAI_RESPONSES_BACKEND,
+    build_hybrid_research_context,
+    hybrid_prompt_is_resumable,
+    hybrid_run_from_payload,
+    run_hybrid_research,
+    run_quality_first_research,
+    run_dual_choreography_research,
+)
+from .dual_model_benchmark import build_dual_model_research_run
 from .ic_one_pager import build_ic_one_pager
 from .idea_engine import (
     apply_valuation_context,
@@ -57,6 +80,13 @@ from .idea_engine import (
 from .manual_data import load_china_macro_evidence, scan_manual_data_sources
 from .market_capture_workflow import build_market_capture_readiness
 from .market_implied import build_market_implied_expectations
+from .decision_intelligence import (
+    build_catalyst_clock,
+    build_decision_delta,
+    build_decision_snapshot,
+    build_ic_implied_expectations_snapshot,
+    build_prioritized_research_queue,
+)
 from .earnings_surprise_proxy import build_earnings_surprise_proxy
 from .metric_intelligence import build_metric_change_assessments
 from .memo import build_dd_memo
@@ -88,7 +118,13 @@ from .models import (
     EntityResolution,
     EvidenceLedger,
     EvidenceClosureReport,
+    EvidencePackAudit,
     EvidenceWorkOrder,
+    AuditRepairQueue,
+    ClaimEvidenceAudit,
+    ContractualExposureObservation,
+    DemoFreezeDecision,
+    DiscoveredSourceCandidate,
     EventWindowReaction,
     EventWorkflow,
     ExternalEvidenceBundle,
@@ -103,7 +139,19 @@ from .models import (
     GlobalPeerCoverage,
     GlobalPeerMetricObservation,
     HistoricalReferenceSet,
+    HistoricalAnalogIntelligence,
+    HistoricalFinancialPath,
     HistoricalResearchPack,
+    HistoricalValuationObservation,
+    HybridResearchRun,
+    InputSufficiencyScore,
+    DualModelResearchRun,
+    ExecutionBackend,
+    IcImpliedExpectationsSnapshot,
+    DecisionDelta,
+    CatalystClock,
+    PrioritizedResearchAction,
+    ICDecisionBrief,
     ICOnePager,
     IdeaGateResult,
     BullBearJudgePanel,
@@ -122,6 +170,7 @@ from .models import (
     MarketCaptureReadiness,
     MarketImpliedExpectations,
     NewsClaim,
+    NewsIntelligenceReport,
     PeerReadthrough,
     PeerMetricReadthrough,
     PeerMetricReadthroughSummary,
@@ -129,6 +178,11 @@ from .models import (
     PrimarySourceObservation,
     ProfilingReport,
     ProviderStatus,
+    NormalizedSourceRecord,
+    RegulatoryEventObservation,
+    RegulatoryMomentumAssessment,
+    RetrievalAuditReport,
+    SourceAdmissionDecision,
     SourceCorroborationResult,
     SourceCoverageMatrix,
     TradeIdea,
@@ -137,9 +191,18 @@ from .models import (
     RunManifest,
     ResearchQuestion,
     ResearchProfile,
+    ResearchFreshnessSummary,
+    ResearchExecutionPolicy,
+    DataAccessPolicy,
+    SourcePolicyFingerprint,
+    EvidenceGraph,
+    AdaptiveMacroResearchPlan,
+    ResearchAiExecutionPlan,
+    IndependentResearchQaRun,
     RecentMarketContext,
     ResearchScoutReport,
     ResearchSourcePlan,
+    ResearchSourceOutcome,
     ResearchRunProgress,
     ResearchModeSuite,
     StoryCard,
@@ -193,7 +256,7 @@ from .thesis_validation import build_thesis_validation_report
 from .valuation import build_valuation
 from .company_model import build_company_model_workspace
 from .causal_thesis_graph import build_causal_thesis_graphs
-from .source_planner import build_source_plan
+from .source_planner import SOURCE_REGISTRY_VERSION, build_source_plan
 from .storytelling import (
     build_story_presentation,
     empty_bull_bear_judge,
@@ -207,6 +270,23 @@ from .news_intelligence import (
     generate_news_candidate_ideas,
     primary_observations_from_payloads,
 )
+from .news_research import (
+    apply_news_corroboration,
+    build_news_intelligence_report,
+    news_claims_from_report,
+)
+from .source_admission import candidates_from_news, admit_source_candidates
+from .research_qa import (
+    apply_source_policy_to_context,
+    build_adaptive_macro_plan,
+    build_data_access_policy,
+    build_independent_research_qa_run,
+    build_research_ai_execution_plan,
+    build_research_execution_policy,
+    build_research_setup_preview,
+)
+from .regulatory_radar import build_regulatory_radar
+from .retrieval_audit import build_runtime_retrieval_audit
 from .wisburg_lens import (
     build_wisburg_lens,
     enrich_source_plan_with_wisburg,
@@ -273,6 +353,8 @@ class ResearchResult:
     llm_comparison: LlmComparison
     language_audit: LanguageAudit
     historical_references: HistoricalReferenceSet
+    historical_analogs: HistoricalAnalogIntelligence
+    news_intelligence: NewsIntelligenceReport
     thesis_validation: ThesisValidationReport
     conviction_audit: ConvictionAuditReport
     budget_policy: BudgetPolicy
@@ -308,6 +390,7 @@ class ResearchResult:
     company_model: CompanyModelWorkspace
     research_modes: ResearchModeSuite
     demo_case: DemoCase | None = None
+    ic_decision_brief: ICDecisionBrief | None = None
     run_progress: ResearchRunProgress = field(default_factory=empty_run_progress)
     story_cards: list[StoryCard] = field(default_factory=list)
     bull_bear_judge: BullBearJudgePanel = field(default_factory=empty_bull_bear_judge)
@@ -321,6 +404,34 @@ class ResearchResult:
     playbook_portfolio: CompanyPlaybookPortfolio | None = None
     earnings_surprise_proxy: EarningsSurpriseProxy | None = None
     recent_market_context: RecentMarketContext | None = None
+    ic_implied_snapshot: IcImpliedExpectationsSnapshot | None = None
+    decision_delta: DecisionDelta | None = None
+    catalyst_clock: CatalystClock | None = None
+    prioritized_research_queue: list[PrioritizedResearchAction] = field(default_factory=list)
+    hybrid_research: HybridResearchRun | None = None
+    dual_model_research: DualModelResearchRun | None = None
+    evidence_pack_audit: EvidencePackAudit | None = None
+    input_sufficiency: InputSufficiencyScore | None = None
+    normalized_sources: list[NormalizedSourceRecord] = field(default_factory=list)
+    claim_evidence_audits: list[ClaimEvidenceAudit] = field(default_factory=list)
+    audit_repair_queue: AuditRepairQueue | None = None
+    historical_financial_paths: list[HistoricalFinancialPath] = field(default_factory=list)
+    historical_valuation_observations: list[HistoricalValuationObservation] = field(default_factory=list)
+    contractual_exposures: list[ContractualExposureObservation] = field(default_factory=list)
+    regulatory_events: list[RegulatoryEventObservation] = field(default_factory=list)
+    demo_freeze_decision: DemoFreezeDecision | None = None
+    source_candidates: list[DiscoveredSourceCandidate] = field(default_factory=list)
+    source_admission_decisions: list[SourceAdmissionDecision] = field(default_factory=list)
+    regulatory_momentum: RegulatoryMomentumAssessment | None = None
+    retrieval_audit: RetrievalAuditReport | None = None
+    research_freshness: ResearchFreshnessSummary | None = None
+    research_execution_policy: ResearchExecutionPolicy | None = None
+    data_access_policy: DataAccessPolicy | None = None
+    source_policy_fingerprint: SourcePolicyFingerprint | None = None
+    evidence_graph: EvidenceGraph | None = None
+    adaptive_macro_plan: AdaptiveMacroResearchPlan | None = None
+    research_ai_plan: ResearchAiExecutionPlan | None = None
+    independent_research_qa: IndependentResearchQaRun | None = None
 
 
 @dataclass
@@ -353,17 +464,41 @@ def run_us_equity_research(
     profiler: ResearchProfiler | None = None,
     research_profile: str | ResearchProfile | None = None,
     investigate_event_id: str | None = None,
+    investigate_analog_id: str | None = None,
+    enable_hybrid_research: bool = False,
+    hybrid_planner_provider: LlmProvider | None = None,
+    hybrid_executor_provider: LlmProvider | None = None,
+    hybrid_checker_provider: LlmProvider | None = None,
+    hybrid_critic_provider: LlmProvider | None = None,
+    hybrid_execution_backend: ExecutionBackend | None = None,
+    hybrid_cancel_event: object | None = None,
+    hybrid_progress_callback=None,
+    enable_thesis_synthesis_llm: bool = True,
+    research_execution_policy: ResearchExecutionPolicy | None = None,
+    data_access_policy: DataAccessPolicy | None = None,
+    enable_independent_research_qa: bool | None = None,
+    enable_two_choreography_benchmark: bool = False,
+    resume_hybrid_run_id: str = "",
 ) -> ResearchResult:
     profiler = profiler or ResearchProfiler(enabled=config.ENABLE_RESEARCH_PROFILING)
     profiler.start()
     selected_profile = resolve_research_profile(research_profile or config.RESEARCH_PROFILE)
+    research_execution_policy = research_execution_policy or build_research_execution_policy(
+        selected_profile.profile_id,
+        legacy_budget_mode=str(budget_mode or config.BUDGET_MODE or ""),
+    )
+    independent_qa_enabled = (
+        enable_hybrid_research
+        if enable_independent_research_qa is None
+        else bool(enable_independent_research_qa)
+    )
     sec = sec_client or SecClient()
     store = store or ResearchStore()
     price_client = price_client or StooqPriceClient(store=store)
     if consensus is None:
         consensus = build_consensus_provider(
             store=store,
-            fmp_key=config.FMP_API_KEY if budget_allows_paid_data(budget_mode) else "",
+            fmp_key=config.FMP_API_KEY,
         )
     if getattr(consensus, "store", None) is None:
         consensus.store = store
@@ -675,14 +810,39 @@ def run_us_equity_research(
         store.save_wisburg_lens(wisburg_lens)
     except Exception as exc:
         external_evidence.data_gaps.append(f"Local external-evidence persistence failed: {exc}")
+    news_intelligence = build_news_intelligence_report(
+        identity,
+        investigation_events,
+        external_evidence,
+        llm_provider=extraction_llm_provider,
+        use_llm=(
+            config.ENABLE_NEWS_INTELLIGENCE
+            and config.ENABLE_LLM_NEWS_RESEARCH
+            and extraction_llm_provider is not None
+        ),
+    )
     news_claims = build_news_intelligence(
         identity.ticker,
         identity.name,
         external_evidence,
         store.latest_news_claims(identity.ticker),
     )
+    news_claims = list({
+        claim.claim_id: claim
+        for claim in news_claims + news_claims_from_report(news_intelligence, identity.name)
+    }.values())
     primary_source_observations = primary_observations_from_payloads(
         store.latest_primary_source_observations(identity.ticker)
+    )
+    source_candidates = candidates_from_news(
+        identity.ticker, news_intelligence.articles
+    )
+    source_admission_decisions = admit_source_candidates(source_candidates)
+    regulatory_momentum = build_regulatory_radar(
+        identity.ticker,
+        source_candidates,
+        source_admission_decisions,
+        primary_observations=primary_source_observations,
     )
     source_corroboration_results = build_corroboration_results(
         identity.ticker,
@@ -691,6 +851,10 @@ def run_us_equity_research(
     )
     source_corroboration_results.extend(
         wisburg_source_corroboration_results(wisburg_lens)
+    )
+    news_intelligence = apply_news_corroboration(
+        news_intelligence,
+        source_corroboration_results,
     )
     source_plan = enrich_source_plan_with_news(source_plan, news_claims)
     llm_extraction_manifest.source_plan_request_ids = [
@@ -965,6 +1129,31 @@ def run_us_equity_research(
     wow_ideas = ideas_with_changed_evidence_not_price_or_consensus(ideas)
     data_quality = build_data_quality_report(events, ideas, consensus_package)
     historical_references = build_historical_references(ideas, store)
+    hybrid_owns_analog_llm = bool(
+        enable_hybrid_research
+        and selected_profile.profile_id == "deep_initiation"
+    )
+    historical_analogs = build_historical_analog_intelligence(
+        identity,
+        ideas,
+        metrics,
+        company_economics,
+        external_evidence,
+        news_intelligence,
+        llm_provider=extraction_llm_provider,
+        use_llm=(
+            config.ENABLE_LLM_HISTORICAL_ANALOGS
+            and extraction_llm_provider is not None
+            and not hybrid_owns_analog_llm
+        ),
+        llm_enabled=config.ENABLE_LLM_HISTORICAL_ANALOGS,
+        research_profile=selected_profile,
+        historical_research=historical_research,
+        investigate_analog_id=investigate_analog_id,
+        store=store,
+        sec_client=sec,
+        price_client=price_client,
+    )
     thesis_validation = build_thesis_validation_report(
         ideas,
         evidence_ledger,
@@ -1002,6 +1191,413 @@ def run_us_equity_research(
         primary_observations=primary_source_observations,
         corroboration_results=source_corroboration_results,
     )
+    adaptive_macro_plan = build_adaptive_macro_plan(
+        identity.ticker,
+        company_name=identity.name,
+        sic_description=identity.sic_description or "",
+        exchange=identity.exchange,
+        adr_or_fpi=bool(adr_profile_for(identity.ticker)),
+        evidence=external_evidence,
+    )
+    hybrid_research: HybridResearchRun | None = None
+    dual_model_research: DualModelResearchRun | None = None
+    source_policy_fingerprint: SourcePolicyFingerprint | None = None
+    evidence_graph: EvidenceGraph | None = None
+    research_ai_plan: ResearchAiExecutionPlan | None = None
+    independent_research_qa: IndependentResearchQaRun | None = None
+    hybrid_context: dict | None = None
+    if independent_qa_enabled:
+        hybrid_context = build_hybrid_research_context(
+            identity,
+            research_profile_id=selected_profile.profile_id,
+            metrics=metrics,
+            events=events,
+            validated_claims=validated_claims,
+            company_economics=company_economics,
+            historical_analogs=historical_analogs,
+            news_intelligence=news_intelligence,
+            source_plan=source_plan,
+            evidence_closure=evidence_closure,
+            supplemental_context={
+                "management_sources": management_package,
+                "peer_metric_readthrough": peer_metric_readthrough,
+                "valuation": valuation,
+                "credit_lens": credit_lens,
+                "market_implied_expectations": market_implied_expectations,
+                "company_model": company_model,
+                "expectations_bridge": expectations_bridge,
+                "thesis_clusters": thesis_clusters,
+                "research_questions": research_questions,
+                "playbook_portfolio": playbook_portfolio,
+                "external_evidence_status": external_evidence.status,
+            },
+        )
+        hybrid_context["_source_candidates"] = [
+            asdict(item) for item in source_candidates
+        ]
+        hybrid_context["_source_admission_decisions"] = [
+            asdict(item) for item in source_admission_decisions
+        ]
+        previous_payload = (
+            store.load_hybrid_research_run(resume_hybrid_run_id)
+            if resume_hybrid_run_id else
+            store.latest_hybrid_research_run(identity.ticker)
+        )
+        try:
+            previous_hybrid_run = (
+                hybrid_run_from_payload(previous_payload)
+                if previous_payload else None
+            )
+        except (TypeError, ValueError):
+            previous_hybrid_run = None
+        if previous_hybrid_run is not None and resume_hybrid_run_id:
+            resume_eligible, additive_ids = partial_rerun_eligible(
+                previous_hybrid_run.evidence_fingerprints,
+                dict(hybrid_context.get("evidence_fingerprints") or {}),
+            )
+            hybrid_context["_requested_resume_run_id"] = resume_hybrid_run_id
+            hybrid_context["_resume_evidence_relationship"] = (
+                "unchanged_or_additive" if resume_eligible else "changed_or_removed"
+            )
+            hybrid_context["_partial_rerun_changed_ids"] = additive_ids
+            if not resume_eligible:
+                previous_hybrid_run = None
+        _merge_validated_retrieval_cache(
+            hybrid_context, previous_hybrid_run
+        )
+        if (
+            previous_hybrid_run is not None
+            and previous_hybrid_run.audit_repair_queue is not None
+        ):
+            previous_primary = next(
+                (
+                    item for item in previous_hybrid_run.variants
+                    if item.variant_id == "deepseek_led"
+                ),
+                None,
+            )
+            if (
+                previous_primary is not None
+                and previous_primary.audit_decision is not None
+                and previous_primary.audit_decision.status != "passed"
+            ):
+                hybrid_context["_prior_failed_audit"] = asdict(
+                    previous_primary.audit_decision
+                )
+                hybrid_context["_prior_audit_run_id"] = (
+                    previous_hybrid_run.run_id
+                )
+            existing_request_ids = {
+                str(item.get("request_id") or "")
+                for item in hybrid_context.get("source_requests", [])
+            }
+            prior_repair_request_ids: set[str] = set()
+            for repair in previous_hybrid_run.audit_repair_queue.items:
+                request = dict(repair.retrieval_request)
+                if (
+                    request.get("repair_action") == "rewrite_or_remove"
+                    or _is_validation_rewrite_repair(repair.rejection_reason)
+                ):
+                    continue
+                request_id = str(request.get("request_id") or "")
+                if request_id:
+                    prior_repair_request_ids.add(request_id)
+                if request_id and request_id not in existing_request_ids:
+                    hybrid_context.setdefault("source_requests", []).append(
+                        request
+                    )
+                    existing_request_ids.add(request_id)
+            hybrid_context["_audit_repair_request_ids"] = sorted(
+                prior_repair_request_ids
+            )
+        data_access_policy = data_access_policy or build_data_access_policy(
+            hybrid_context.get("searchable_evidence_catalog", []),
+            market="US-listed",
+            jurisdiction="US",
+        )
+        (
+            hybrid_context,
+            source_policy_fingerprint,
+            evidence_graph,
+        ) = apply_source_policy_to_context(
+            hybrid_context,
+            research_execution_policy,
+            data_access_policy,
+            adaptive_macro_plan,
+        )
+        hybrid_context["_retrieval_engine"] = AuditableEvidenceRetriever(
+            identity,
+            sec_client=sec,
+            price_client=price_client,
+            filings=filings,
+            metrics=metrics,
+            catalog=hybrid_context.get(
+                "searchable_evidence_catalog", []
+            ),
+            fetch_text=lambda url: sec.get_text(
+                url, ttl_seconds=7 * 24 * 60 * 60
+            ),
+        )
+        hybrid_context["_enable_final_audit_repair"] = True
+        deepseek_provider = (
+            hybrid_planner_provider or hybrid_checker_provider
+        )
+        sol_provider = (
+            hybrid_executor_provider or hybrid_critic_provider
+        )
+        research_ai_plan = build_research_ai_execution_plan(
+            research_execution_policy,
+            primary_provider=deepseek_provider,
+            auditor_provider=sol_provider,
+            primary_credential_source="resolved primary provider",
+            auditor_credential_source="resolved independent auditor",
+        )
+        cached_payload = store.latest_hybrid_research_run_for_evidence(
+            identity.ticker,
+            str(hybrid_context.get("evidence_hash") or ""),
+        )
+        cached_run = None
+        if cached_payload and not research_execution_policy.cache_bypass:
+            try:
+                candidate_cache = hybrid_run_from_payload(cached_payload)
+            except (TypeError, ValueError):
+                candidate_cache = None
+            if _research_qa_cache_matches(
+                candidate_cache,
+                deepseek_provider,
+                sol_provider,
+            ):
+                cached_run = candidate_cache
+                cached_run.cache_status = "hit"
+        fresh_hybrid_run = cached_run is None
+        if hybrid_progress_callback is not None:
+            sufficiency = hybrid_context.get("input_sufficiency") or {}
+            score = sufficiency.get("total_score")
+            ready = bool(sufficiency.get("benchmark_ready"))
+            try:
+                hybrid_progress_callback({
+                    "status": "running",
+                    "current_stage": (
+                        "Cached Independent Research QA reuse"
+                        if cached_run is not None else
+                        "Evidence pack ready for model research"
+                        if ready else
+                        "Evidence pack requires remediation"
+                    ),
+                    "message": (
+                        f"Input sufficiency {score}/100; "
+                        f"{'benchmark-ready' if ready else 'not benchmark-ready'}."
+                        if score is not None else
+                        "Deterministic evidence preparation completed."
+                    ),
+                })
+            except Exception:
+                pass
+        hybrid_research = cached_run or run_quality_first_research(
+            hybrid_context,
+            primary_provider=deepseek_provider,
+            auditor_provider=sol_provider,
+            profile=DEFAULT_HYBRID_PROFILE,
+            execution_backend=(
+                hybrid_execution_backend or OPENAI_RESPONSES_BACKEND
+            ),
+            cancel_event=hybrid_cancel_event,
+            progress_callback=hybrid_progress_callback,
+        )
+        (
+            hybrid_context,
+            source_policy_fingerprint,
+            evidence_graph,
+        ) = apply_source_policy_to_context(
+            hybrid_context,
+            research_execution_policy,
+            data_access_policy,
+            adaptive_macro_plan,
+        )
+        hybrid_research.evidence_hash = str(
+            hybrid_context.get("evidence_hash") or hybrid_research.evidence_hash
+        )
+        source_candidates = list({
+            item.candidate_id: item
+            for item in [
+                *source_candidates,
+                *hybrid_research.source_candidates,
+            ]
+        }.values())
+        source_admission_decisions = list({
+            item.candidate_id: item
+            for item in [
+                *source_admission_decisions,
+                *hybrid_research.source_admission_decisions,
+            ]
+        }.values())
+        regulatory_momentum = build_regulatory_radar(
+            identity.ticker,
+            source_candidates,
+            source_admission_decisions,
+            primary_observations=primary_source_observations,
+            normalized_sources=hybrid_research.normalized_sources,
+        )
+        hybrid_research.regulatory_momentum = regulatory_momentum
+        if enable_two_choreography_benchmark and deepseek_provider and sol_provider:
+            benchmark_run = run_dual_choreography_research(
+                hybrid_context,
+                deepseek_provider=deepseek_provider,
+                sol_provider=sol_provider,
+                profile=DEFAULT_HYBRID_PROFILE,
+                execution_backend=(
+                    hybrid_execution_backend or OPENAI_RESPONSES_BACKEND
+                ),
+                cancel_event=hybrid_cancel_event,
+                progress_callback=hybrid_progress_callback,
+            )
+            dual_model_research = build_dual_model_research_run(
+                benchmark_run,
+                hybrid_context,
+            )
+        if selected_profile.profile_id == "deep_initiation" and hybrid_research.variants:
+            historical_analogs = apply_hybrid_analog_results(
+                historical_analogs, hybrid_research
+            )
+        audit_round = next(
+            (
+                item for item in hybrid_research.rounds
+                if item.role == "independent_research_auditor"
+            ),
+            None,
+        )
+        audit_health = ({
+            "consecutive_failures": 0,
+            "last_success_at": "",
+        } if sol_provider is None else (
+            store.record_llm_audit_result(
+                str(getattr(sol_provider, "model", "") or "independent-auditor"),
+                success=bool(audit_round and audit_round.status == "completed"),
+                failure_class=(
+                    "" if audit_round and audit_round.status == "completed"
+                    else str(audit_round.status if audit_round else "not_run")
+                ),
+                message=(
+                    audit_round.message if audit_round
+                    else "Independent audit did not run."
+                ),
+            )
+            if fresh_hybrid_run else
+            store.get_llm_audit_health(
+                str(getattr(sol_provider, "model", "") or "independent-auditor")
+            )
+        ))
+        hybrid_research.audit_failure_streak = int(
+            audit_health.get("consecutive_failures", 0)
+        )
+        hybrid_research.last_successful_audit_at = str(
+            audit_health.get("last_success_at") or ""
+        )
+        if hybrid_research.audit_failure_streak >= 3:
+            hybrid_research.data_gaps.append(
+                "Provider-health warning: the independent research audit has failed "
+                f"{hybrid_research.audit_failure_streak} consecutive runs."
+            )
+        existing_outcome_ids = {
+            item.request_id for item in source_plan.outcomes
+        }
+        for lifecycle in hybrid_research.retrieval_lifecycles:
+            if lifecycle.request_id in existing_outcome_ids:
+                continue
+            source_plan.outcomes.append(ResearchSourceOutcome(
+                request_id=lifecycle.request_id,
+                status=lifecycle.status,
+                provider="auditable_retrieval",
+                observed_at=lifecycle.completed_at,
+                message=lifecycle.message,
+                retrieval_status=lifecycle.status,
+                failure_code=lifecycle.failure_code,
+                lifecycle=list(lifecycle.history),
+            ))
+            existing_outcome_ids.add(lifecycle.request_id)
+        setup_preview = build_research_setup_preview(
+            research_execution_policy,
+            research_ai_plan,
+            adaptive_macro_plan,
+            evidence_graph,
+            cache_hit=not fresh_hybrid_run,
+        )
+        independent_research_qa = build_independent_research_qa_run(
+            hybrid_research,
+            evidence_graph=evidence_graph,
+            execution_plan=research_ai_plan,
+            setup_preview=setup_preview,
+        )
+        if hybrid_research.run_id and fresh_hybrid_run:
+            store.save_hybrid_research_run(hybrid_research)
+        if dual_model_research is not None:
+            try:
+                store.save_dual_model_research_run(dual_model_research)
+            except Exception:
+                pass
+    if evidence_graph is None:
+        ledger_catalog = [
+            {
+                **asdict(item),
+                "kind": "evidence_ledger",
+                "source_family": str(item.source_type or "evidence_ledger"),
+                "source": str(item.source_type or "evidence_ledger"),
+                "statement": item.statement,
+                "publication_date": item.observed_at or "",
+                "validation_status": "validated" if not item.unresolved else "partial",
+            }
+            for item in evidence_ledger.items
+        ]
+        data_access_policy = data_access_policy or build_data_access_policy(
+            ledger_catalog,
+            market="US-listed",
+            jurisdiction="US",
+        )
+        minimal_context = {
+            "ticker": identity.ticker,
+            "evidence_catalog": ledger_catalog,
+            "searchable_evidence_catalog": ledger_catalog,
+            "claim_eligible_evidence_ids": [
+                item["evidence_id"] for item in ledger_catalog
+                if item.get("evidence_id")
+            ],
+            "evidence_metadata_catalog": ledger_catalog,
+            "source_registry_version": SOURCE_REGISTRY_VERSION,
+            "prompt_version": HYBRID_PROMPT_VERSION,
+        }
+        (
+            _minimal_context,
+            source_policy_fingerprint,
+            evidence_graph,
+        ) = apply_source_policy_to_context(
+            minimal_context,
+            research_execution_policy,
+            data_access_policy,
+            adaptive_macro_plan,
+        )
+    retrieval_audit = build_runtime_retrieval_audit(
+        identity,
+        profile=selected_profile.profile_id,
+        filings=filings,
+        normalized_sources=(
+            hybrid_research.normalized_sources
+            if hybrid_research else []
+        ),
+        retrieval_lifecycles=(
+            hybrid_research.retrieval_lifecycles
+            if hybrid_research else []
+        ),
+        claim_audits=(
+            hybrid_research.claim_evidence_audits
+            if hybrid_research else []
+        ),
+        repair_queue=(
+            hybrid_research.audit_repair_queue
+            if hybrid_research else None
+        ),
+        regulatory_momentum=regulatory_momentum,
+        no_llm_calls=False,
+    )
     causal_thesis_graphs = build_causal_thesis_graphs(
         identity.ticker,
         ideas,
@@ -1030,12 +1626,38 @@ def run_us_equity_research(
         evidence_work_order,
     )
     profiler.checkpoint("thesis_clusters_validation_calibration")
-    llm_provider = llm_provider if llm_provider is not None else provider_from_config()
+    llm_provider = (
+        llm_provider if llm_provider is not None else provider_from_config()
+    ) if enable_thesis_synthesis_llm else None
+    if research_ai_plan is None:
+        research_ai_plan = build_research_ai_execution_plan(
+            research_execution_policy,
+            primary_provider=llm_provider,
+            auditor_provider=(
+                secondary_llm_provider
+                if enable_secondary_llm_review is not False else None
+            ),
+            primary_credential_source="resolved synthesis provider",
+            auditor_credential_source="resolved secondary provider",
+        )
+    if independent_research_qa is None:
+        setup_preview = build_research_setup_preview(
+            research_execution_policy,
+            research_ai_plan,
+            adaptive_macro_plan,
+            evidence_graph,
+        )
+        independent_research_qa = build_independent_research_qa_run(
+            None,
+            evidence_graph=evidence_graph,
+            execution_plan=research_ai_plan,
+            setup_preview=setup_preview,
+        )
     budget_policy = build_budget_policy(
         budget_mode,
         consensus_package,
         external_evidence,
-        llm_enabled=llm_provider is not None,
+        llm_enabled=bool(llm_provider is not None or hybrid_research),
     )
     thesis_synthesis = synthesize_ic_thesis(
         identity,
@@ -1054,6 +1676,8 @@ def run_us_equity_research(
         secondary_min_stage=secondary_llm_min_stage or config.SECONDARY_LLM_MIN_STAGE,
         language_policy=llm_language_policy or config.LLM_LANGUAGE_POLICY,
         historical_references=historical_references,
+        historical_analogs=historical_analogs,
+        news_intelligence=news_intelligence,
         thesis_validation=thesis_validation,
         budget_policy=budget_policy,
         manual_data_status=manual_data_status,
@@ -1068,6 +1692,8 @@ def run_us_equity_research(
         event_workflow=event_workflow,
         wisburg_lens=wisburg_lens,
         evidence_work_order=evidence_work_order,
+        hybrid_research=hybrid_research,
+        dual_model_research=dual_model_research,
     )
     ic_one_pager = build_ic_one_pager(
         identity,
@@ -1113,6 +1739,57 @@ def run_us_equity_research(
         llm_extraction_manifest=llm_extraction_manifest,
         research_profile_summary=profile_summary,
         effective_history_summary=history_summary,
+        research_execution_policy=research_execution_policy,
+        data_access_policy=data_access_policy,
+        source_policy_fingerprint=source_policy_fingerprint,
+        evidence_graph=evidence_graph,
+        research_ai_plan=research_ai_plan,
+        independent_research_qa=independent_research_qa,
+    )
+    ic_implied_snapshot = build_ic_implied_expectations_snapshot(
+        market_implied_expectations,
+        company_model,
+        valuation,
+    )
+    decision_snapshot = build_decision_snapshot(
+        identity.ticker,
+        ideas,
+        ic_implied_snapshot,
+        evidence_work_order,
+        run_manifest.run_id,
+        generated_at=run_manifest.generated_at,
+        completed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        result_type="live",
+        research_profile=selected_profile.profile_id,
+        market_data_cutoff=recent_market_context.price_as_of or "",
+    )
+    previous_decision_snapshot = store.latest_decision_artifact(
+        identity.ticker,
+        "decision_snapshot",
+    )
+    decision_delta = build_decision_delta(
+        decision_snapshot,
+        previous_decision_snapshot if isinstance(previous_decision_snapshot, dict) else None,
+    )
+    catalyst_clock = build_catalyst_clock(
+        identity.ticker,
+        event_workflow,
+        ideas,
+    )
+    prioritized_research_queue = build_prioritized_research_queue(
+        evidence_work_order,
+        ticker=identity.ticker,
+        research_requests=(
+            independent_research_qa.research_requests
+            if independent_research_qa else ()
+        ),
+        research_questions=research_questions,
+        qa_findings=(
+            independent_research_qa.audit_findings
+            if independent_research_qa else ()
+        ),
+        events=events,
+        limit=20,
     )
     store.save_research_run(identity.ticker, run_manifest)
     store.save_evidence_ledger(run_manifest.run_id, identity.ticker, evidence_ledger)
@@ -1124,6 +1801,7 @@ def run_us_equity_research(
     store.save_global_peer_coverage(run_manifest.run_id, identity.ticker, global_peer_coverage)
     store.save_peer_metric_readthroughs(run_manifest.run_id, identity.ticker, peer_metric_readthrough)
     store.save_llm_research_manifest(run_manifest.run_id, identity.ticker, llm_research_manifest)
+    store.save_news_article_observations(news_intelligence.articles)
     store.save_news_claims(news_claims)
     store.save_primary_source_observations(primary_source_observations)
     store.save_source_corroboration_results(source_corroboration_results)
@@ -1143,6 +1821,26 @@ def run_us_equity_research(
         expectation_event_audits=expectations_bridge.event_audits,
         earnings_surprise_proxy=earnings_surprise_proxy,
         recent_market_context=recent_market_context,
+        historical_analogs=historical_analogs,
+        news_intelligence=news_intelligence,
+        ic_implied_snapshot=ic_implied_snapshot,
+        decision_delta=decision_delta,
+        decision_snapshot=decision_snapshot,
+        catalyst_clock=catalyst_clock,
+        prioritized_research_queue=prioritized_research_queue,
+        retrieval_audit=retrieval_audit,
+        regulatory_momentum=regulatory_momentum,
+        source_admission={
+            "candidates": [asdict(item) for item in source_candidates],
+            "decisions": [
+                asdict(item) for item in source_admission_decisions
+            ],
+        },
+        source_policy_fingerprint=source_policy_fingerprint,
+        evidence_graph=evidence_graph,
+        adaptive_macro_plan=adaptive_macro_plan,
+        research_ai_plan=research_ai_plan,
+        independent_research_qa=independent_research_qa,
     )
     all_reactions = list(event_window_reactions.values())
     for snapshot in peer_snapshots.values():
@@ -1217,6 +1915,9 @@ def run_us_equity_research(
         research_modes=research_modes,
         earnings_surprise_proxy=earnings_surprise_proxy,
         recent_market_context=recent_market_context,
+        hybrid_research=hybrid_research,
+        dual_model_research=dual_model_research,
+        independent_research_qa=independent_research_qa,
     )
     profiler.checkpoint("memo_rendering")
     profiling = profiler.finish()
@@ -1239,6 +1940,19 @@ def run_us_equity_research(
         market_implied=market_implied_expectations,
         earnings_surprise=earnings_surprise_proxy,
         recent_market_context=recent_market_context,
+        decision_delta=decision_delta,
+        catalyst_clock=catalyst_clock,
+    )
+    research_freshness = build_research_freshness(
+        run_manifest=run_manifest,
+        filings=filings,
+        recent_market_context=recent_market_context,
+        consensus=consensus_package,
+        news_intelligence=news_intelligence,
+        external_evidence=external_evidence,
+        llm_run_manifest=thesis_synthesis.llm_manifest,
+        dual_model_research=dual_model_research,
+        completed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
 
     return ResearchResult(
@@ -1285,6 +1999,8 @@ def run_us_equity_research(
         llm_comparison=thesis_synthesis.llm_comparison,
         language_audit=thesis_synthesis.language_audit,
         historical_references=historical_references,
+        historical_analogs=historical_analogs,
+        news_intelligence=news_intelligence,
         thesis_validation=thesis_validation,
         conviction_audit=conviction_audit,
         budget_policy=budget_policy,
@@ -1330,6 +2046,64 @@ def run_us_equity_research(
         playbook_portfolio=playbook_portfolio,
         earnings_surprise_proxy=earnings_surprise_proxy,
         recent_market_context=recent_market_context,
+        ic_implied_snapshot=ic_implied_snapshot,
+        decision_delta=decision_delta,
+        catalyst_clock=catalyst_clock,
+        prioritized_research_queue=prioritized_research_queue,
+        hybrid_research=hybrid_research,
+        dual_model_research=dual_model_research,
+        evidence_pack_audit=(
+            hybrid_research.evidence_pack_audit
+            if hybrid_research else None
+        ),
+        input_sufficiency=(
+            hybrid_research.input_sufficiency
+            if hybrid_research else None
+        ),
+        normalized_sources=(
+            hybrid_research.normalized_sources
+            if hybrid_research else []
+        ),
+        claim_evidence_audits=(
+            hybrid_research.claim_evidence_audits
+            if hybrid_research else []
+        ),
+        audit_repair_queue=(
+            hybrid_research.audit_repair_queue
+            if hybrid_research else None
+        ),
+        historical_financial_paths=(
+            hybrid_research.historical_financial_paths
+            if hybrid_research else []
+        ),
+        historical_valuation_observations=(
+            hybrid_research.historical_valuation_observations
+            if hybrid_research else []
+        ),
+        contractual_exposures=(
+            hybrid_research.contractual_exposures
+            if hybrid_research else []
+        ),
+        regulatory_events=(
+            hybrid_research.regulatory_events
+            if hybrid_research else []
+        ),
+        demo_freeze_decision=(
+            hybrid_research.demo_freeze_decision
+            if hybrid_research else None
+        ),
+        source_candidates=source_candidates,
+        source_admission_decisions=source_admission_decisions,
+        regulatory_momentum=regulatory_momentum,
+        retrieval_audit=retrieval_audit,
+        research_freshness=research_freshness,
+        research_execution_policy=research_execution_policy,
+        data_access_policy=data_access_policy,
+        source_policy_fingerprint=source_policy_fingerprint,
+        evidence_graph=evidence_graph,
+        adaptive_macro_plan=adaptive_macro_plan,
+        research_ai_plan=research_ai_plan,
+        independent_research_qa=independent_research_qa,
         **story_presentation,
     )
 
@@ -3391,6 +4165,169 @@ def _opposite_direction(direction: str) -> str:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _hybrid_cache_matches(
+    run: HybridResearchRun | None,
+    deepseek_provider: object | None,
+    sol_provider: object | None,
+) -> bool:
+    if (
+        run is None
+        or run.status != "completed"
+        or run.prompt_version != HYBRID_PROMPT_VERSION
+        or run.source_registry_version != SOURCE_REGISTRY_VERSION
+        or run.deterministic_validation_status != "passed"
+    ):
+        return False
+    variants = {item.variant_id: item for item in run.variants}
+    primary = variants.get("deepseek_led")
+    challenger = variants.get("sol_led_challenger")
+    if primary is None or challenger is None:
+        return False
+    expected_deepseek = str(
+        getattr(deepseek_provider, "model", "") or ""
+    )
+    expected_sol = str(getattr(sol_provider, "model", "") or "")
+    return bool(
+        expected_deepseek
+        and expected_sol
+        and primary.investigator_model == expected_deepseek
+        and primary.auditor_model == expected_sol
+        and challenger.investigator_model == expected_sol
+        and primary.audit_decision
+        and primary.audit_decision.status == "passed"
+    )
+
+
+def _research_qa_cache_matches(
+    run: HybridResearchRun | None,
+    primary_provider: object | None,
+    auditor_provider: object | None,
+) -> bool:
+    if (
+        run is None
+        or run.status != "completed"
+        or run.prompt_version != HYBRID_PROMPT_VERSION
+        or run.source_registry_version != SOURCE_REGISTRY_VERSION
+        or run.deterministic_validation_status != "passed"
+        or str(run.generation_provenance.get("workflow") or "")
+        != "quality_first_independent_research_qa"
+    ):
+        return False
+    expected_primary = str(getattr(primary_provider, "model", "") or "")
+    expected_auditor = str(getattr(auditor_provider, "model", "") or "")
+    primary_round = next(
+        (
+            item for item in run.rounds
+            if item.role == "primary_investment_analyst"
+        ),
+        None,
+    )
+    audit_round = next(
+        (
+            item for item in run.rounds
+            if item.role == "independent_research_auditor"
+        ),
+        None,
+    )
+    if primary_round is None or primary_round.model != expected_primary:
+        return False
+    if auditor_provider is None:
+        return bool(audit_round and audit_round.status == "not_configured")
+    return bool(
+        audit_round
+        and audit_round.status == "completed"
+        and audit_round.model == expected_auditor
+    )
+
+
+def _merge_validated_retrieval_cache(
+    context: dict,
+    previous_run: HybridResearchRun | None,
+) -> None:
+    if previous_run is None:
+        return
+    cached_records = [
+        record for record in previous_run.normalized_sources
+        if (
+            record.validation_status in {"validated", "contradicted"}
+            and record.retrieval_status != "metadata_only"
+        )
+    ]
+    if not cached_records:
+        return
+    catalog = list(context.get("searchable_evidence_catalog") or [])
+    by_id = {
+        str(item.get("evidence_id") or ""): item
+        for item in catalog if item.get("evidence_id")
+    }
+    normalized = {
+        str(item.get("source_id") or ""): item
+        for item in context.get("normalized_sources", [])
+        if isinstance(item, dict) and item.get("source_id")
+    }
+    for record in cached_records:
+        by_id.setdefault(
+            record.source_id, source_record_to_evidence(record)
+        )
+        normalized.setdefault(record.source_id, asdict(record))
+    merged = list(by_id.values())
+    context["searchable_evidence_catalog"] = merged
+    context["normalized_sources"] = list(normalized.values())
+    context["claim_eligible_evidence_ids"] = sorted({
+        *context.get("claim_eligible_evidence_ids", []),
+        *(record.source_id for record in cached_records),
+    })
+    evidence_hash, fingerprints = semantic_evidence_hash(
+        merged,
+        prompt_version=HYBRID_PROMPT_VERSION,
+        source_registry_version=SOURCE_REGISTRY_VERSION,
+    )
+    context["evidence_hash"] = evidence_hash
+    context["evidence_fingerprints"] = fingerprints
+
+
+def _is_validation_rewrite_repair(reason: str) -> bool:
+    lowered = str(reason or "").casefold()
+    return any(token in lowered for token in (
+        "evidence ids appear in narrative",
+        "placeholder corruption",
+        "used as causal evidence",
+        "converted into unproven",
+        "repeated after being rejected",
+    ))
+
+
+def _hybrid_resume_matches(
+    run: HybridResearchRun | None,
+    deepseek_provider: object | None,
+    sol_provider: object | None,
+) -> bool:
+    if (
+        run is None
+        or run.status not in {"investigated_draft", "unavailable"}
+        or not hybrid_prompt_is_resumable(run.prompt_version)
+        or run.source_registry_version != SOURCE_REGISTRY_VERSION
+        or run.shared_retrieval_manifest is None
+    ):
+        return False
+    variants = {item.variant_id: item for item in run.variants}
+    primary = variants.get("deepseek_led")
+    challenger = variants.get("sol_led_challenger")
+    if primary is None or challenger is None:
+        return False
+    expected_deepseek = str(
+        getattr(deepseek_provider, "model", "") or ""
+    )
+    expected_sol = str(getattr(sol_provider, "model", "") or "")
+    return bool(
+        expected_deepseek
+        and expected_sol
+        and primary.investigator_model == expected_deepseek
+        and primary.auditor_model == expected_sol
+        and challenger.investigator_model == expected_sol
+    )
 
 
 def _analysis_text_for_form(text: str, form: str) -> str:

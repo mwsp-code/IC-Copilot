@@ -1,0 +1,180 @@
+{
+  "fixture_version": "aapl-freeze-regression-v1",
+  "fixture_name": "completed_nonpublishable",
+  "source_run_id": "b3f8d260-a2a5-4c52-9ad9-80ab6fecc898",
+  "sanitization_status": "passed",
+  "description": "Sanitized quality metadata for the completed AAPL run that did not satisfy publication gates.",
+  "run": {
+    "run_id": "b3f8d260-a2a5-4c52-9ad9-80ab6fecc898",
+    "ticker": "AAPL",
+    "status": "completed",
+    "profile": {
+      "profile_id": "deepseek-primary-sol-audit-dual-five-round",
+      "label": "Sanitized Deep Initiation QA fixture",
+      "round_count": 5
+    },
+    "execution_backend": {
+      "backend_id": "sanitized-fixture",
+      "label": "Sanitized fixture",
+      "model": "redacted",
+      "public": false
+    },
+    "rounds": [
+      {
+        "round_number": 1,
+        "role": "research_planner",
+        "provider": "sanitized-primary",
+        "model": "redacted",
+        "backend": "fixture",
+        "status": "completed"
+      },
+      {
+        "round_number": 2,
+        "role": "primary_investment_analyst",
+        "provider": "sanitized-primary",
+        "model": "redacted",
+        "backend": "fixture",
+        "status": "completed"
+      },
+      {
+        "round_number": 3,
+        "role": "independent_research_auditor",
+        "provider": "sanitized-auditor",
+        "model": "redacted",
+        "backend": "fixture",
+        "status": "completed"
+      },
+      {
+        "round_number": 4,
+        "role": "primary_revision",
+        "provider": "sanitized-primary",
+        "model": "redacted",
+        "backend": "fixture",
+        "status": "completed"
+      },
+      {
+        "round_number": 5,
+        "role": "closure_checker",
+        "provider": "sanitized-auditor",
+        "model": "redacted",
+        "backend": "fixture",
+        "status": "completed",
+        "message": "Closure did not produce a passing stored audit decision."
+      }
+    ],
+    "final_artifact": {
+      "artifact_id": "aapl-completed-nonpublishable",
+      "artifact_type": "investment_research",
+      "status": "completed",
+      "summary": "Sanitized completed artifact retained for publication-gate regression."
+    },
+    "evidence_hash": "fixture-completed-evidence-hash",
+    "source_registry_version": "source-registry-v3-auditable-retrieval",
+    "generated_at": "2026-08-02T18:00:00+00:00",
+    "completed_at": "2026-08-02T19:08:52.768092+00:00",
+    "deterministic_validation_status": "partial",
+    "variants": [
+      {
+        "variant_id": "deepseek_led",
+        "label": "Sanitized primary variant",
+        "status": "completed",
+        "primary_provider": "sanitized-primary",
+        "investigator_model": "redacted",
+        "auditor_provider": "sanitized-auditor",
+        "auditor_model": "redacted",
+        "audit_decision": {
+          "status": "revision_required",
+          "decision": "Material publication conditions remain unresolved.",
+          "critical_failures": [
+            "Deterministic validation remained partial.",
+            "Independent provenance was insufficient for quantified analog conclusions."
+          ]
+        },
+        "quality_scorecard": {
+          "total_score": 82,
+          "status": "blocked",
+          "critical_failures": [
+            "Quantified analog provenance was incomplete."
+          ]
+        }
+      }
+    ],
+    "selected_primary_variant_id": "deepseek_led",
+    "normalized_sources": [
+      {
+        "source_id": "fixture-analog-origin-a",
+        "ticker": "AAPL",
+        "entity_name": "Apple Inc.",
+        "security_id": "AAPL",
+        "source_family": "issuer_filing",
+        "source_type": "historical_filing",
+        "document_id": "sanitized-document-a",
+        "source_url": "",
+        "publication_date": "2020-10-30",
+        "reporting_period": "2020-09-26",
+        "section": "sanitized historical context",
+        "page_or_table": "",
+        "exact_excerpt": "Sanitized fixture excerpt.",
+        "metric_or_claim": "Historical operating outcome",
+        "value": null,
+        "unit": "",
+        "currency": "USD",
+        "source_tier": 1,
+        "origin_group": "issuer-origin-a",
+        "licensing_policy": "public_primary",
+        "retrieval_status": "retrieved",
+        "parser_status": "parsed",
+        "validation_status": "validated"
+      }
+    ],
+    "historical_financial_paths": [
+      {"ticker": "AAPL", "metric": "Free Cash Flow TTM", "status": "available"},
+      {"ticker": "AAPL", "metric": "Long-term Debt", "status": "available"},
+      {"ticker": "AAPL", "metric": "Share Repurchases", "status": "available"}
+    ],
+    "evidence_fingerprints": {
+      "fixture-evidence-1": "fingerprint-1",
+      "fixture-evidence-2": "fingerprint-2"
+    }
+  },
+  "audited_dossiers": [
+    {
+      "analog_id": "1e9c0fc0a4cdad43",
+      "episode": "Sanitized historical episode A",
+      "status": "Audited Research Analog",
+      "operating_outcome": "The sanitized episode includes a quantified 12-month outcome.",
+      "source_ids": ["fixture-analog-origin-a"]
+    },
+    {
+      "analog_id": "49758aa92f012e2b",
+      "episode": "Sanitized historical episode B",
+      "status": "Audited Research Analog",
+      "valuation_outcome": "The sanitized episode includes a quantified 24-month outcome.",
+      "source_ids": ["fixture-analog-origin-a"]
+    }
+  ],
+  "expected_failure_codes": [
+    "deterministic_validation_partial",
+    "final_closure_not_passed",
+    "semantic_quality_below_threshold",
+    "analog_independent_provenance_insufficient"
+  ],
+  "expected_repair_actions": [
+    {
+      "repair_kind": "retrieve_missing_primary_evidence",
+      "objective": "Resolve each failed deterministic validation check through registered retrieval and admission."
+    },
+    {
+      "repair_kind": "retrieve_independent_analog_origin",
+      "objective": "Add an independent validated origin or narrow each quantified analog conclusion."
+    },
+    {
+      "repair_kind": "recompute_semantic_quality",
+      "objective": "Recompute semantic quality after evidence and conclusion changes."
+    },
+    {
+      "repair_kind": "rerun_closure",
+      "objective": "Run a fresh independent closure check against the revised artifact."
+    }
+  ]
+}

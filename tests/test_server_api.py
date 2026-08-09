@@ -126,6 +126,10 @@ class ServerApiTests(unittest.TestCase):
             self.demo.run_manifest.run_id, "AAPL", self.demo.validated_claims.claims,
         )
         self.store.save_source_plan(self.demo.run_manifest.run_id, self.demo.source_plan)
+        if self.demo.dual_model_research:
+            self.store.save_dual_model_research_run(
+                self.demo.dual_model_research
+            )
         self.store.save_llm_research_manifest(
             self.demo.run_manifest.run_id,
             "AAPL",
@@ -139,6 +143,23 @@ class ServerApiTests(unittest.TestCase):
             self.demo.market_implied_expectations,
             self.demo.company_model,
             self.demo.research_modes,
+            historical_analogs=self.demo.historical_analogs,
+            news_intelligence=self.demo.news_intelligence,
+            ic_implied_snapshot=self.demo.ic_implied_snapshot,
+            decision_delta=self.demo.decision_delta,
+            catalyst_clock=self.demo.catalyst_clock,
+            prioritized_research_queue=self.demo.prioritized_research_queue,
+            retrieval_audit=self.demo.retrieval_audit or {},
+            regulatory_momentum=self.demo.regulatory_momentum or {},
+            source_admission={
+                "candidates": [
+                    item.__dict__ for item in self.demo.source_candidates
+                ],
+                "decisions": [
+                    item.__dict__
+                    for item in self.demo.source_admission_decisions
+                ],
+            },
         )
         if self.demo.ideas:
             self.demo.ideas[0].stage = "Candidate"
@@ -218,6 +239,8 @@ class ServerApiTests(unittest.TestCase):
             "llm_comparison",
             "language_audit",
             "historical_references",
+            "historical_analogs",
+            "news_intelligence",
             "conviction_audit",
             "thesis_validation",
             "budget_policy",
@@ -231,6 +254,7 @@ class ServerApiTests(unittest.TestCase):
             "llm_research_manifest",
             "wisburg_lens",
             "ic_one_pager",
+            "ic_decision_brief",
             "demo_case",
             "run_progress",
             "story_cards",
@@ -249,6 +273,10 @@ class ServerApiTests(unittest.TestCase):
             "promotion_evidence",
             "promotion_decisions",
             "playbook_portfolio",
+            "ic_implied_snapshot",
+            "decision_delta",
+            "catalyst_clock",
+            "prioritized_research_queue",
         ):
             self.assertIn(field, payload)
         self.assertIn(payload["llm_run_manifest"]["status"], {"Available", "Skipped"})
@@ -278,11 +306,58 @@ class ServerApiTests(unittest.TestCase):
             "/api/market-implied?ticker=AAPL": "market_implied",
             "/api/company-model?ticker=AAPL": "company_model",
             "/api/research-modes?ticker=AAPL": "research_modes",
+            "/api/historical-analogs?ticker=AAPL": "historical_analogs",
+            "/api/news-intelligence?ticker=AAPL": "news_intelligence",
+            "/api/decision-delta?ticker=AAPL": "decision_delta",
+            "/api/catalysts?ticker=AAPL": "catalyst_clock",
+            "/api/prioritized-research-queue?ticker=AAPL": "prioritized_research_queue",
+            "/api/retrieval-audit?ticker=AAPL": "retrieval_audit",
+            "/api/regulatory-radar?ticker=AAPL": "regulatory_momentum",
+            "/api/source-admission?ticker=AAPL": "source_admission",
         }
         for route, field in routes.items():
             response = self._request(route)
             self.assertEqual(response["ticker"], "AAPL")
             self.assertIn(field, response)
+
+    def test_dual_model_comparison_health_and_improvement_routes(self) -> None:
+        paired = self._request("/api/dual-model-research?ticker=AAPL")
+        self.assertEqual(paired["ticker"], "AAPL")
+        self.assertEqual(
+            paired["dual_model_research"]["status"],
+            "frozen_fixture",
+        )
+        comparison = self._request("/api/research-comparison?ticker=AAPL")
+        self.assertIn("stages", comparison)
+        sufficiency = self._request("/api/input-sufficiency?ticker=AAPL")
+        self.assertIn("input_sufficiency", sufficiency)
+        self.assertIn("80/100", sufficiency["benchmark_policy"])
+        evidence_audit = self._request(
+            "/api/evidence-pack-audit?ticker=AAPL"
+        )
+        self.assertIn("evidence_pack_audit", evidence_audit)
+        decomposition = self._request(
+            "/api/benchmark-gap-decomposition?ticker=AAPL"
+        )
+        self.assertIn("gap_decomposition", decomposition)
+        health = self._request("/api/llm-health?ticker=AAPL")
+        self.assertEqual(
+            health["latest_dual_model_research"]["ticker"],
+            "AAPL",
+        )
+        improvements = self._request("/api/research-improvements")
+        self.assertIn("improvement_candidates", improvements)
+        self.assertIn("cannot mutate", improvements["policy"])
+
+    def test_historical_episode_detail_route(self) -> None:
+        dossier = self.demo.historical_analogs.dossiers[0]
+        response = self._request(
+            f"/api/historical-analogs/{dossier.analog_id}?ticker=AAPL"
+        )
+
+        self.assertEqual(response["analog_id"], dossier.analog_id)
+        self.assertEqual(response["dossier"]["status"], "Frozen Demo Dossier")
+        self.assertEqual(response["dossier"]["start_date"], "2016-09-24")
 
     def test_market_implied_assumption_routes_save_load_and_reset(self) -> None:
         saved = self._request(
@@ -330,6 +405,23 @@ class ServerApiTests(unittest.TestCase):
         self.assertIn("Event-Specific Expectations Audit", html)
         self.assertIn("Promotion evidence audit", html)
         self.assertIn("Edit reverse-model assumptions", html)
+        self.assertIn("Historical Perspective", html)
+        self.assertIn("Historical Analogs", html)
+        self.assertIn("Model Research Comparison", html)
+        self.assertIn("What the Market Must Believe", html)
+        self.assertIn("Decision Delta", html)
+        self.assertIn("Data Freshness", html)
+        self.assertIn("Macro context", html)
+        self.assertIn("Next live run:", html)
+        self.assertIn("Refresh using current setup", html)
+        self.assertNotIn('id="enable-default-macro"', html)
+        self.assertNotIn('id="global-macro-mode"', html)
+        self.assertIn("Why research next", html)
+        self.assertIn("Display timezone", html)
+        self.assertIn("Catalyst Clock", html)
+        self.assertIn("Research Queue", html)
+        self.assertIn("News and Debate", html)
+        self.assertIn("App Outcome Memory", html)
 
     def test_research_profile_api_exposes_adaptive_default(self) -> None:
         payload = self._request("/api/research-profiles")
@@ -338,6 +430,55 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(profiles["adaptive_ic"]["quarter_depth"], 12)
         self.assertEqual(profiles["adaptive_ic"]["annual_depth"], 4)
         self.assertEqual(profiles["adaptive_ic"]["call_depth"], 12)
+
+    def test_research_preview_is_quality_first_and_redacts_credentials(self) -> None:
+        payload = self._request(
+            "/api/research-preview",
+            method="POST",
+            payload={
+                "ticker": "AAPL",
+                "research_profile": "adaptive_ic",
+                "macro_policy": "adaptive",
+                "enable_independent_research_qa": True,
+                "hybrid_deepseek_key": "deepseek-secret",
+                "hybrid_openai_key": "openai-secret",
+                "fmp_key": "fmp-secret",
+            },
+        )
+        preview = payload["preview"]
+        self.assertEqual(preview["depth"], "adaptive_ic")
+        self.assertEqual(preview["data_status"], "Best available from every configured and entitled source")
+        self.assertEqual(preview["macro_status"], "Adaptive")
+        self.assertEqual(preview["primary_ai_status"], "Ready")
+        self.assertEqual(preview["independent_qa_status"], "Ready")
+        self.assertFalse(preview["credential_values_included"])
+        serialized = json.dumps(payload)
+        self.assertNotIn("deepseek-secret", serialized)
+        self.assertNotIn("openai-secret", serialized)
+        self.assertNotIn("fmp-secret", serialized)
+
+    def test_research_qa_route_returns_stored_scorecard(self) -> None:
+        qa_payload = {
+            "status": "completed",
+            "qa_report": {"status": "Complete", "score": {"total_score": 88}},
+            "model_executions": [{"role": "independent_research_auditor", "status": "completed"}],
+            "evidence_gaps": [],
+            "conclusion_revisions": [],
+        }
+        self.store.save_decision_artifacts(
+            self.demo.run_manifest.run_id,
+            "AAPL",
+            self.demo.evidence_closure,
+            self.demo.causal_thesis_graphs,
+            self.demo.market_implied_expectations,
+            self.demo.company_model,
+            self.demo.research_modes,
+            independent_research_qa=qa_payload,
+        )
+
+        response = self._request("/api/research-qa?ticker=AAPL")
+        self.assertEqual(response["qa_report"]["score"]["total_score"], 88)
+        self.assertEqual(response["model_executions"][0]["role"], "independent_research_auditor")
 
     def test_wisburg_lens_routes_expose_sanitized_demo_coverage(self) -> None:
         external = self._request("/api/external-research?ticker=AAPL")
@@ -531,7 +672,12 @@ class ServerApiTests(unittest.TestCase):
         peer_metrics = self._request("/api/peer-metrics?ticker=AAPL")
         self.assertEqual(peer_metrics["ticker"], "AAPL")
         llm_manifest = self._request("/api/llm-research-manifest?ticker=AAPL")
-        self.assertTrue(llm_manifest["llm_research_manifest"]["status"].startswith("Available"))
+        manifest = llm_manifest["llm_research_manifest"]
+        self.assertTrue(
+            manifest["status"].startswith("Deterministic frozen fixture")
+        )
+        self.assertEqual(manifest["provider"], "deterministic_frozen_demo")
+        self.assertEqual(manifest["model"], "no_live_model")
         self.assertIn("allowed_roles", llm_manifest["llm_research_manifest"])
         self.assertIn("deterministic_executor", llm_manifest["llm_research_manifest"])
         self.assertIn("historical_references", historical)
@@ -608,6 +754,108 @@ class ServerApiTests(unittest.TestCase):
         cleared = self._request("/api/local-secrets", method="DELETE")
         self.assertIn("ALPHAVANTAGE_API_KEY", cleared["deleted"])
         self.assertIn("WISBURG_API_KEY", cleared["deleted"])
+
+    def test_public_dual_model_job_supports_all_profiles_and_requires_byok(self) -> None:
+        missing_ticker = self._request(
+            "/api/hybrid-research/jobs",
+            method="POST",
+            payload={},
+            expected_status=400,
+        )
+        self.assertEqual(missing_ticker["error"], "ticker is required")
+        adaptive_missing_keys = self._request(
+            "/api/hybrid-research/jobs",
+            method="POST",
+            payload={
+                "ticker": "AAPL",
+                "research_profile": "adaptive_ic",
+            },
+            expected_status=400,
+        )
+        self.assertEqual(
+            adaptive_missing_keys["error"],
+            "Primary Research AI did not start.",
+        )
+        adaptive_preflight = adaptive_missing_keys["execution_preflight"]
+        self.assertEqual(adaptive_preflight["deepseek"], "missing")
+        self.assertEqual(adaptive_preflight["sol"], "optional_not_configured")
+        self.assertEqual(len(adaptive_preflight["blockers"]), 1)
+        missing_keys = self._request(
+            "/api/hybrid-research/jobs",
+            method="POST",
+            payload={
+                "ticker": "AAPL",
+                "research_profile": "deep_initiation",
+            },
+            expected_status=400,
+        )
+        self.assertEqual(
+            missing_keys["execution_preflight"]["status"], "blocked"
+        )
+        self.assertEqual(
+            missing_keys["execution_preflight"]["adjudication"], "not_run"
+        )
+        missing_sol = self._request(
+            "/api/hybrid-research/jobs",
+            method="POST",
+            payload={
+                "ticker": "AAPL",
+                "research_profile": "deep_initiation",
+                "hybrid_deepseek_key": "deepseek-test-key",
+            },
+            expected_status=202,
+        )
+        self.assertEqual(
+            missing_sol["job"]["preflight"]["deepseek"]["status"], "ready"
+        )
+        self.assertEqual(
+            missing_sol["job"]["preflight"]["sol"]["status"], "missing"
+        )
+        self.assertNotIn("deepseek-test-key", json.dumps(missing_sol))
+        wrong_model = self._request(
+            "/api/hybrid-research/jobs",
+            method="POST",
+            payload={
+                "ticker": "AAPL",
+                "research_profile": "adaptive_ic",
+                "hybrid_deepseek_key": "deepseek-test-key",
+                "hybrid_openai_key": "openai-test-key",
+                "hybrid_deepseek_model": "deepseek-v4-flash",
+            },
+            expected_status=400,
+        )
+        self.assertEqual(
+            wrong_model["execution_preflight"]["deepseek"]["status"],
+            "unavailable",
+        )
+        self.assertNotIn("deepseek-test-key", json.dumps(wrong_model))
+        self.assertNotIn("openai-test-key", json.dumps(wrong_model))
+        local_backend = self._request(
+            "/api/hybrid-research/jobs",
+            method="POST",
+            payload={
+                "ticker": "AAPL",
+                "research_profile": "deep_initiation",
+                "hybrid_execution_backend": "codex_local",
+                "hybrid_deepseek_key": "deepseek-test-key",
+            },
+            expected_status=400,
+        )
+        self.assertIn("maintainer-only", local_backend["error"])
+        self.assertNotIn("deepseek-test-key", json.dumps(local_backend))
+
+    def test_unknown_hybrid_job_status_and_cancel_are_safe(self) -> None:
+        status = self._request(
+            "/api/hybrid-research/jobs/unknown-job",
+            expected_status=404,
+        )
+        self.assertEqual(status["error"], "Hybrid research job not found")
+        cancelled = self._request(
+            "/api/hybrid-research/jobs/unknown-job",
+            method="DELETE",
+            expected_status=404,
+        )
+        self.assertEqual(cancelled["error"], "Hybrid research job not found")
 
     def test_management_source_routes_and_transcript_import(self) -> None:
         sources = self._request("/api/management-sources?ticker=AAPL")

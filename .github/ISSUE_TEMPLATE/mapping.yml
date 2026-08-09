@@ -1,0 +1,36 @@
+name: Metric or disclosure mapping issue
+description: Report an unresolved numeric mapping, disclosure classification, or mapping regression.
+title: "[Mapping]: "
+labels: [mapping]
+body:
+  - type: input
+    id: security
+    attributes:
+      label: Ticker, security type, and filing/report period
+    validations:
+      required: true
+  - type: textarea
+    id: observation
+    attributes:
+      label: Observation and current label
+      description: Do not paste licensed full text or secrets.
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Observation type
+      options: [Numeric metric, Narrative disclosure, Segment/period/unit context, Unknown]
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected canonical mapping or disclosure-risk label
+  - type: checkboxes
+    id: fixture
+    attributes:
+      label: Regression safety
+      options:
+        - label: The automated mapping ladder was exhausted before user escalation.
+        - label: A sanitized fixture or public primary-source citation can be supplied.

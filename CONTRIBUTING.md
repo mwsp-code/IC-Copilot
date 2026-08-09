@@ -33,6 +33,20 @@ python scripts/run_benchmark.py
 Add fixture-based tests for new providers and parsers. Live-network tests must remain optional and
 must never be required by the normal suite.
 
+Every feature that changes research behavior should include:
+
+- A typed domain contract and validation rule.
+- An application use case or extension-port change.
+- Durable manifest/timeline events with idempotency behavior.
+- A presentation view model rather than direct access to a mutable result.
+- A sanitized regression fixture covering failure as well as success.
+
+Provider conditionals belong in registries/adapters. Connectors may return
+retrieved candidate documents, but only the common admission gateway can create
+evidence IDs. See the [minimal connector](examples/minimal_connector.py),
+[minimal LLM provider](examples/minimal_llm_provider.py), and
+[architecture guide](docs/architecture.md).
+
 Read the [development guide](docs/development.md), [architecture](docs/architecture.md), and
 [research methodology](docs/methodology.md) before changing source tiers, scoring, or promotion gates.
 The [good first issues](docs/contributing/good-first-issues.md) include acceptance criteria for the

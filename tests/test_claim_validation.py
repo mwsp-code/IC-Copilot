@@ -91,6 +91,37 @@ class ClaimValidationTests(unittest.TestCase):
         self.assertEqual(event.metrics["thesis_grade_status"], THESIS_GRADE)
         self.assertEqual(event.metrics["validated_direction"], "positive")
 
+    def test_financial_claim_uses_reporting_period_not_filing_date(self) -> None:
+        event = ChangeEvent(
+            "financial_kpi",
+            "Revenue changed +10.0%",
+            "Revenue was 111.2B USD.",
+            5,
+            "positive",
+            "2026-05-01",
+            "SEC Companyfacts",
+            citations=[
+                Citation(
+                    "SEC XBRL Companyfacts",
+                    "https://data.sec.gov/example.json",
+                    filed="2026-05-01",
+                    form="10-Q",
+                    snippet="Revenue: 111.2B USD",
+                    source_tier=1,
+                )
+            ],
+            metrics={
+                "metric_name": "Revenue",
+                "current_value": 111_200_000_000,
+                "current_period": "2026-03-28",
+                "economic_driver": "Revenue growth / demand",
+            },
+        )
+
+        validation, _manifest = validate_events(self.identity, [event])
+
+        self.assertEqual(validation.claims[0].period, "2026-03-28")
+
     def test_share_count_basis_mismatch_is_not_thesis_grade(self) -> None:
         event = ChangeEvent(
             "financial_kpi",

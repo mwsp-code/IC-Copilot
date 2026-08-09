@@ -1,0 +1,31 @@
+{
+  "fixture_version": "publication-readiness-security-profiles-v1",
+  "sanitization_status": "passed",
+  "profiles": [
+    {
+      "profile_id": "bank_or_insurer",
+      "ticker": "JPM",
+      "required_paths": ["Capital Adequacy", "Credit Quality", "Net Interest Income", "Liquidity"]
+    },
+    {
+      "profile_id": "reit",
+      "ticker": "PLD",
+      "required_paths": ["FFO/AFFO", "Leverage", "Occupancy", "Property NOI"]
+    },
+    {
+      "profile_id": "commodity_producer",
+      "ticker": "XOM",
+      "required_paths": ["Production Volume", "Realized Price", "Unit Cost", "Reserves"]
+    },
+    {
+      "profile_id": "adr_fpi",
+      "ticker": "TSM",
+      "required_paths": ["Free Cash Flow TTM", "Debt", "Currency Translation"]
+    },
+    {
+      "profile_id": "event_only",
+      "ticker": "AAPL",
+      "required_paths": []
+    }
+  ]
+}

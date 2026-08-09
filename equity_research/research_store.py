@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import config
+from .domain.cache_policy import CacheIsolationKey
 from .models import (
     AlertRecord,
     ConsensusPackage,
@@ -23,6 +24,9 @@ from .models import (
     ExternalEvidence,
     ExternalEvidenceBundle,
     FinancialCoverage,
+    HistoricalEpisodeDossier,
+    HybridResearchRun,
+    DualModelResearchRun,
     CausalBridge,
     CausalThesisGraph,
     CompanyModelWorkspace,
@@ -33,6 +37,7 @@ from .models import (
     ManagementDocument,
     ManagementSourcePackage,
     NewsClaim,
+    NewsArticleObservation,
     NewsSourceObservation,
     PeerUniverse,
     PrimarySourceObservation,
@@ -155,6 +160,38 @@ class ResearchStore:
                     status TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     PRIMARY KEY (ticker, provider, cache_date)
+                );
+                CREATE TABLE IF NOT EXISTS external_evidence_bundle_cache (
+                    ticker TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    cache_date TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    parser_version TEXT NOT NULL DEFAULT 'external-evidence-v1',
+                    workspace_scope TEXT NOT NULL DEFAULT 'local',
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (
+                        ticker, provider, cache_date,
+                        parser_version, workspace_scope
+                    )
+                );
+                CREATE TABLE IF NOT EXISTS external_evidence_bundle_cache_v2 (
+                    ticker TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    cache_date TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    source_policy_fingerprint TEXT NOT NULL,
+                    entitlement_fingerprint TEXT NOT NULL,
+                    data_cutoff TEXT NOT NULL,
+                    parser_version TEXT NOT NULL,
+                    workspace_scope TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (
+                        ticker, provider, cache_date,
+                        source_policy_fingerprint, entitlement_fingerprint,
+                        data_cutoff, parser_version, workspace_scope
+                    )
                 );
                 CREATE TABLE IF NOT EXISTS alerts (
                     alert_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -451,6 +488,49 @@ class ResearchStore:
                     ticker TEXT PRIMARY KEY,
                     updated_at TEXT NOT NULL,
                     payload_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS historical_analog_cache (
+                    ticker TEXT NOT NULL,
+                    analog_id TEXT NOT NULL,
+                    signature_hash TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (ticker, analog_id, signature_hash)
+                );
+                CREATE TABLE IF NOT EXISTS hybrid_research_runs (
+                    run_id TEXT PRIMARY KEY,
+                    ticker TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    evidence_hash TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS dual_model_research_runs (
+                    run_id TEXT PRIMARY KEY,
+                    ticker TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    research_profile TEXT NOT NULL,
+                    evidence_hash TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS research_improvement_candidates (
+                    candidate_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    activation_status TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (candidate_id, run_id)
+                );
+                CREATE TABLE IF NOT EXISTS llm_audit_health (
+                    provider TEXT PRIMARY KEY,
+                    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                    last_success_at TEXT,
+                    last_failure_at TEXT,
+                    failure_class TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS validated_claims (
                     ticker TEXT NOT NULL,
@@ -1255,30 +1335,134 @@ class ResearchStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def save_external_evidence(self, package: ExternalEvidenceBundle) -> None:
+    def save_external_evidence(
+        self,
+        package: ExternalEvidenceBundle,
+        *,
+        cache_isolation: CacheIsolationKey | None = None,
+    ) -> None:
         macro_items = [item for item in package.evidence if item.source_type == "macro_factor"]
-        if not macro_items:
-            return
-        with self.connect() as db:
-            for item in macro_items:
-                if not item.metric_name or not item.source_as_of:
-                    continue
-                db.execute(
+        if macro_items:
+            with self.connect() as db:
+                for item in macro_items:
+                    if not item.metric_name or not item.source_as_of:
+                        continue
+                    db.execute(
                     """INSERT OR REPLACE INTO macro_observations
                     (ticker,provider,series_id,source_as_of,observed_at,title,value_numeric,
                      unit,frequency,release_date,vintage_date,direction,source_tier,official,
                      confidence,lookahead_safe,summary,tags_json,citation_json)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            package.ticker.upper(), item.provider, item.metric_name,
+                            item.source_as_of, item.observed_at, item.title,
+                            item.metric_value, item.unit, item.frequency,
+                            item.release_date, item.vintage_date, item.direction,
+                            item.source_tier, int(item.official), item.confidence,
+                            int(item.lookahead_safe), item.summary,
+                            json.dumps(item.tags), json.dumps(asdict(item.citation)) if item.citation else None,
+                        ),
+                    )
+        evidence_providers = {
+            item.provider for item in package.evidence if item.provider
+        }
+        # A merged stack result must never be cached under whichever provider
+        # happened to appear first. Individual provider bundles are cached by
+        # ExternalEvidenceStack before they are merged.
+        provider = next(iter(evidence_providers), "") if len(evidence_providers) == 1 else ""
+        if provider and package.evidence:
+            isolation = cache_isolation or CacheIsolationKey()
+            observed_at = max(
+                (
+                    item.observed_at for item in package.evidence
+                    if item.observed_at
+                ),
+                default=_utc_now(),
+            )
+            with self.connect() as db:
+                db.execute(
+                    """
+                    INSERT OR REPLACE INTO external_evidence_bundle_cache_v2
+                    (ticker,provider,cache_date,observed_at,status,
+                     source_policy_fingerprint,entitlement_fingerprint,
+                     data_cutoff,parser_version,workspace_scope,payload_json)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    """,
                     (
-                        package.ticker.upper(), item.provider, item.metric_name,
-                        item.source_as_of, item.observed_at, item.title,
-                        item.metric_value, item.unit, item.frequency,
-                        item.release_date, item.vintage_date, item.direction,
-                        item.source_tier, int(item.official), item.confidence,
-                        int(item.lookahead_safe), item.summary,
-                        json.dumps(item.tags), json.dumps(asdict(item.citation)) if item.citation else None,
+                        package.ticker.upper(),
+                        provider,
+                        date.today().isoformat(),
+                        observed_at,
+                        package.status,
+                        isolation.source_policy_fingerprint,
+                        isolation.entitlement_fingerprint,
+                        isolation.data_cutoff,
+                        isolation.parser_version,
+                        isolation.workspace_scope,
+                        json.dumps(asdict(package), default=str),
                     ),
                 )
+
+    def cached_external_evidence(
+        self,
+        ticker: str,
+        provider: str,
+        *,
+        cache_date: date | None = None,
+        cache_isolation: CacheIsolationKey | None = None,
+    ) -> ExternalEvidenceBundle | None:
+        isolation = cache_isolation or CacheIsolationKey()
+        with self.connect() as db:
+            row = db.execute(
+                """
+                SELECT payload_json FROM external_evidence_bundle_cache_v2
+                WHERE ticker=? AND provider=? AND cache_date=?
+                  AND source_policy_fingerprint=?
+                  AND entitlement_fingerprint=? AND data_cutoff=?
+                  AND parser_version=? AND workspace_scope=?
+                """,
+                (
+                    ticker.upper(),
+                    provider,
+                    (cache_date or date.today()).isoformat(),
+                    isolation.source_policy_fingerprint,
+                    isolation.entitlement_fingerprint,
+                    isolation.data_cutoff,
+                    isolation.parser_version,
+                    isolation.workspace_scope,
+                ),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            payload = json.loads(row["payload_json"])
+            evidence = []
+            for item in payload.get("evidence", []):
+                citation = item.get("citation")
+                evidence.append(ExternalEvidence(
+                    **{
+                        **item,
+                        "citation": Citation(**citation) if citation else None,
+                    }
+                ))
+            statuses = [
+                ProviderStatus(**item)
+                for item in payload.get("provider_statuses", [])
+            ]
+            for status in statuses:
+                status.entitlement_status = "cached"
+                status.message = (
+                    f"Using eligible same-day cached {provider} evidence."
+                )
+            return ExternalEvidenceBundle(
+                ticker=str(payload.get("ticker") or ticker).upper(),
+                status=str(payload.get("status") or "Available"),
+                evidence=evidence,
+                provider_statuses=statuses,
+                data_gaps=list(payload.get("data_gaps") or []),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
 
     def save_wisburg_lens(self, lens: WisburgResearchLens) -> None:
         with self.connect() as db:
@@ -1528,6 +1712,24 @@ class ResearchStore:
                     ),
                 )
 
+    def save_news_article_observations(self, observations: list[NewsArticleObservation]) -> None:
+        with self.connect() as db:
+            for observation in observations:
+                db.execute(
+                    """INSERT OR REPLACE INTO news_source_observations
+                    (observation_id,ticker,provider,source_family,published_at,observed_at,payload_json)
+                    VALUES (?,?,?,?,?,?,?)""",
+                    (
+                        observation.observation_id,
+                        observation.ticker.upper(),
+                        observation.provider,
+                        observation.article_type,
+                        observation.published_at,
+                        observation.observed_at,
+                        json.dumps(asdict(observation), default=str),
+                    ),
+                )
+
     def save_news_claims(self, claims: list[NewsClaim]) -> None:
         with self.connect() as db:
             for claim in claims:
@@ -1662,6 +1864,21 @@ class ResearchStore:
         expectation_event_audits: list | None = None,
         earnings_surprise_proxy: EarningsSurpriseProxy | None = None,
         recent_market_context: RecentMarketContext | None = None,
+        historical_analogs: object | None = None,
+        news_intelligence: object | None = None,
+        ic_implied_snapshot: object | None = None,
+        decision_delta: object | None = None,
+        decision_snapshot: dict | None = None,
+        catalyst_clock: object | None = None,
+        prioritized_research_queue: list | None = None,
+        retrieval_audit: object | None = None,
+        regulatory_momentum: object | None = None,
+        source_admission: object | None = None,
+        source_policy_fingerprint: object | None = None,
+        evidence_graph: object | None = None,
+        adaptive_macro_plan: object | None = None,
+        research_ai_plan: object | None = None,
+        independent_research_qa: object | None = None,
     ) -> None:
         artifacts = {
             "evidence_closure": evidence_closure,
@@ -1676,6 +1893,21 @@ class ResearchStore:
             "expectation_event_audits": expectation_event_audits or [],
             "earnings_surprise_proxy": earnings_surprise_proxy,
             "recent_market_context": recent_market_context,
+            "historical_analogs": historical_analogs,
+            "news_intelligence": news_intelligence,
+            "ic_implied_snapshot": ic_implied_snapshot,
+            "decision_delta": decision_delta,
+            "decision_snapshot": decision_snapshot,
+            "catalyst_clock": catalyst_clock,
+            "prioritized_research_queue": prioritized_research_queue or [],
+            "retrieval_audit": retrieval_audit,
+            "regulatory_momentum": regulatory_momentum,
+            "source_admission": source_admission,
+            "source_policy_fingerprint": source_policy_fingerprint,
+            "evidence_graph": evidence_graph,
+            "adaptive_macro_plan": adaptive_macro_plan,
+            "research_ai_plan": research_ai_plan,
+            "independent_research_qa": independent_research_qa,
         }
         with self.connect() as db:
             for artifact_type, payload in artifacts.items():
@@ -1708,6 +1940,250 @@ class ResearchStore:
                 (ticker.upper(), artifact_type),
             ).fetchone()
         return json.loads(row["payload_json"]) if row else None
+
+    def save_historical_analog_dossier(
+        self,
+        ticker: str,
+        dossier: HistoricalEpisodeDossier,
+        signature_hash: str,
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                """INSERT OR REPLACE INTO historical_analog_cache
+                (ticker,analog_id,signature_hash,observed_at,payload_json)
+                VALUES (?,?,?,?,?)""",
+                (
+                    ticker.upper(),
+                    dossier.analog_id,
+                    signature_hash,
+                    _utc_now(),
+                    json.dumps(asdict(dossier), default=str),
+                ),
+            )
+
+    def load_historical_analog_dossier(
+        self,
+        ticker: str,
+        analog_id: str,
+        signature_hash: str,
+    ) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT payload_json FROM historical_analog_cache
+                WHERE ticker=? AND analog_id=? AND signature_hash=?""",
+                (ticker.upper(), analog_id, signature_hash),
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row else None
+
+    def save_hybrid_research_run(self, run: HybridResearchRun) -> None:
+        with self.connect() as db:
+            db.execute(
+                """INSERT OR REPLACE INTO hybrid_research_runs
+                (run_id,ticker,status,evidence_hash,observed_at,payload_json)
+                VALUES (?,?,?,?,?,?)""",
+                (
+                    run.run_id,
+                    run.ticker.upper(),
+                    run.status,
+                    run.evidence_hash,
+                    _utc_now(),
+                    json.dumps(asdict(run), default=str),
+                ),
+            )
+
+    def load_hybrid_research_run(self, run_id: str) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT payload_json FROM hybrid_research_runs
+                WHERE run_id=?""",
+                (run_id,),
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row else None
+
+    def list_hybrid_research_runs(
+        self,
+        ticker: str,
+        *,
+        limit: int = 25,
+    ) -> list[dict]:
+        """Return saved run payloads newest first for quality-gated publishing."""
+
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT payload_json FROM hybrid_research_runs
+                WHERE ticker=? ORDER BY observed_at DESC LIMIT ?""",
+                (ticker.upper(), max(1, int(limit))),
+            ).fetchall()
+        return [json.loads(row["payload_json"]) for row in rows]
+
+    def save_dual_model_research_run(
+        self,
+        run: DualModelResearchRun,
+    ) -> None:
+        payload = json.dumps(asdict(run), default=str)
+        now = _utc_now()
+        with self.connect() as db:
+            db.execute(
+                """INSERT OR REPLACE INTO dual_model_research_runs
+                (run_id,ticker,status,research_profile,evidence_hash,
+                 observed_at,payload_json)
+                VALUES (?,?,?,?,?,?,?)""",
+                (
+                    run.run_id,
+                    run.ticker.upper(),
+                    run.status,
+                    run.research_profile,
+                    run.evidence_hash,
+                    now,
+                    payload,
+                ),
+            )
+            for item in run.improvement_candidates:
+                db.execute(
+                    """INSERT OR REPLACE INTO research_improvement_candidates
+                    (candidate_id,run_id,ticker,category,activation_status,
+                     observed_at,payload_json)
+                    VALUES (?,?,?,?,?,?,?)""",
+                    (
+                        item.candidate_id,
+                        run.run_id,
+                        run.ticker.upper(),
+                        item.category,
+                        item.activation_status,
+                        now,
+                        json.dumps(asdict(item), default=str),
+                    ),
+                )
+
+    def load_dual_model_research_run(
+        self,
+        run_id: str,
+    ) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT payload_json FROM dual_model_research_runs
+                WHERE run_id=?""",
+                (run_id,),
+            ).fetchone()
+        return (
+            _normalized_dual_model_payload(json.loads(row["payload_json"]))
+            if row else None
+        )
+
+    def latest_dual_model_research_run(
+        self,
+        ticker: str,
+    ) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT payload_json FROM dual_model_research_runs
+                WHERE ticker=? ORDER BY observed_at DESC LIMIT 1""",
+                (ticker.upper(),),
+            ).fetchone()
+        return (
+            _normalized_dual_model_payload(json.loads(row["payload_json"]))
+            if row else None
+        )
+
+    def list_research_improvement_candidates(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        query = (
+            "SELECT payload_json FROM research_improvement_candidates"
+        )
+        params: list[object] = []
+        if status:
+            query += " WHERE activation_status=?"
+            params.append(status)
+        query += " ORDER BY observed_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with self.connect() as db:
+            rows = db.execute(query, params).fetchall()
+        return [json.loads(row["payload_json"]) for row in rows]
+
+    def latest_hybrid_research_run(self, ticker: str) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT payload_json FROM hybrid_research_runs
+                WHERE ticker=? ORDER BY observed_at DESC LIMIT 1""",
+                (ticker.upper(),),
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row else None
+
+    def latest_hybrid_research_run_for_evidence(
+        self,
+        ticker: str,
+        evidence_hash: str,
+    ) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT payload_json FROM hybrid_research_runs
+                WHERE ticker=? AND evidence_hash=? AND status='completed'
+                ORDER BY observed_at DESC LIMIT 1""",
+                (ticker.upper(), evidence_hash),
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row else None
+
+    def record_llm_audit_result(
+        self,
+        provider: str,
+        *,
+        success: bool,
+        failure_class: str = "",
+        message: str = "",
+    ) -> dict:
+        provider_key = provider.strip() or "gpt-5.6-sol"
+        now = _utc_now()
+        with self.connect() as db:
+            existing = db.execute(
+                """SELECT consecutive_failures,last_success_at
+                FROM llm_audit_health WHERE provider=?""",
+                (provider_key,),
+            ).fetchone()
+            prior_failures = (
+                int(existing["consecutive_failures"]) if existing else 0
+            )
+            last_success = (
+                str(existing["last_success_at"] or "") if existing else ""
+            )
+            failures = 0 if success else prior_failures + 1
+            if success:
+                last_success = now
+            db.execute(
+                """INSERT OR REPLACE INTO llm_audit_health
+                (provider,consecutive_failures,last_success_at,last_failure_at,
+                 failure_class,message)
+                VALUES (?,?,?,?,?,?)""",
+                (
+                    provider_key,
+                    failures,
+                    last_success or None,
+                    None if success else now,
+                    "" if success else failure_class[:80],
+                    message[:500],
+                ),
+            )
+        return self.get_llm_audit_health(provider_key)
+
+    def get_llm_audit_health(self, provider: str = "gpt-5.6-sol") -> dict:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT provider,consecutive_failures,last_success_at,
+                last_failure_at,failure_class,message
+                FROM llm_audit_health WHERE provider=?""",
+                (provider,),
+            ).fetchone()
+        return dict(row) if row else {
+            "provider": provider,
+            "consecutive_failures": 0,
+            "last_success_at": None,
+            "last_failure_at": None,
+            "failure_class": "",
+            "message": "",
+        }
 
     def list_macro_observations(
         self,
@@ -3499,6 +3975,16 @@ def _stable_artifact_payload(value):
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _normalized_dual_model_payload(payload: dict) -> dict:
+    """Apply compatibility rendering rules without rewriting stored rows."""
+    try:
+        from .dual_model_benchmark import dual_model_run_from_payload
+
+        return asdict(dual_model_run_from_payload(payload))
+    except (KeyError, TypeError, ValueError):
+        return payload
 
 
 def _freshness_days(value: str) -> int | None:

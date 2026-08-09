@@ -1462,6 +1462,11 @@ def build_financial_metrics(company_facts: dict) -> list[FinancialMetric]:
                 period_end=latest.get("end", ""),
                 fiscal_period=latest.get("fp"),
                 fiscal_year=_safe_int(latest.get("fy")),
+                period_start=str(latest.get("start") or "") or None,
+                duration_days=_inline_duration_days(
+                    latest.get("start"), latest.get("end")
+                ),
+                fiscal_frame=str(latest.get("frame") or "") or None,
                 form=latest.get("form"),
                 filed=latest.get("filed"),
                 previous_value=previous_value,
@@ -1570,6 +1575,12 @@ def build_registration_financial_metrics(
                 period_end=str(latest["end"]),
                 fiscal_period=str(latest.get("fp") or "") or None,
                 fiscal_year=_safe_int(latest.get("fy")),
+                period_start=str(latest.get("start") or "") or None,
+                duration_days=(
+                    _safe_int(latest.get("duration_days"))
+                    if latest.get("duration_days") is not None
+                    else None
+                ),
                 form=filing.form,
                 filed=filing.filing_date,
                 previous_value=previous_value,
@@ -1673,6 +1684,9 @@ def _with_derived_financial_metrics(metrics: list[FinancialMetric]) -> list[Fina
             period_end=revenue.period_end,
             fiscal_period=revenue.fiscal_period,
             fiscal_year=revenue.fiscal_year,
+            period_start=revenue.period_start,
+            duration_days=revenue.duration_days,
+            fiscal_frame=revenue.fiscal_frame,
             form=revenue.form,
             filed=revenue.filed,
             previous_value=previous_value,
@@ -1708,6 +1722,9 @@ def _with_derived_financial_metrics(metrics: list[FinancialMetric]) -> list[Fina
             period_end=revenue.period_end,
             fiscal_period=revenue.fiscal_period,
             fiscal_year=revenue.fiscal_year,
+            period_start=revenue.period_start,
+            duration_days=revenue.duration_days,
+            fiscal_frame=revenue.fiscal_frame,
             form=revenue.form,
             filed=revenue.filed,
             previous_value=previous_value,

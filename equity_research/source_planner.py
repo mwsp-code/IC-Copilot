@@ -16,12 +16,19 @@ from .models import (
 )
 
 
-SOURCE_REGISTRY_VERSION = "source-registry-v1"
+SOURCE_REGISTRY_VERSION = "source-registry-v3-auditable-retrieval"
 PROMPT_VERSION = "source-agent-v1"
 
 SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
     SourceRegistryEntry("sec_filing", "SEC filing or exhibit", 1, notes="10-K, 10-Q, 8-K, 20-F, 40-F, 6-K, exhibits.", source_family="primary_company"),
     SourceRegistryEntry("issuer_ir", "Issuer IR page", 1, notes="Company investor-relations pages discovered from configured seeds.", source_family="primary_company"),
+    SourceRegistryEntry("issuer_announcement", "Issuer newsroom or official announcement", 1, notes="Official company newsroom releases, product announcements, supplier commitments, and investor-relations releases.", source_family="primary_company"),
+    SourceRegistryEntry("issuer_management_remarks", "Issuer-hosted management remarks", 2, notes="Official prepared remarks, conference presentations, and management statements hosted by the issuer.", source_family="management_context", allowed_stage="Research-Ready"),
+    SourceRegistryEntry("management_press_interview", "Identifiable management press interview", 3, notes="Named executive interview or public appearance reported by an identifiable publisher; management context, not a filed fact.", source_family="management_context", allowed_stage="Candidate", licensing_policy="metadata_and_permitted_excerpt"),
+    SourceRegistryEntry("historical_filing", "Historical issuer filing or archive", 1, notes="Period-bounded SEC, exchange, or issuer archive retrieval for a named historical episode.", source_family="historical_primary"),
+    SourceRegistryEntry("supplier_customer_announcement", "Official supplier/customer announcement", 1, notes="Official counterparty announcement used to test contractual capacity, inventory, purchase obligations, and demand claims.", source_family="historical_primary"),
+    SourceRegistryEntry("institutional_history", "Institutional or academic historical source", 2, notes="NBER, Federal Reserve, BIS, IMF, World Bank, OECD, academic paper, or documented institutional history.", source_family="historical_context", allowed_stage="Research-Ready"),
+    SourceRegistryEntry("quantitative_historical_price", "Validated historical price and valuation data", 2, notes="Corporate-action-adjusted price, valuation, and return path for a bounded episode.", source_family="historical_quantitative", allowed_stage="Research-Ready"),
     SourceRegistryEntry("earnings_transcript", "Earnings-call transcript", 2, notes="Alpha Vantage/FMP/CSV/manual transcript adapters.", source_family="management_context", allowed_stage="Research-Ready"),
     SourceRegistryEntry("agm_egm_proxy", "AGM/EGM/proxy/meeting material", 1, notes="DEF 14A, 6-K meeting materials, voting results.", source_family="primary_company"),
     SourceRegistryEntry("presentation", "Issuer presentation or investor-day deck", 2, notes="Issuer slide decks and filed exhibits.", source_family="issuer_context", allowed_stage="Research-Ready"),
@@ -279,6 +286,56 @@ def _deterministic_requests(
             "Free/paid depending on provider",
             "Disproves thesis if the move was sector/macro-only.",
         ))
+    if events:
+        requests.append(_request(
+            identity.ticker,
+            "issuer_announcement",
+            "Check official issuer announcements and newsroom archive",
+            (
+                "Filed reports may omit product launches, supplier commitments, "
+                "contractual capacity, or strategy details disclosed in an "
+                "official company announcement."
+            ),
+            (
+                "Dated issuer release with named commitment, counterparty, "
+                "period, amount or KPI where disclosed, and source URL."
+            ),
+            "Medium",
+            "Free / variable latency",
+            (
+                "Confirms or disproves the operating mechanism and identifies "
+                "off-balance-sheet exposure without treating news as a filing."
+            ),
+        ))
+    if any(
+        event.category in {
+            "guidance", "management_credibility", "strategic_priority_change",
+            "capital_allocation_change",
+        }
+        for event in events
+    ):
+        requests.extend([
+            _request(
+                identity.ticker,
+                "issuer_management_remarks",
+                "Compare issuer-hosted management remarks",
+                "Management intent may be clearer in prepared remarks or public conference materials.",
+                "Named speaker, date, exact excerpt, commitment, affected driver, and comparison with prior remarks.",
+                "Medium",
+                "Free / variable latency",
+                "Tests whether management language changed and whether the commitment is measurable.",
+            ),
+            _request(
+                identity.ticker,
+                "management_press_interview",
+                "Check identifiable management interviews",
+                "A named public interview can clarify intent but remains Tier 3 context until corroborated.",
+                "Publisher, interview date, named executive, exact permitted excerpt, and primary-source follow-up need.",
+                "Low",
+                "Licensed/manual depending on publisher",
+                "Adds management context while preserving the distinction between reported remarks and primary facts.",
+            ),
+        ])
     return _dedupe_requests(requests)
 
 

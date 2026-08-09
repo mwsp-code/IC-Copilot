@@ -13,6 +13,7 @@ from .credit_lens import build_credit_lens
 from .coverage_expansion import build_coverage_expansion_diagnostics
 from .evidence_work_order import build_evidence_work_order
 from .evidence_closure import execute_evidence_work_order
+from .freshness import build_research_freshness
 from .global_coverage import (
     build_canonical_metric_ontology,
     build_metric_resolution_audit,
@@ -20,10 +21,28 @@ from .global_coverage import (
     source_coverage_matrix_for,
 )
 from .historical_references import build_historical_references
+from .historical_analogs import (
+    apply_hybrid_analog_results,
+    build_historical_analog_intelligence,
+    frozen_demo_episode_dossiers,
+)
+from .hybrid_research import (
+    frozen_fixture_hybrid_run,
+    load_frozen_hybrid_run,
+)
+from .dual_model_benchmark import build_dual_model_research_run
 from .ic_one_pager import build_ic_one_pager
 from .manual_data import scan_manual_data_sources
 from .market_capture_workflow import build_market_capture_readiness
 from .market_implied import build_market_implied_expectations
+from .decision_intelligence import (
+    build_catalyst_clock,
+    build_decision_delta,
+    build_decision_snapshot,
+    build_ic_implied_expectations_snapshot,
+    build_prioritized_research_queue,
+)
+from .news_research import build_news_intelligence_report
 from .metric_intelligence import build_metric_change_assessments
 from .memo import build_dd_memo
 from .models import (
@@ -36,6 +55,7 @@ from .models import (
     EarningsSurprise,
     EstimatePoint,
     EntityResolution,
+    EvidenceGraph,
     EvidenceItem,
     ExternalEvidence,
     ExpectationsBridge,
@@ -58,6 +78,9 @@ from .models import (
     PeerMetricReadthroughSummary,
     ProviderStatus,
     RecommendationConsensus,
+    ResearchAiExecutionPlan,
+    ResearchSetupPreview,
+    RecentMarketContext,
     RevisionWindow,
     TargetConsensus,
     TranscriptTurn,
@@ -77,6 +100,7 @@ from .pipeline import ResearchResult
 from .providers import ConsensusAdapter, PriceReaction
 from .research_store import ResearchStore
 from .research_questions import build_research_questions
+from .research_qa import build_independent_research_qa_run
 from .research_profiles import (
     build_historical_research_pack,
     event_identifier,
@@ -113,11 +137,11 @@ class _DemoConsensus(ConsensusAdapter):
         return None
 
 
-class _DemoLlmProvider:
-    """No-network provider that exercises the current citation guardrails."""
+class _DeterministicDemoThesisProvider:
+    """No-network deterministic renderer that exercises citation guardrails."""
 
-    provider_name = "sanitized_demo_llm"
-    model = "deepseek-pro-compatible-fixture"
+    provider_name = "deterministic_frozen_demo"
+    model = "no_live_model"
     timeout_seconds = 0
 
     def complete_json(self, prompt_pack: dict) -> dict:
@@ -291,11 +315,11 @@ class _DemoLlmProvider:
         }
 
 
-class _DemoSecondaryProvider:
-    """No-network skeptical reader; it critiques but cannot change deterministic gates."""
+class _DeterministicDemoCritic:
+    """No-network deterministic critic that cannot change evidence gates."""
 
-    provider_name = "sanitized_demo_secondary_reader"
-    model = "independent-critic-fixture"
+    provider_name = "deterministic_frozen_demo"
+    model = "no_live_model"
     timeout_seconds = 0
 
     def complete_json(self, review_pack: dict) -> dict:
@@ -1395,6 +1419,21 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         reaction_pct=round((latest_price / start_price - 1.0) * 100.0, 2),
         source=str(profile.get("price_source") or "Demo price series"),
     )
+    recent_market_context = RecentMarketContext(
+        ticker=ticker,
+        status="Frozen demo",
+        source=price.source,
+        summary=(
+            f"Frozen demo market observation through {demo_as_of}; "
+            "refresh live research before making a current decision."
+        ),
+        price_as_of=demo_as_of,
+        current_price=price.latest_price,
+        adjusted=False,
+        data_gaps=[
+            "Trailing volatility, drawdown, and volume diagnostics require a live market-data refresh."
+        ],
+    )
     target_value, target_median, target_high, target_low, analyst_count = profile["targets"]
     target_kind = str(profile.get("target_kind") or "mean")
     target_mean = target_value if target_kind == "mean" else None
@@ -1863,14 +1902,14 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
     )
     event_workflow = build_event_workflow(ticker, filings, ideas, source_plan, consensus)
     llm_research_manifest = LlmResearchAgentManifest(
-        provider="sanitized_demo_llm",
-        model="deepseek-pro-compatible-fixture",
+        provider="deterministic_frozen_demo",
+        model="no_live_model",
         prompt_version="global-peer-research-agent-v1",
         generated_at=manifest.generated_at,
-        status="Available (sanitized fixture)",
+        status="Deterministic frozen fixture; no live model",
         messages=[
-            "The frozen demo exercises registered-source planning, document triage, trend synthesis, and citation guardrails.",
-            "No live LLM request or API key is used when loading the demo.",
+            "The deterministic fallback exercises registered-source planning, document triage, trend synthesis, and citation guardrails.",
+            "It does not claim DeepSeek or GPT-5.6 Sol authorship. Actual model provenance is loaded only from a validated frozen hybrid artifact.",
         ],
         redacted_config={"llm_used": "fixture", "api_key": "[not required]", "network_call": "false"},
         allowed_roles=[
@@ -1930,6 +1969,142 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         "Sanitized Wisburg external-research lens",
         "Deep Initiation 20-quarter / 5-annual / 20-call history",
     ])
+    news_intelligence = build_news_intelligence_report(
+        identity,
+        events,
+        external_evidence,
+        fetch_json=lambda *_args, **_kwargs: {},
+        max_articles=12,
+    )
+    historical_analogs = build_historical_analog_intelligence(
+        identity,
+        ideas,
+        metrics,
+        company_economics,
+        external_evidence,
+        news_intelligence,
+        research_profile=selected_profile,
+        historical_research=historical_research,
+        frozen_dossiers=frozen_demo_episode_dossiers(identity),
+        frozen_fixture=True,
+    )
+    published_hybrid_research = load_frozen_hybrid_run(ticker)
+    hybrid_research = published_hybrid_research or frozen_fixture_hybrid_run(
+        ticker,
+        evidence_hash=manifest.run_id,
+        summary=(
+            historical_analogs.dossiers[0].lessons[0]
+            if historical_analogs.dossiers
+            and historical_analogs.dossiers[0].lessons
+            else "Frozen demo research was validated against its sanitized evidence pack."
+        ),
+        generated_at=(
+            f"{demo_case.refreshed_at}T00:00:00+00:00"
+            if demo_case and demo_case.refreshed_at
+            else f"{filed}T00:00:00+00:00"
+        ),
+    )
+    historical_analogs = apply_hybrid_analog_results(
+        historical_analogs, hybrid_research
+    )
+    admitted_demo_ids = [
+        item.source_id for item in hybrid_research.normalized_sources
+        if item.validation_status == "validated"
+    ]
+    demo_evidence_graph = EvidenceGraph(
+        ticker=ticker,
+        graph_version="evidence-graph-v1",
+        evidence_hash=hybrid_research.evidence_hash,
+        source_policy_fingerprint=(
+            hybrid_research.source_registry_version
+            or "sanitized-demo-source-policy"
+        ),
+        admitted_evidence_ids=admitted_demo_ids,
+        generated_at=hybrid_research.generated_at,
+    )
+    demo_ai_plan = ResearchAiExecutionPlan(
+        status="completed" if hybrid_research.status == "completed" else "partial",
+        expected_model_calls=len(hybrid_research.rounds),
+        expected_retrieval_passes=1,
+        expected_gap_loops=max(0, len(hybrid_research.rounds) - 3),
+    )
+    demo_setup_preview = ResearchSetupPreview(
+        depth="deep_initiation",
+        data_status="Frozen sanitized evidence",
+        source_count=len(admitted_demo_ids),
+        macro_status="Frozen fixture",
+        primary_ai_status="Completed frozen primary research",
+        independent_qa_status=(
+            "Completed frozen Independent Research QA"
+            if hybrid_research.status == "completed"
+            else "Independent Research QA incomplete"
+        ),
+        expected_execution="Offline frozen demo",
+    )
+    independent_research_qa = (
+        build_independent_research_qa_run(
+            hybrid_research,
+            evidence_graph=demo_evidence_graph,
+            execution_plan=demo_ai_plan,
+            setup_preview=demo_setup_preview,
+        )
+        if published_hybrid_research is not None
+        else None
+    )
+    dual_model_research = build_dual_model_research_run(
+        hybrid_research,
+        {
+            "research_profile": selected_profile.profile_id,
+            "evidence_catalog": [],
+        },
+    )
+    if historical_analogs.investigation_status and dual_model_research:
+        historical_analogs.investigation_status.code = (
+            "frozen_validated_model_run"
+            if dual_model_research.provenance_class
+            == "validated_live_model_run"
+            else "frozen_fixture"
+        )
+        historical_analogs.investigation_status.reason = (
+            dual_model_research.provenance_message
+        )
+    ic_implied_snapshot = build_ic_implied_expectations_snapshot(
+        market_implied_expectations,
+        company_model,
+        valuation,
+    )
+    decision_snapshot = build_decision_snapshot(
+        ticker,
+        ideas,
+        ic_implied_snapshot,
+        evidence_work_order,
+        manifest.run_id,
+        generated_at=manifest.generated_at,
+        completed_at=manifest.generated_at,
+        result_type="frozen_demo",
+        research_profile=selected_profile.profile_id,
+        market_data_cutoff=(
+            recent_market_context.price_as_of
+            if recent_market_context else ""
+        ),
+    )
+    decision_delta = build_decision_delta(decision_snapshot, None)
+    catalyst_clock = build_catalyst_clock(ticker, event_workflow, ideas)
+    prioritized_research_queue = build_prioritized_research_queue(
+        evidence_work_order,
+        ticker=ticker,
+        research_requests=(
+            independent_research_qa.research_requests
+            if independent_research_qa else ()
+        ),
+        research_questions=research_questions,
+        qa_findings=(
+            independent_research_qa.audit_findings
+            if independent_research_qa else ()
+        ),
+        events=events,
+        limit=20,
+    )
     thesis_synthesis = synthesize_ic_thesis(
         identity,
         ideas,
@@ -1942,9 +2117,11 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         external_evidence,
         calibration,
         historical_references=historical_references,
+        historical_analogs=historical_analogs,
+        news_intelligence=news_intelligence,
         thesis_validation=thesis_validation,
-        provider=_DemoLlmProvider(),
-        secondary_provider=_DemoSecondaryProvider(),
+        provider=_DeterministicDemoThesisProvider(),
+        secondary_provider=_DeterministicDemoCritic(),
         enable_secondary=True,
         budget_policy=budget_policy,
         manual_data_status=manual_data_status,
@@ -1958,6 +2135,8 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         llm_extraction_manifest=llm_extraction_manifest,
         wisburg_lens=wisburg_lens,
         evidence_work_order=evidence_work_order,
+        hybrid_research=hybrid_research,
+        dual_model_research=dual_model_research,
     )
     ic_one_pager = build_ic_one_pager(
         identity,
@@ -2035,6 +2214,19 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         market_implied_expectations=market_implied_expectations,
         company_model=company_model,
         research_modes=research_modes,
+        hybrid_research=hybrid_research,
+        dual_model_research=dual_model_research,
+    )
+    research_freshness = build_research_freshness(
+        run_manifest=manifest,
+        filings=filings,
+        recent_market_context=recent_market_context,
+        consensus=consensus,
+        news_intelligence=news_intelligence,
+        external_evidence=external_evidence,
+        llm_run_manifest=thesis_synthesis.llm_manifest,
+        dual_model_research=dual_model_research,
+        demo_case=demo_case,
     )
     return ResearchResult(
         identity=identity,
@@ -2087,6 +2279,8 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         llm_comparison=thesis_synthesis.llm_comparison,
         language_audit=thesis_synthesis.language_audit,
         historical_references=historical_references,
+        historical_analogs=historical_analogs,
+        news_intelligence=news_intelligence,
         thesis_validation=thesis_validation,
         conviction_audit=conviction_audit,
         budget_policy=budget_policy,
@@ -2128,6 +2322,15 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         historical_research=historical_research,
         metric_assessments=metric_assessments,
         playbook_portfolio=playbook_portfolio,
+        ic_implied_snapshot=ic_implied_snapshot,
+        decision_delta=decision_delta,
+        catalyst_clock=catalyst_clock,
+        prioritized_research_queue=prioritized_research_queue,
+        hybrid_research=hybrid_research,
+        dual_model_research=dual_model_research,
+        evidence_graph=demo_evidence_graph,
+        independent_research_qa=independent_research_qa,
+        research_freshness=research_freshness,
         **build_story_presentation(
             identity=identity,
             ideas=ideas,
@@ -2146,5 +2349,8 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
             financial_coverage=demo_coverage,
             demo_case=demo_case,
             market_implied=market_implied_expectations,
+            recent_market_context=recent_market_context,
+            decision_delta=decision_delta,
+            catalyst_clock=catalyst_clock,
         ),
     )

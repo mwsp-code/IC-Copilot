@@ -1,5 +1,8 @@
 .cache/
 data/*
+!data/demo_hybrid/
+!data/demo_hybrid/README.md
+!data/demo_hybrid/*.json
 !data/adr_profiles.csv
 !data/geography_exposure_playbooks.csv
 !data/industry_playbooks.csv
@@ -7,6 +10,7 @@ data/*
 !data/peer_universes.csv
 !data/sector_kpi_playbooks.csv
 !data/source_requirements.csv
+!data/quality_benchmark_cases.csv
 __pycache__/
 *.py[cod]
 .pytest_cache/

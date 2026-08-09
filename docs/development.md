@@ -24,7 +24,11 @@ configure credentials at runtime through environment variables or the local OS k
 
 ## Architecture boundaries
 
-- `app.py`: Streamlit composition and presentation.
+- `app.py`: thin compatibility entrypoint and composition root.
+- `equity_research/presentation`: Streamlit routes, typed view models, and render-only intents.
+- `equity_research/application`: lifecycle, Research Request, investigation, repair, and publication use cases.
+- `equity_research/domain`: pure evidence, audit, lifecycle, publication, and coverage contracts.
+- `equity_research/infrastructure`: SQLite repositories and registered provider/connector adapters.
 - `server.py`: lightweight local HTTP interface.
 - `equity_research/pipeline.py`: deterministic research orchestration.
 - `equity_research/models.py`: normalized contracts shared by providers and UI.
@@ -35,6 +39,21 @@ configure credentials at runtime through environment variables or the local OS k
 
 New research logic belongs in a focused `equity_research` module with fixture tests. Keep `app.py`
 and `server.py` as renderers; do not put source parsing or promotion decisions in UI callbacks.
+
+## Adding a publication gate
+
+A contributor adding a publication gate must provide:
+
+1. A controlled `PublicationFailureCode` and readable blocking rule.
+2. A repair kind and strategy registered outside provider-specific orchestration.
+3. Explicit completion criteria and idempotency inputs.
+4. Durable manifest/run events and dependency invalidation inputs.
+5. A presentation adapter that exposes no raw IDs in routine UI.
+6. Sanitized offline fixtures for pass, repair, unavailable, and policy-upgrade behavior.
+
+Do not lower a demo threshold or edit frozen JSON to make a result pass. Run
+`python scripts/generate_hybrid_demo.py --ticker AAPL --latest-eligible`; a
+failed candidate writes a repair report and preserves the published artifact.
 
 ## Verification
 

@@ -120,6 +120,67 @@ class StooqPriceClient:
         self._ticker_lock_guard = Lock()
         self._ticker_locks: dict[str, Lock] = {}
 
+    def historical_daily_rows(
+        self,
+        ticker: str,
+        *,
+        start: str = "",
+        end: str = "",
+    ) -> dict:
+        """Return normalized daily bars and provenance for audited research.
+
+        This public boundary prevents historical research from depending on
+        private provider internals. It returns only normalized observations,
+        never raw vendor payloads.
+        """
+        normalized = ticker.upper()
+        was_cached = normalized in self._rows_cache
+        rows = list(self._cached_daily_rows(normalized))
+        source = self._price_source(normalized)
+        if not rows:
+            failure = self._price_failure(normalized)
+            return {
+                "ticker": normalized,
+                "status": failure.status,
+                "provider": failure.provider,
+                "official": failure.official,
+                "adjusted": failure.adjusted,
+                "source_url": failure.source_url,
+                "retrieval_status": "failed",
+                "message": failure.message,
+                "rows": [],
+            }
+        selected = []
+        for row in rows:
+            row_date = row.get("date")
+            iso_date = (
+                row_date.isoformat()
+                if hasattr(row_date, "isoformat") else str(row_date or "")
+            )
+            if start and iso_date < start[:10]:
+                continue
+            if end and iso_date > end[:10]:
+                continue
+            selected.append({
+                "date": iso_date,
+                "close": row.get("close"),
+                "volume": row.get("volume"),
+            })
+        return {
+            "ticker": normalized,
+            "status": "available" if selected else "no_data",
+            "provider": source.provider,
+            "official": source.official,
+            "adjusted": source.adjusted,
+            "source_url": source.source_url,
+            "retrieval_status": (
+                "cached_document"
+                if was_cached else "fetched_live"
+            ),
+            "message": source.message,
+            "rows": selected,
+        }
+
     def event_window_reaction(
         self,
         ticker: str,
@@ -388,6 +449,56 @@ class StooqPriceClient:
 
     def _fetch_daily_rows(self, ticker: str) -> list[dict]:
         return self._fetch_daily_rows_result(ticker).rows
+
+    def historical_rows_result(
+        self,
+        ticker: str,
+        start_date: date,
+        end_date: date,
+    ) -> _DailyRowsResult:
+        """Return a provider result only when it covers the requested episode."""
+        key = ticker.upper()
+        current_rows = self._cached_daily_rows(key)
+        current_source = self._price_source(key)
+        if _rows_cover_period(current_rows, start_date, end_date):
+            return current_source
+
+        attempts: list[_DailyRowsResult] = []
+        fetchers = (
+            self._fetch_stooq_rows,
+            self._fetch_alpha_vantage_rows,
+            lambda symbol: self._fetch_tiingo_rows(
+                symbol,
+                start_date=start_date,
+                end_date=end_date,
+            ),
+            self._fetch_csv_rows,
+            self._fetch_yahoo_rows,
+        )
+        for fetcher in fetchers:
+            result = fetcher(key)
+            attempts.append(result)
+            self._record_price_status(key, result)
+            if _rows_cover_period(result.rows, start_date, end_date):
+                return result
+        available = next(
+            (item for item in attempts if item.rows),
+            current_source if current_rows else None,
+        )
+        if available is not None:
+            return _DailyRowsResult(
+                available.provider,
+                "insufficient_history",
+                (
+                    f"{available.provider} returned prices, but not enough "
+                    f"history to cover {start_date} through {end_date}."
+                ),
+                [],
+                official=available.official,
+                adjusted=available.adjusted,
+                source_url=available.source_url,
+            )
+        return self._collapsed_failure(key, attempts)
 
     def _fetch_daily_rows_result(self, ticker: str, bypass_cache: bool = False) -> _DailyRowsResult:
         key = ticker.upper()
@@ -692,13 +803,19 @@ class StooqPriceClient:
             return _DailyRowsResult("Alpha Vantage daily prices", "no_data", "Alpha Vantage returned no daily price rows.", [], source_url=url)
         return _DailyRowsResult("Alpha Vantage daily prices", "available", "Alpha Vantage adjusted daily prices available.", rows, official=True, adjusted=True, source_url=url)
 
-    def _fetch_tiingo_rows(self, ticker: str) -> _DailyRowsResult:
+    def _fetch_tiingo_rows(
+        self,
+        ticker: str,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> _DailyRowsResult:
         if not self.tiingo_key:
             return _DailyRowsResult("Tiingo EOD prices", "disabled", "No Tiingo key configured.", [])
         symbol = _tiingo_symbol(ticker)
         public_url = f"https://api.tiingo.com/tiingo/daily/{symbol}/prices"
-        end_date = datetime.now(timezone.utc).date()
-        start_date = end_date - timedelta(days=5 * 366)
+        end_date = end_date or datetime.now(timezone.utc).date()
+        start_date = start_date or end_date - timedelta(days=5 * 366)
         query = urlencode({
             "token": self.tiingo_key,
             "startDate": start_date.isoformat(),
@@ -2341,6 +2458,24 @@ def _rows_cover_event(rows: list[dict], event_day: date) -> bool:
     if len(rows) < 2:
         return False
     return rows[0]["date"] < event_day <= rows[-1]["date"] + timedelta(days=7)
+
+
+def _rows_cover_period(
+    rows: list[dict],
+    start_date: date,
+    end_date: date,
+) -> bool:
+    bounded = [
+        row for row in rows
+        if start_date <= row.get("date", date.min) <= end_date
+        and row.get("close") not in {None, 0}
+    ]
+    if len(bounded) < 2:
+        return False
+    return (
+        bounded[0]["date"] <= start_date + timedelta(days=45)
+        and bounded[-1]["date"] >= end_date - timedelta(days=45)
+    )
 
 
 def _looks_like_html_challenge(text: str) -> bool:

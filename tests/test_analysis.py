@@ -45,6 +45,7 @@ class AnalysisTests(unittest.TestCase):
                                 },
                                 {
                                     "val": 125,
+                                    "start": "2025-01-01",
                                     "end": "2025-12-31",
                                     "filed": "2026-02-01",
                                     "form": "10-K",
@@ -62,6 +63,8 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(revenue.value, 125)
         self.assertEqual(revenue.previous_value, 100)
         self.assertAlmostEqual(revenue.yoy_change_pct or 0, 25)
+        self.assertEqual(revenue.period_start, "2025-01-01")
+        self.assertEqual(revenue.duration_days, 364)
 
     def test_build_financial_metrics_supports_ifrs_20f(self) -> None:
         facts = {

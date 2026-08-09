@@ -1,0 +1,35 @@
+name: Evidence integrity issue
+description: Report an admission, quarantine, provenance, no-lookahead, audit, or closure violation.
+title: "[Integrity]: "
+labels: [evidence-integrity]
+body:
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Affected boundary
+      options: [Candidate quarantine, Registered retrieval, Evidence admission, Frozen audit, Primary response, Closure, Cache isolation, Manifest/provenance]
+    validations:
+      required: true
+  - type: textarea
+    id: invariant
+    attributes:
+      label: Expected invariant and observed violation
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Sanitized reproduction or fixture
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Claims, scores, conclusions, or manifests affected
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data safety
+      options:
+        - label: Reproduction contains no credentials or licensed full text.
+          required: true

@@ -273,7 +273,11 @@ def _counter_thesis_step(idea: TradeIdea) -> ThesisAuditStep:
             [],
             ["Document the strongest source-backed counter-thesis before treating the idea as Research-Ready."],
         )
-    if "no material counter-evidence identified" in lower or "none found" in lower:
+    if (
+        "no material counter-evidence identified" in lower
+        or "none found" in lower
+        or lower.startswith("counter-thesis not established")
+    ):
         return ThesisAuditStep(
             "Counter-thesis",
             "Weak",

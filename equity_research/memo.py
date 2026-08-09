@@ -33,6 +33,9 @@ from .models import (
     ICOnePager,
     EvidenceSufficiency,
     LLMRunManifest,
+    HybridResearchRun,
+    DualModelResearchRun,
+    IndependentResearchQaRun,
     LanguageAudit,
     LlmComparison,
     LlmReviewResult,
@@ -119,6 +122,9 @@ def build_dd_memo(
     market_implied_expectations: MarketImpliedExpectations | None = None,
     company_model: CompanyModelWorkspace | None = None,
     research_modes: ResearchModeSuite | None = None,
+    hybrid_research: HybridResearchRun | None = None,
+    dual_model_research: DualModelResearchRun | None = None,
+    independent_research_qa: IndependentResearchQaRun | None = None,
     earnings_surprise_proxy: EarningsSurpriseProxy | None = None,
     recent_market_context: RecentMarketContext | None = None,
 ) -> str:
@@ -210,22 +216,154 @@ def build_dd_memo(
                     "  - Assistant allowed roles: "
                     + ", ".join(llm_research_manifest.allowed_roles[:5])
                 )
-            if llm_research_manifest.prohibited_actions:
-                lines.append(
-                    "  - Assistant prohibited actions: "
-                    + ", ".join(llm_research_manifest.prohibited_actions[:5])
-                )
-            if llm_research_manifest.validation_gates:
-                lines.append(
-                    "  - Assistant validation gates: "
-                    + ", ".join(llm_research_manifest.validation_gates[:5])
-                )
-            lines.append(f"  - Evidence boundary: {llm_research_manifest.evidence_boundary}")
-        if budget_policy:
+        if dual_model_research:
             lines.append(
-                f"- Budget mode: {budget_policy.mode}; target cost {budget_policy.cost_target}. "
-                f"{budget_policy.description}"
+                f"- Paired model research: {dual_model_research.status}; "
+                f"{dual_model_research.final_label}."
             )
+            if dual_model_research.benchmark:
+                lines.append(
+                    "  - Research quality: DeepSeek "
+                    f"{dual_model_research.benchmark.deepseek_score}/100; "
+                    "GPT-5.6 Sol "
+                    f"{dual_model_research.benchmark.sol_score}/100."
+                )
+                if (
+                    dual_model_research.benchmark.status
+                    == "input_not_qualified"
+                ):
+                    lines.append(
+                        "  - Benchmark interpretation: diagnostic only; "
+                        "the input pack has not passed qualification."
+                    )
+            if dual_model_research.input_sufficiency:
+                score = dual_model_research.input_sufficiency
+                lines.append(
+                    f"  - Input sufficiency: {score.total_score}/100; "
+                    f"{score.status}."
+                )
+            if dual_model_research.evidence_pack_audit:
+                audit = dual_model_research.evidence_pack_audit
+                lines.append(
+                    "  - Evidence pack: "
+                    f"{audit.core_count} core / "
+                    f"{audit.searchable_count} searchable; "
+                    f"{len(audit.exclusions)} auditable core exclusions."
+                )
+            if dual_model_research.usage_summary:
+                usage = dual_model_research.usage_summary
+                lines.append(
+                    "  - Usage: "
+                    f"{usage.model_calls} model calls, "
+                    f"{usage.total_tokens} tokens, "
+                    f"{usage.retrieval_calls} retrieval outcomes, "
+                    f"{usage.retries} retries. No fixed pilot cost cap."
+                )
+            if dual_model_research.adjudication:
+                lines.append(
+                    "  - Adjudication: "
+                    + dual_model_research.adjudication.rationale
+                )
+            for gap in dual_model_research.gap_diagnoses[:4]:
+                lines.append(
+                    f"  - Model gap ({gap.category}): {gap.summary}"
+                )
+        if hybrid_research:
+            if hybrid_research.retrieval_lifecycles:
+                lifecycle_counts: dict[str, int] = {}
+                for item in hybrid_research.retrieval_lifecycles:
+                    lifecycle_counts[item.status] = (
+                        lifecycle_counts.get(item.status, 0) + 1
+                    )
+                lines.append(
+                    "  - Auditable retrieval: "
+                    + ", ".join(
+                        f"{status} {count}"
+                        for status, count in sorted(
+                            lifecycle_counts.items()
+                        )
+                    )
+                    + ". Catalog matches are discovery, not live retrieval."
+                )
+                source_counts: dict[str, int] = {}
+                for item in hybrid_research.retrieval_lifecycles:
+                    source_type = item.source_type or "unknown"
+                    source_counts[source_type] = (
+                        source_counts.get(source_type, 0) + 1
+                    )
+                lines.append(
+                    "  - Retrieval source families: "
+                    + ", ".join(
+                        f"{source_type} {count}"
+                        for source_type, count in sorted(
+                            source_counts.items()
+                        )
+                    )
+                    + "."
+                )
+            if hybrid_research.claim_evidence_audits:
+                failed_claims = [
+                    item for item in hybrid_research.claim_evidence_audits
+                    if item.status == "failed"
+                ]
+                lines.append(
+                    "  - Claim-level evidence audit: "
+                    f"{len(hybrid_research.claim_evidence_audits) - len(failed_claims)} "
+                    f"passed; {len(failed_claims)} failed."
+                )
+                for item in failed_claims[:5]:
+                    lines.append(
+                        f"    - Rejected claim: {item.claim_text} "
+                        f"Blocker: {'; '.join(item.blockers)}"
+                    )
+            if hybrid_research.partial_rerun_manifest:
+                rerun = hybrid_research.partial_rerun_manifest
+                lines.append(
+                    "  - Partial rerun lineage: parent "
+                    f"{rerun.parent_run_id}; reused rounds "
+                    f"{rerun.reused_round_numbers}; reran "
+                    f"{rerun.rerun_round_numbers}; status {rerun.status}."
+                )
+        if llm_research_manifest and llm_research_manifest.prohibited_actions:
+            lines.append(
+                "  - Assistant prohibited actions: "
+                + ", ".join(llm_research_manifest.prohibited_actions[:5])
+            )
+        if llm_research_manifest and llm_research_manifest.validation_gates:
+            lines.append(
+                "  - Assistant validation gates: "
+                + ", ".join(llm_research_manifest.validation_gates[:5])
+            )
+        if llm_research_manifest:
+            lines.append(f"  - Evidence boundary: {llm_research_manifest.evidence_boundary}")
+        if independent_research_qa:
+            qa = independent_research_qa.qa_report
+            lines.append(
+                "- Independent Research QA: "
+                f"{independent_research_qa.status}; one shared evidence graph; "
+                f"evidence hash {independent_research_qa.evidence_hash[:12] or 'unavailable'}."
+            )
+            if qa:
+                lines.append(
+                    f"  - QA score: {qa.score.total_score}/100 ({qa.status}); "
+                    f"{qa.evidence_gaps_closed} evidence gaps closed, "
+                    f"{qa.evidence_gaps_unresolved} unresolved."
+                )
+                lines.append(f"  - QA conclusion: {qa.summary}")
+                for item in qa.score.dimensions:
+                    if item.score < 80:
+                        lines.append(
+                            f"    - {item.name}: {item.score}/100. {item.explanation}"
+                        )
+            for revision in independent_research_qa.conclusion_revisions[:5]:
+                lines.append(
+                    f"  - Conclusion revision ({revision.conclusion_area}, "
+                    f"{revision.materiality}): {revision.after} Reason: {revision.reason}"
+                )
+            for risk in independent_research_qa.unresolved_risks[:5]:
+                lines.append(
+                    f"  - Unresolved research risk ({risk.severity}): {risk.summary}"
+                )
         if company_economics:
             lines.append(
                 f"- Company economics: {company_economics.status}; "
@@ -245,6 +383,23 @@ def build_dd_memo(
             )
             for difference in llm_comparison.key_differences[:3]:
                 lines.append(f"  - Model difference: {difference}")
+        if hybrid_research:
+            lines.append(
+                f"- Shared-evidence research workflow: {hybrid_research.status}; "
+                f"{hybrid_research.execution_backend.label}; deterministic "
+                f"validation {hybrid_research.deterministic_validation_status}."
+            )
+            for research_round in hybrid_research.rounds:
+                lines.append(
+                    f"  - Round {research_round.round_number} "
+                    f"{research_round.role}: {research_round.status}; "
+                    f"{research_round.provider}/{research_round.model}."
+                )
+            if hybrid_research.final_artifact:
+                lines.append(
+                    "  - Audited result: "
+                    + hybrid_research.final_artifact.summary
+                )
         if language_audit:
             lines.append(
                 f"- Language audit: policy {language_audit.policy}; sources "

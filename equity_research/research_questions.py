@@ -48,7 +48,7 @@ def build_research_questions(
         questions.append(
             ResearchQuestion(
                 question_id=_question_id(cluster.cluster_id, top.idea_id),
-                title=_question_title(cluster, top, driver),
+                title=_question_title(cluster, top, driver, economics.ticker),
                 priority=_priority(top, cluster, missing_links, market_needs),
                 status=_status(cluster, top),
                 driver_name=driver,
@@ -466,11 +466,37 @@ def _priority(
     return "Low"
 
 
-def _question_title(cluster: ThesisCluster, top: TradeIdea, driver: str) -> str:
+def _question_title(
+    cluster: ThesisCluster,
+    top: TradeIdea,
+    driver: str,
+    ticker: str,
+) -> str:
     if cluster.driver_name == "Unmapped":
-        return f"What source evidence would map this {top.signal_family or 'signal'} to a real business driver?"
-    direction = top.direction if top.direction not in {"Watch", ""} else "investment"
-    return f"Can {driver} support a {direction} thesis?"
+        return (
+            f"For {ticker}, what filing context maps this "
+            f"{top.signal_family or 'signal'} to a specific operating, accounting, or disclosure mechanism?"
+        )
+    lowered = driver.casefold()
+    if any(token in lowered for token in ("cash", "liquidity", "free cash flow")):
+        return (
+            f"For {ticker}, is the reported {driver} change recurring after working capital, "
+            "capex, financing, taxes, and capital returns?"
+        )
+    if any(token in lowered for token in ("gross", "margin", "mix")):
+        return (
+            f"For {ticker}, which pricing, volume, mix, or cost mechanisms explain {driver}, "
+            "and what evidence shows they are durable?"
+        )
+    if any(token in lowered for token in ("risk", "disclosure", "regulation", "legal")):
+        return (
+            f"For {ticker}, what changed in the disclosure, what exposure does it identify, "
+            "and which official evidence would confirm materiality?"
+        )
+    return (
+        f"For {ticker}, what operating mechanism connects {driver} to revenue, margins, cash flow, "
+        "or valuation, and what would disprove it?"
+    )
 
 
 def _source_signal(top: TradeIdea) -> str:

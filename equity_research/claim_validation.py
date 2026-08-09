@@ -132,7 +132,13 @@ def _deterministic_claim(identity: CompanyIdentity, event: ChangeEvent) -> Valid
         claim_type=event.category,
         direction=direction,
         metric=metric,
-        period=str(event.metrics.get("guidance_period") or disclosure.get("current_period") or event.metrics.get("period_end") or "") or None,
+        period=str(
+            event.metrics.get("guidance_period")
+            or disclosure.get("current_period")
+            or event.metrics.get("period_end")
+            or event.metrics.get("current_period")
+            or ""
+        ) or None,
         business_driver=driver,
         changed_text=changed_text,
         prior_text=prior_excerpt or str(event.metrics.get("prior_text") or event.metrics.get("previous_excerpt") or ""),

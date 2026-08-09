@@ -29,6 +29,14 @@ PRESETS: dict[str, LlmProviderPreset] = {
         "gpt-4.1-mini",
         "https://api.openai.com/v1",
     ),
+    "openai_sol": LlmProviderPreset(
+        "openai_sol",
+        "OpenAI GPT-5.6 Sol",
+        "openai_responses",
+        "gpt-5.6-sol",
+        "https://api.openai.com/v1",
+        notes="Responses API preset for five-round Deep Initiation research.",
+    ),
     "anthropic": LlmProviderPreset(
         "anthropic",
         "Anthropic",
@@ -75,6 +83,68 @@ PRESETS: dict[str, LlmProviderPreset] = {
 
 def list_llm_presets() -> list[LlmProviderPreset]:
     return list(PRESETS.values())
+
+
+def profile_supports_role(
+    profile: LlmProviderProfile | None,
+    role: str,
+) -> bool:
+    if profile is None:
+        return False
+    eligibility = {
+        item.strip().lower()
+        for item in re.split(r"[,\s]+", profile.role_eligibility or "")
+        if item.strip()
+    }
+    if not eligibility or "primary_secondary" in eligibility or "all" in eligibility:
+        return True
+    aliases = {
+        "planner": {"planner", "primary"},
+        "investigator": {"investigator", "primary"},
+        "checker": {"checker", "secondary"},
+        "critic": {"critic", "secondary"},
+    }
+    return bool(eligibility & aliases.get(role.lower(), {role.lower()}))
+
+
+def llm_profile_model_identity(
+    profile: LlmProviderProfile | None,
+) -> tuple[str, str, str]:
+    """Return the provider endpoint/model identity used for QA independence."""
+    if profile is None:
+        return "", "", ""
+    return (
+        str(profile.provider_preset or "").casefold().strip(),
+        str(profile.base_url or "").casefold().strip().rstrip("/"),
+        str(profile.model or "").casefold().strip(),
+    )
+
+
+def profiles_are_genuinely_distinct(
+    primary: LlmProviderProfile | None,
+    secondary: LlmProviderProfile | None,
+) -> bool:
+    """Different saved rows alone do not make a review independent."""
+    if primary is None or secondary is None:
+        return False
+    return llm_profile_model_identity(primary) != llm_profile_model_identity(
+        secondary
+    )
+
+
+def profile_api_key(
+    profile: LlmProviderProfile | None,
+    manager: LocalSecretsManager | None,
+    *,
+    session_key: str = "",
+) -> str:
+    if session_key:
+        return session_key
+    if profile and manager is not None:
+        key = manager.get(profile.secret_ref) or ""
+        if key:
+            return key
+    return _env_key_for_preset(profile.provider_preset if profile else "")
 
 
 def get_llm_preset(preset_id: str | None) -> LlmProviderPreset:
@@ -268,7 +338,7 @@ def _env_key_for_preset(preset_id: str) -> str:
         return config.KIMI_API_KEY
     if preset_id == "deepseek":
         return config.DEEPSEEK_API_KEY
-    if preset_id == "openai":
+    if preset_id in {"openai", "openai_sol"}:
         return config.OPENAI_API_KEY
     return config.OPENAI_API_KEY
 

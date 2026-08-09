@@ -20,6 +20,7 @@ from .models import (
     PlaybookQualityCheck,
 )
 from .driver_templates import TEMPLATES
+from .domain.mapping_escalation import resolve_observation_mapping
 from .valuation import classify_template
 
 
@@ -242,9 +243,40 @@ def build_company_economics(
 
 def attach_economic_context(events: list[ChangeEvent], economics: CompanyEconomics) -> None:
     for event in events:
+        mapping = resolve_observation_mapping(
+            ticker=economics.ticker,
+            metric_name=str(event.metrics.get("metric_name") or ""),
+            category=event.category,
+            title=event.title,
+            metrics=event.metrics,
+            automation_exhausted=bool(
+                event.metrics.get("mapping_automation_exhausted")
+            ),
+        )
+        event.metrics["mapping_escalation_status"] = mapping.status
+        event.metrics["mapping_escalation_label"] = mapping.label
+        event.metrics["mapping_regression"] = mapping.mapping_regression
+        event.metrics["mapping_escalation_steps"] = [
+            step.step for step in mapping.steps
+        ]
+        if mapping.observation_kind == "narrative_disclosure":
+            event.metrics["economic_driver"] = mapping.label
+            event.metrics["driver_family"] = "disclosure"
+            event.metrics["driver_materiality"] = "Medium"
+            event.metrics["disclosure_classification"] = "narrative_research_lead"
+            event.metrics["industry_playbook"] = economics.industry_playbook.industry_label
+            if not event.why_this_matters:
+                event.why_this_matters = (
+                    "The narrative disclosure is a research lead. Compare the same section "
+                    "across periods and corroborate the implied exposure before interpreting direction."
+                )
+            continue
         driver = _driver_for_event(event, economics)
         if not driver:
             event.metrics["economic_driver"] = "Unmapped"
+            event.metrics["metric_mapping_error"] = (
+                mapping.observation_kind == "numeric_observation"
+            )
             event.metrics["driver_materiality"] = "Low"
             event.metrics["industry_playbook"] = economics.industry_playbook.industry_label
             if not event.why_this_matters:

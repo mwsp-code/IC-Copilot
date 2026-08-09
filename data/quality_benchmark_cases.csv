@@ -1,0 +1,13 @@
+ticker,cohort,research_focus,sector,security_type,geography,language,required_evidence
+AAPL,development,Capital intensity and FCF conversion,Technology,Common stock,United States,English,capex|operating cash flow|purchase obligations|capital returns|segment mix|valuation
+NVDA,development,Acquisitions goodwill and capex,Semiconductors,Common stock,United States,English,acquisition disclosures|goodwill reconciliation|capex|inventory|gross margin|peer capacity
+BABA,development,ADR share normalization and segment economics,Internet commerce,ADR,China/Hong Kong,English|Simplified Chinese|Traditional Chinese,ADR ratio|ordinary shares|buybacks|segment revenue|segment margin|RMB USD
+JPM,development,NII credit costs and capital,Banks,Common stock,United States,English,NII|NIM|provisions|charge-offs|CET1|ROTCE|deposit beta
+XOM,development,Commodity cycle and reinvestment,Energy,Common stock,United States,English,production|realizations|capex|lifting cost|reserves|FCF|commodity prices
+NVO,development,Product demand capacity and regulation,Healthcare,ADR,Denmark/United States,English,product sales|prescriptions|capacity|regulatory actions|pipeline|pricing
+ORCL,validation,Cloud backlog and capacity conversion,Software,Common stock,United States,English,RPO|cloud revenue|capex|purchase obligations|FCF|debt
+TSLA,validation,Automotive volume margin and product cycle,Automotive,Common stock,United States,English,deliveries|ASP|gross margin|incentives|inventory|capex
+GS,validation,Trading banking and capital cycle,Capital markets,Common stock,United States,English,trading revenue|investment banking backlog|provisions|capital|ROTCE
+PLD,validation,Occupancy rent growth and rate sensitivity,REIT,REIT,United States,English,occupancy|rent growth|FFO|NAV|cap rate|debt maturity
+TSM,validation,Foundry utilization and semiconductor cycle,Semiconductors,ADR,Taiwan/United States,English|Traditional Chinese,wafer revenue|utilization|gross margin|capex|technology nodes|FX
+PBR,validation,Commodity pricing governance and leverage,Energy,ADR,Brazil/United States,English|Portuguese,production|realizations|refining margin|capex|dividends|governance

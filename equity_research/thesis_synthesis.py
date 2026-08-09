@@ -29,6 +29,10 @@ from .models import (
     ExpectationsBridge,
     ExternalEvidenceBundle,
     HistoricalReferenceSet,
+    HistoricalAnalogIntelligence,
+    HybridResearchRun,
+    DualModelResearchRun,
+    NewsIntelligenceReport,
     LLMRunManifest,
     LanguageAudit,
     LlmComparison,
@@ -51,6 +55,7 @@ from .models import (
     WisburgResearchLens,
 )
 from .wisburg_lens import lens_to_prompt_payload
+from .dual_model_benchmark import dual_model_prompt_payload
 
 
 PROMPT_VERSION = "ic-copilot-v1"
@@ -87,6 +92,9 @@ class OpenAICompatibleProvider:
         base_url: str = "",
         provider_name: str | None = None,
         timeout_seconds: int | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str = "",
+        thinking_enabled: bool = False,
         fetch_json=None,
     ) -> None:
         self.api_key = api_key
@@ -94,7 +102,12 @@ class OpenAICompatibleProvider:
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
         self.provider_name = provider_name or self.provider_name
         self.timeout_seconds = timeout_seconds or config.LLM_TIMEOUT_SECONDS
+        self.max_tokens = max_tokens
+        self.reasoning_effort = reasoning_effort
+        self.thinking_enabled = thinking_enabled
         self.fetch_json = fetch_json or _post_json
+        self.last_usage: dict[str, int] = {}
+        self.last_cost_usd: float | None = None
 
     def complete_json(self, prompt_pack: dict) -> dict:
         if not self.api_key and not self.base_url.startswith("http://localhost"):
@@ -116,10 +129,18 @@ class OpenAICompatibleProvider:
                 {"role": "user", "content": json.dumps(prompt_pack, ensure_ascii=True)},
             ],
         }
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
+        if self.thinking_enabled:
+            payload["thinking"] = {"type": "enabled"}
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         response = self.fetch_json(f"{self.base_url}/chat/completions", payload, headers, self.timeout_seconds)
+        self.last_usage = _normalized_provider_usage(response.get("usage"))
+        self.last_cost_usd = _provider_reported_cost(response)
         content = (((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         if not content:
             raise RuntimeError("LLM provider returned no message content.")
@@ -235,6 +256,8 @@ def synthesize_ic_thesis(
     secondary_min_stage: str = "Research-Ready",
     language_policy: str = "bilingual_audit",
     historical_references: HistoricalReferenceSet | None = None,
+    historical_analogs: HistoricalAnalogIntelligence | None = None,
+    news_intelligence: NewsIntelligenceReport | None = None,
     thesis_validation: ThesisValidationReport | None = None,
     budget_policy: BudgetPolicy | None = None,
     manual_data_status: BringYourOwnDataStatus | None = None,
@@ -249,11 +272,15 @@ def synthesize_ic_thesis(
     event_workflow: EventWorkflow | None = None,
     wisburg_lens: WisburgResearchLens | None = None,
     evidence_work_order: EvidenceWorkOrder | None = None,
+    hybrid_research: HybridResearchRun | None = None,
+    dual_model_research: DualModelResearchRun | None = None,
 ) -> ThesisSynthesisResult:
     prompt_pack = build_prompt_pack(
         identity, ideas, evidence, valuation, data_quality, management,
         expectations, management_sources, external_evidence, calibration,
         historical_references=historical_references,
+        historical_analogs=historical_analogs,
+        news_intelligence=news_intelligence,
         thesis_validation=thesis_validation,
         budget_policy=budget_policy,
         manual_data_status=manual_data_status,
@@ -268,6 +295,8 @@ def synthesize_ic_thesis(
         event_workflow=event_workflow,
         wisburg_lens=wisburg_lens,
         evidence_work_order=evidence_work_order,
+        hybrid_research=hybrid_research,
+        dual_model_research=dual_model_research,
         language_policy=language_policy,
     )
     deterministic = deterministic_thesis(
@@ -515,6 +544,8 @@ def build_prompt_pack(
     external_evidence: ExternalEvidenceBundle,
     calibration: CalibrationReport,
     historical_references: HistoricalReferenceSet | None = None,
+    historical_analogs: HistoricalAnalogIntelligence | None = None,
+    news_intelligence: NewsIntelligenceReport | None = None,
     thesis_validation: ThesisValidationReport | None = None,
     budget_policy: BudgetPolicy | None = None,
     manual_data_status: BringYourOwnDataStatus | None = None,
@@ -529,6 +560,8 @@ def build_prompt_pack(
     event_workflow: EventWorkflow | None = None,
     wisburg_lens: WisburgResearchLens | None = None,
     evidence_work_order: EvidenceWorkOrder | None = None,
+    hybrid_research: HybridResearchRun | None = None,
+    dual_model_research: DualModelResearchRun | None = None,
     language_policy: str = "bilingual_audit",
 ) -> dict:
     citations: dict[str, dict] = {}
@@ -617,6 +650,92 @@ def build_prompt_pack(
         for revision in wisburg_lens.revisions[:12]:
             if revision.citation:
                 citations[_citation_id(revision.citation)] = _citation_payload(revision.citation)
+    if news_intelligence:
+        for article in news_intelligence.articles[:16]:
+            citation_id = f"news:{article.evidence_id}"
+            citations[citation_id] = {
+                "source": article.publisher or article.provider,
+                "url": article.url,
+                "filed": article.published_at,
+                "form": article.article_type,
+                "section": article.causal_driver,
+                "snippet": article.excerpt or article.headline,
+                "accession": None,
+                "period_end": article.published_at[:10] if article.published_at else None,
+                "source_tier": article.source_tier,
+            }
+            evidence_rows[article.evidence_id] = {
+                "stance": "external_context",
+                "statement": (article.excerpt or article.headline)[:700],
+                "source_language": article.language,
+                "original_excerpt": (article.excerpt or article.headline)[:700],
+                "translated_summary": None,
+                "source_tier": article.source_tier,
+                "source_type": article.article_type,
+                "materiality": "context_only",
+                "citation_id": citation_id,
+                "source_origin_group": article.source_origin_group,
+                "licensing_policy": article.licensing_policy,
+            }
+    if historical_analogs:
+        for dossier in historical_analogs.dossiers[:3]:
+            for source in dossier.sources[:6]:
+                if not source.url:
+                    continue
+                citation_id = f"analog-episode:{source.evidence_id}"
+                citations[citation_id] = {
+                    "source": source.provider,
+                    "url": source.url,
+                    "filed": source.published_at,
+                    "form": source.source_class,
+                    "section": f"{dossier.episode} ({dossier.start_date} to {dossier.end_date})",
+                    "snippet": source.excerpt or source.title,
+                    "accession": source.citation.accession if source.citation else None,
+                    "period_end": source.citation.period_end if source.citation else source.published_at,
+                    "source_tier": source.source_tier,
+                }
+                evidence_rows[source.evidence_id] = {
+                    "stance": "historical_context",
+                    "statement": (source.excerpt or source.title)[:700],
+                    "source_language": _detect_language(source.excerpt or source.title),
+                    "original_excerpt": (source.excerpt or source.title)[:700],
+                    "translated_summary": None,
+                    "source_tier": source.source_tier,
+                    "source_type": source.source_class,
+                    "materiality": "context_only",
+                    "citation_id": citation_id,
+                    "source_origin_group": source.source_origin_group,
+                    "episode": dossier.episode,
+                    "episode_lesson": dossier.lessons[0] if dossier.lessons else "",
+                }
+        for assessment in historical_analogs.assessments[:5]:
+            for source in assessment.sources[:4]:
+                if not source.url:
+                    continue
+                citation_id = f"analog:{source.evidence_id}"
+                citations[citation_id] = {
+                    "source": source.provider,
+                    "url": source.url,
+                    "filed": source.published_at,
+                    "form": source.source_class,
+                    "section": assessment.episode,
+                    "snippet": source.excerpt or source.title,
+                    "accession": None,
+                    "period_end": source.published_at[:10] if source.published_at else None,
+                    "source_tier": source.source_tier,
+                }
+                evidence_rows[source.evidence_id] = {
+                    "stance": "historical_context",
+                    "statement": (source.excerpt or source.title)[:700],
+                    "source_language": _detect_language(source.excerpt or source.title),
+                    "original_excerpt": (source.excerpt or source.title)[:700],
+                    "translated_summary": None,
+                    "source_tier": source.source_tier,
+                    "source_type": source.source_class,
+                    "materiality": "context_only",
+                    "citation_id": citation_id,
+                    "source_origin_group": source.source_origin_group,
+                }
     prompt_pack = {
         "prompt_version": PROMPT_VERSION,
         "task": (
@@ -700,8 +819,23 @@ def build_prompt_pack(
         "llm_extraction_manifest": asdict(llm_extraction_manifest) if llm_extraction_manifest else _missing_extraction_payload(),
         "event_workflow": asdict(event_workflow) if event_workflow else _missing_event_workflow_payload(),
         "evidence_work_order": _evidence_work_order_payload(evidence_work_order),
+        "hybrid_research": _hybrid_research_payload(hybrid_research),
+        "dual_model_research": dual_model_prompt_payload(
+            dual_model_research
+        ),
         "wisburg_lens": lens_to_prompt_payload(wisburg_lens),
         "historical_references": _historical_reference_payload(historical_references),
+        "historical_analogs": asdict(historical_analogs) if historical_analogs else {
+            "status": "Unavailable",
+            "coverage_status": "Historical Analog Lab did not run.",
+            "assessments": [],
+        },
+        "news_intelligence": asdict(news_intelligence) if news_intelligence else {
+            "status": "Unavailable",
+            "coverage_status": "LLM-directed news research did not run.",
+            "clusters": [],
+            "claim_assessments": [],
+        },
         "thesis_validation": _thesis_validation_payload(thesis_validation),
         "conviction_inputs": _conviction_input_payload(
             ideas, evidence, data_quality, valuation, management_sources,
@@ -712,6 +846,10 @@ def build_prompt_pack(
             "Every evidence_chain item must cite one or more allowed citation IDs.",
             "If evidence is insufficient, verdict must be 'No convincing thesis yet'.",
             "Historical references are analog context only. Do not treat sparse analogs as calibrated probability evidence.",
+            "Historical Analog Lab output may refine scenarios, counter-theses, and monitors but cannot set direction, fair value, or probability.",
+            "News and analog claims must cite evidence IDs already present in this prompt pack.",
+            "Separate reporting, opinion, and narrative context. Opinion is never a reported fact.",
+            "Syndicated news copies count as one source-origin group and cannot manufacture independent corroboration.",
             "Use thesis_validation to separate corroborated, contradictory, mixed, and missing evidence channels.",
             "Start from company_economics and thesis_clusters. Do not treat a signal as thesis-relevant unless it maps to a material business or industry driver.",
             "Use credit_lens for credit analyst context; it is not a rating opinion and cannot override valuation or evidence gates.",
@@ -726,6 +864,9 @@ def build_prompt_pack(
             "Use evidence_work_order as the prioritized analyst agenda. Do not treat open work-order items as completed evidence.",
             "Respect budget_policy and manual_data_status. Missing paid data is an evidence gap, not a reason to invent facts.",
             "Use conviction_inputs to disclose process gaps; do not turn process gaps into positive evidence.",
+            "Use dual_model_research as an evidence-bound comparison. Incorporate only accepted_secondary_deltas whose evidence IDs remain in this prompt.",
+            "GPT-5.6 Sol adjudication may resolve narrative framing only; it cannot override deterministic facts, valuation arithmetic, calibrated probability, score, or promotion.",
+            "When dual_model_research contains unresolved disagreements, state them instead of selecting a convenient narrative.",
             "Use external_evidence_items, including Wisburg, only to sharpen context, counter-thesis, narrative saturation, and next-source checks; never as primary proof or standalone High-Conviction support.",
             "Wisburg structured claims may be discussed only when their citation_id is present in the allowed citations map; describe their corroboration_status explicitly.",
             "Use wisburg_lens for outside-analyst debate, bounded structured claims, and source suggestions only; Wisburg revisions, targets, ratings, and estimates are external analyst context, never official consensus.",
@@ -858,6 +999,59 @@ def _evidence_work_order_payload(work_order: EvidenceWorkOrder | None) -> dict:
             for item in work_order.items[:12]
         ],
         "data_gaps": work_order.data_gaps[:8],
+    }
+
+
+def _hybrid_research_payload(run: HybridResearchRun | None) -> dict:
+    if run is None:
+        return {
+            "status": "Not requested",
+            "rounds": [],
+            "final_artifact": None,
+            "data_gaps": [],
+        }
+    final = run.final_artifact
+    return {
+        "status": run.status,
+        "profile": run.profile.label,
+        "execution_backend": run.execution_backend.label,
+        "deterministic_validation_status": run.deterministic_validation_status,
+        "rounds": [
+            {
+                "round_number": item.round_number,
+                "role": item.role,
+                "provider": item.provider,
+                "model": item.model,
+                "status": item.status,
+                "summary": item.artifact.summary if item.artifact else "",
+                "evidence_ids": (
+                    item.artifact.evidence_ids[:12] if item.artifact else []
+                ),
+                "validation_gaps": (
+                    item.artifact.validation_gaps[:5] if item.artifact else []
+                ),
+            }
+            for item in run.rounds
+        ],
+        "final_artifact": {
+            "status": final.status,
+            "summary": final.summary,
+            "payload": final.payload,
+            "evidence_ids": final.evidence_ids[:20],
+            "citation_ids": final.citation_ids[:20],
+            "validation_gaps": final.validation_gaps[:8],
+        } if final else None,
+        "audit_findings": [
+            {
+                "category": item.category,
+                "severity": item.severity,
+                "summary": item.summary,
+                "evidence_ids": item.evidence_ids[:8],
+                "resolved": item.resolved,
+            }
+            for item in run.audit_findings[:12]
+        ],
+        "data_gaps": run.data_gaps[:8],
     }
 
 
@@ -2065,6 +2259,64 @@ def _post_json(url: str, payload: dict, headers: dict[str, str], timeout_seconds
         raise RuntimeError(f"LLM provider HTTP {exc.code}: {_redact(body)}") from exc
     except (URLError, TimeoutError) as exc:
         raise RuntimeError(f"LLM provider request failed: {_redact(str(exc))}") from exc
+
+
+def _normalized_provider_usage(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    prompt_details = value.get("prompt_tokens_details")
+    completion_details = value.get("completion_tokens_details")
+    if not isinstance(prompt_details, dict):
+        prompt_details = {}
+    if not isinstance(completion_details, dict):
+        completion_details = {}
+    input_tokens = int(
+        value.get("input_tokens")
+        or value.get("prompt_tokens")
+        or 0
+    )
+    output_tokens = int(
+        value.get("output_tokens")
+        or value.get("completion_tokens")
+        or 0
+    )
+    return {
+        "input_tokens": input_tokens,
+        "cached_input_tokens": int(
+            prompt_details.get("cached_tokens")
+            or value.get("prompt_cache_hit_tokens")
+            or 0
+        ),
+        "reasoning_tokens": int(
+            completion_details.get("reasoning_tokens")
+            or value.get("reasoning_tokens")
+            or 0
+        ),
+        "output_tokens": output_tokens,
+        "total_tokens": int(
+            value.get("total_tokens") or input_tokens + output_tokens
+        ),
+    }
+
+
+def _provider_reported_cost(response: object) -> float | None:
+    if not isinstance(response, dict):
+        return None
+    usage = response.get("usage")
+    candidates = [
+        response.get("cost"),
+        response.get("cost_usd"),
+        usage.get("cost") if isinstance(usage, dict) else None,
+        usage.get("cost_usd") if isinstance(usage, dict) else None,
+    ]
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _redact(text: str) -> str:
