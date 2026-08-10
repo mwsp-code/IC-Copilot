@@ -18,6 +18,7 @@ STATEMENT_MAP = {
     "Revenue": "Income statement",
     "Gross Profit": "Income statement",
     "Operating Income": "Income statement",
+    "Depreciation and Amortization": "Cash-flow statement",
     "EBITDA": "Income statement",
     "Net Income": "Income statement",
     "EPS": "Income statement",

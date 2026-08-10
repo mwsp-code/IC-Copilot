@@ -1789,6 +1789,7 @@ def run_us_equity_research(
             if independent_research_qa else ()
         ),
         events=events,
+        valuation=valuation,
         limit=20,
     )
     store.save_research_run(identity.ticker, run_manifest)

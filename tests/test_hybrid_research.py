@@ -1763,6 +1763,10 @@ def test_background_job_tracks_progress_and_displayed_result_relationship() -> N
         research_profile="deep_initiation",
         preflight=preflight,
         displayed_result=displayed,
+        operation_kind="targeted_investigation",
+        operation_label="Resolve AAPL Forward EBITDA",
+        investigation_action_id="action-ebitda",
+        result_route="Evidence",
     )
     assert completed.wait(1)
     for _ in range(100):
@@ -1778,6 +1782,10 @@ def test_background_job_tracks_progress_and_displayed_result_relationship() -> N
     assert latest.progress.current_stage == "Evidence investigation"
     assert latest.progress.attempted_model_calls == 1
     assert latest.progress.completed_model_calls == 1
+    assert latest.operation_kind == "targeted_investigation"
+    assert latest.operation_label == "Resolve AAPL Forward EBITDA"
+    assert latest.investigation_action_id == "action-ebitda"
+    assert latest.result_route == "Evidence"
 
 
 def test_hybrid_run_round_trips_through_store(tmp_path) -> None:

@@ -9,6 +9,82 @@ def test_provider_vault_key_reader_is_not_shadowed_by_form_input() -> None:
     assert callable(app.saved_profile_api_key)
 
 
+def test_hot_reload_compatible_research_result_is_displayable() -> None:
+    compatible = SimpleNamespace(
+        identity=SimpleNamespace(ticker="AAPL"),
+        run_manifest=SimpleNamespace(run_id="run-1"),
+        valuation=SimpleNamespace(),
+        ideas=[],
+    )
+
+    assert app._is_displayable_research_result(compatible)
+    assert not app._is_displayable_research_result(SimpleNamespace())
+
+
+def test_active_job_banner_names_the_investigation(monkeypatch) -> None:
+    class FakeColumn:
+        def button(self, *args, **kwargs):
+            return False
+
+    class FakeStreamlit:
+        def __init__(self):
+            self.session_state = {}
+            self.warnings = []
+            self.captions = []
+            self.markdowns = []
+
+        def warning(self, value):
+            self.warnings.append(value)
+
+        def caption(self, value):
+            self.captions.append(value)
+
+        def markdown(self, value, **kwargs):
+            self.markdowns.append(value)
+
+        def columns(self, count):
+            return [FakeColumn() for _ in range(count)]
+
+    state = SimpleNamespace(
+        status="running",
+        ticker="AAPL",
+        operation_kind="targeted_investigation",
+        operation_label="Resolve AAPL Forward EBITDA",
+        displayed_result=SimpleNamespace(label="Frozen AAPL demo"),
+        updated_at="2026-08-10T12:00:00+00:00",
+        progress=SimpleNamespace(
+            current_stage="Registered retrieval",
+            completed_model_calls=1,
+            attempted_model_calls=2,
+            provider="local Codex",
+            model="gpt-5.6-sol",
+            elapsed_seconds=90,
+            started_at="2026-08-10T11:58:30+00:00",
+            message="Resolving missing valuation inputs.",
+            failure_class="",
+            retry_count=0,
+        ),
+    )
+    fake_st = FakeStreamlit()
+    monkeypatch.setattr(app, "st", fake_st)
+    monkeypatch.setattr(
+        app,
+        "_hybrid_job_manager",
+        lambda: SimpleNamespace(get=lambda _job_id: state),
+    )
+
+    app.render_active_hybrid_job_banner("job-1")
+
+    assert any(
+        "Investigating: Resolve AAPL Forward EBITDA" in item
+        for item in fake_st.warnings
+    )
+    assert any(
+        "does not yet contain output" in item
+        for item in fake_st.warnings
+    )
+
+
 def test_local_codex_is_preselected_before_one_time_sign_in() -> None:
     assert app._preferred_auditor_backend(
         local_codex_status="not_authenticated",

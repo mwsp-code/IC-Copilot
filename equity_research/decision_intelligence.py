@@ -340,6 +340,7 @@ def build_prioritized_research_queue(
     research_questions: Iterable[Any] = (),
     qa_findings: Iterable[Any] = (),
     events: Iterable[Any] = (),
+    valuation: Any | None = None,
     limit: int = 20,
 ) -> list[PrioritizedResearchAction]:
     """Create one semantic queue shared by Decision, Evidence, and QA."""
@@ -500,6 +501,63 @@ def build_prioritized_research_queue(
             ),
         ))
 
+    for resolution in list(
+        getattr(valuation, "input_resolutions", []) or []
+    ):
+        if str(getattr(resolution, "status", "")).casefold() != "missing":
+            continue
+        input_name = str(
+            getattr(resolution, "input_name", "valuation input")
+            or "valuation input"
+        )
+        reason = str(
+            getattr(resolution, "reason", "")
+            or f"{input_name} is not yet normalized."
+        )
+        slug = re.sub(r"[^a-z0-9]+", "_", input_name.casefold()).strip("_")
+        source_families = ["sec_filings", "consensus"]
+        objective = (
+            f"Resolve {normalized_ticker or 'company'} {input_name} for the "
+            "valuation bridge"
+        )
+        candidates.append(PrioritizedResearchAction(
+            rank=0,
+            action_id=_short_action_id(
+                f"{normalized_ticker}:{input_name}:valuation-input"
+            ),
+            title=objective,
+            why_it_matters=(
+                "A decision-useful valuation method is unavailable until the exact "
+                "input, period, unit, and currency basis is validated."
+            ),
+            source_type="SEC filings and configured point-in-time consensus",
+            status="planned",
+            decision_impact="Weakens valuation triangulation and confidence.",
+            auto_resolvable=True,
+            blocks_stage="Thesis quality",
+            action_kind="valuation_input_resolution",
+            objective=objective,
+            materiality="Medium",
+            execution_mode="automatic",
+            required_source_families=source_families,
+            preferred_connectors=[
+                "sec_companyfacts",
+                "issuer_filings",
+                "configured_consensus",
+            ],
+            completion_criteria=[
+                "Retrieve or derive the input from admitted evidence.",
+                "Validate period, unit, currency, and formula alignment.",
+                "Recompute the affected valuation method and QA closure.",
+            ],
+            blocking_reason=reason,
+            origin_labels=["Valuation input resolver"],
+            semantic_key=(
+                f"valuation_input_resolution:{normalized_ticker or 'unknown'}:"
+                f"{slug}:sec_filings"
+            ),
+        ))
+
     finding_by_request = {
         request_id: str(getattr(finding, "finding_id", "") or "")
         for finding in qa_findings
@@ -528,6 +586,11 @@ def build_prioritized_research_queue(
 
 def _action_kind(channel: str, action: str, source_type: str) -> str:
     text = " ".join((channel, action, source_type)).casefold()
+    if any(token in text for token in (
+        "forward ebitda", "net debt", "normalized shares",
+        "valuation input", "currency alignment",
+    )):
+        return "valuation_input_resolution"
     if any(token in text for token in ("consensus", "estimate revision", "expectation")):
         return "consensus_revision_capture"
     if any(token in text for token in ("event-window", "event window", "beta attribution", "price bars", "market reaction")):
@@ -558,6 +621,14 @@ def _readable_action_objective(
         return f"Capture point-in-time {company} estimate revisions around {anchor}"
     if action_kind == "valuation_scenarios":
         return f"Complete {company} bull/base/bear valuation and payoff assumptions"
+    if action_kind == "valuation_input_resolution":
+        clean = re.sub(
+            r"^(find|retrieve|resolve|validate)\s+",
+            "",
+            original.strip(),
+            flags=re.I,
+        )
+        return f"Resolve {company} {clean}" if clean else f"Resolve {company} valuation inputs"
     if action_kind == "cash_conversion_analysis":
         return (
             f"Test whether {company} cash conversion remains recurring after "

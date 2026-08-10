@@ -12,6 +12,7 @@ from .view_models import (
     EvidenceReferenceViewModel,
     IntegrityTimelineViewModel,
     InvestigationActionViewModel,
+    ModelValuationViewModel,
     PublicationReadinessViewModel,
     PublicationRepairIntent,
     ResearchRouteViewModel,
@@ -132,6 +133,16 @@ def render_research_route_header(
                 st.markdown(f"- {item}")
     if model.strongest_limitation:
         st.warning(f"Limiting observation: {model.strongest_limitation}")
+    if isinstance(model, ModelValuationViewModel) and model.input_resolutions:
+        with st.expander("How valuation inputs were resolved", expanded=False):
+            for item in model.input_resolutions:
+                with st.container(border=True):
+                    render_status_badge(st, item.input_name, item.status)
+                    st.caption(f"Value: {item.value} | Source: {item.source}")
+                    if item.formula:
+                        st.caption("Formula: " + item.formula)
+                    if item.reason:
+                        st.write(item.reason)
     if model.action_references:
         st.caption("Relevant next actions: " + ", ".join(model.action_references))
 

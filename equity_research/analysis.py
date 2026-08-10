@@ -291,6 +291,13 @@ FINANCIAL_CONCEPTS = {
         "OperatingProfitLoss",
         "ProfitLossFromOperatingActivities",
     ],
+    "Depreciation and Amortization": [
+        "DepreciationDepletionAndAmortization",
+        "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment",
+        "DepreciationAndAmortization",
+        "DepreciationAndAmortizationExpense",
+        "Depreciation",
+    ],
     "SG&A Expense": [
         "SellingGeneralAndAdministrativeExpense",
         "GeneralAndAdministrativeExpense",
@@ -1738,6 +1745,58 @@ def _with_derived_financial_metrics(metrics: list[FinancialMetric]) -> list[Fina
                 else None
             ),
         )
+    operating_income = by_name.get("Operating Income")
+    depreciation = by_name.get("Depreciation and Amortization")
+    existing_ebitda = by_name.get("EBITDA")
+    if (
+        operating_income
+        and depreciation
+        and _same_metric_basis(operating_income, depreciation)
+        and (
+            not existing_ebitda
+            or not _same_metric_basis(existing_ebitda, operating_income)
+        )
+    ):
+        previous_value = None
+        if (
+            operating_income.previous_value is not None
+            and depreciation.previous_value is not None
+            and _same_previous_metric_basis(operating_income, depreciation)
+        ):
+            previous_value = (
+                operating_income.previous_value
+                + abs(depreciation.previous_value)
+            )
+        value = operating_income.value + abs(depreciation.value)
+        derived["EBITDA"] = FinancialMetric(
+            name="EBITDA",
+            value=value,
+            unit=operating_income.unit,
+            period_end=operating_income.period_end,
+            fiscal_period=operating_income.fiscal_period,
+            fiscal_year=operating_income.fiscal_year,
+            period_start=operating_income.period_start,
+            duration_days=operating_income.duration_days,
+            fiscal_frame=operating_income.fiscal_frame,
+            form=operating_income.form,
+            filed=max(
+                str(operating_income.filed or ""),
+                str(depreciation.filed or ""),
+            ) or None,
+            previous_value=previous_value,
+            yoy_change_pct=(
+                (value / previous_value - 1.0) * 100
+                if previous_value not in (None, 0) else None
+            ),
+            source_url=operating_income.source_url or depreciation.source_url,
+            accession=operating_income.accession or depreciation.accession,
+            source_kind="derived_companyfacts",
+            previous_period_end=(
+                operating_income.previous_period_end
+                if operating_income.previous_period_end
+                == depreciation.previous_period_end else None
+            ),
+        )
     if not derived:
         return metrics
     return sorted(
@@ -1747,7 +1806,22 @@ def _with_derived_financial_metrics(metrics: list[FinancialMetric]) -> list[Fina
 
 
 def _same_metric_basis(left: FinancialMetric, right: FinancialMetric) -> bool:
-    return left.unit == right.unit and left.period_end == right.period_end
+    if left.unit != right.unit or left.period_end != right.period_end:
+        return False
+    if (left.period_start or right.period_start) and left.period_start != right.period_start:
+        return False
+    if (
+        (left.duration_days is not None or right.duration_days is not None)
+        and left.duration_days != right.duration_days
+    ):
+        return False
+    if (
+        left.fiscal_period
+        and right.fiscal_period
+        and left.fiscal_period != right.fiscal_period
+    ):
+        return False
+    return True
 
 
 def _same_previous_metric_basis(left: FinancialMetric, right: FinancialMetric) -> bool:

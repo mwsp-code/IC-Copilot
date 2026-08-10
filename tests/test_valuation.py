@@ -31,6 +31,55 @@ class ValuationTests(unittest.TestCase):
         self.assertIn("EV/revenue", result.cases[1].method)
         self.assertTrue(any(step.metric == "Revenue" and "EV / revenue" in step.formula for step in result.bridge))
 
+    def test_non_financial_derives_forward_ebitda_from_aligned_admitted_inputs(self) -> None:
+        period = date.today().isoformat()
+        metrics = [
+            FinancialMetric("Revenue", 1000, "USD", period, fiscal_period="Q1", period_start="2026-01-01", duration_days=89),
+            FinancialMetric("Operating Income", 300, "USD", period, fiscal_period="Q1", period_start="2026-01-01", duration_days=89),
+            FinancialMetric("Depreciation and Amortization", 50, "USD", period, fiscal_period="Q1", period_start="2026-01-01", duration_days=89),
+            _metric("Shares", 100, "shares"),
+            _metric("Cash", 100, "USD"),
+            _metric("Current Debt", 25, "USD"),
+            _metric("Long-term Debt", 200, "USD"),
+        ]
+        result = build_valuation(
+            _identity("TEST"),
+            metrics,
+            _consensus("TEST", [_estimate("TEST", "Revenue", 1_200)]),
+            10,
+        )
+
+        self.assertIn("EV/EBITDA", result.cases[1].method)
+        ebitda = next(
+            item for item in result.input_resolutions
+            if item.input_name == "Forward EBITDA"
+        )
+        self.assertEqual(ebitda.status, "derived")
+        self.assertAlmostEqual(ebitda.value or 0, 420)
+        self.assertIn("35.0%", ebitda.formula)
+        self.assertFalse(any("EV/EBITDA not calculated" in gap for gap in result.missing_data))
+
+    def test_unaligned_ebitda_inputs_report_the_exact_root_cause(self) -> None:
+        period = date.today().isoformat()
+        metrics = [
+            FinancialMetric("Revenue", 1000, "USD", period, fiscal_period="Q1", period_start="2026-01-01", duration_days=89),
+            FinancialMetric("Operating Income", 300, "USD", period, fiscal_period="Q1", period_start="2026-01-01", duration_days=89),
+            FinancialMetric("Depreciation and Amortization", 50, "USD", period, fiscal_period="Q1", period_start="2025-10-01", duration_days=181),
+            _metric("Shares", 100, "shares"),
+            _metric("Cash", 100, "USD"),
+            _metric("Long-term Debt", 200, "USD"),
+        ]
+        result = build_valuation(
+            _identity("TEST"),
+            metrics,
+            _consensus("TEST", [_estimate("TEST", "Revenue", 1_200)]),
+            10,
+        )
+
+        gap = next(item for item in result.missing_data if item.startswith("EV/EBITDA"))
+        self.assertIn("aligned Operating Income plus Depreciation", gap)
+        self.assertNotIn("EBITDA, net debt, shares, or currency", gap)
+
     def test_bank_uses_book_roe_and_pe(self) -> None:
         identity = CompanyIdentity("TESTBANK", "1", "Test Bank", sic="6021", sic_description="National bank")
         metrics = [_metric("Shares", 100, "shares"), _metric("Stockholders' Equity", 2_000, "USD"), _metric("Net Income", 240, "USD")]

@@ -378,15 +378,31 @@ _DEMO_PROFILES: dict[str, dict[str, object]] = {
         "primary_source_name": "Apple FY26 Q2 consolidated financial statements",
         "primary_source_url": "https://www.apple.com/newsroom/pdfs/fy2026q2/FY26_Q2_Consolidated_Financial_Statements.pdf",
         "metrics": [
-            ("Revenue", 111_184_000_000, 95_359_000_000, 16.6, "USD"),
+            (
+                "Revenue", 111_184_000_000, 95_359_000_000, 16.6, "USD",
+                {"period_start": "2025-12-28", "duration_days": 91},
+            ),
             ("Gross Profit", 54_781_000_000, 44_867_000_000, 22.1, "USD"),
             ("Gross Margin", 49.27, 47.05, 4.7, "%"),
-            ("Operating Income", 35_885_000_000, 29_589_000_000, 21.3, "USD"),
+            (
+                "Operating Income", 35_885_000_000, 29_589_000_000, 21.3, "USD",
+                {"period_start": "2025-12-28", "duration_days": 91},
+            ),
+            (
+                "Depreciation and Amortization", 3_439_000_000,
+                2_661_000_000, 29.2, "USD",
+                {
+                    "period_start": "2025-12-28",
+                    "duration_days": 91,
+                    "source_kind": "derived_primary_statements",
+                },
+            ),
             ("Net Income", 29_578_000_000, 24_780_000_000, 19.4, "USD"),
             ("Operating Cash Flow", 82_627_000_000, 53_887_000_000, 53.3, "USD"),
             ("Capital Expenditure", 4_344_000_000, 6_011_000_000, -27.7, "USD"),
             ("Cash", 45_572_000_000, 28_162_000_000, 61.8, "USD"),
             ("Long-term Debt", 74_404_000_000, 78_328_000_000, -5.0, "USD"),
+            ("Current Debt", 10_307_000_000, None, None, "USD"),
             ("Shares", 14_725_873_000, 15_056_133_000, -2.2, "shares"),
             ("Share Repurchases", 36_989_000_000, 49_504_000_000, -25.3, "USD"),
             ("Research and Development", 11_419_000_000, 8_550_000_000, 33.6, "USD"),
@@ -692,8 +708,11 @@ def _demo_metrics(profile: dict[str, object]) -> list[FinancialMetric]:
     filed = str(profile["filed"])
     fiscal_period = str(profile["fiscal_period"])
     form = str(profile["current_form"])
-    return [
-        FinancialMetric(
+    rows: list[FinancialMetric] = []
+    for raw in profile["metrics"]:
+        name, value, previous, change, unit, *extra = raw
+        metadata = dict(extra[0]) if extra and isinstance(extra[0], dict) else {}
+        rows.append(FinancialMetric(
             name=name,
             value=value,
             unit=unit,
@@ -704,9 +723,24 @@ def _demo_metrics(profile: dict[str, object]) -> list[FinancialMetric]:
             filed=filed,
             previous_value=previous,
             yoy_change_pct=change,
-        )
-        for name, value, previous, change, unit in profile["metrics"]
-    ]
+            source_url=str(
+                metadata.get("source_url")
+                or profile.get("primary_source_url")
+                or ""
+            ) or None,
+            source_kind=str(
+                metadata.get("source_kind")
+                or "issuer_financial_statement"
+            ),
+            previous_period_end=str(
+                metadata.get("previous_period_end")
+                or profile.get("previous_period_end")
+                or ""
+            ) or None,
+            period_start=str(metadata.get("period_start") or "") or None,
+            duration_days=metadata.get("duration_days"),
+        ))
+    return rows
 
 
 def _demo_events(profile: dict[str, object], filing_url: str) -> list[ChangeEvent]:
@@ -2133,6 +2167,7 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
             if independent_research_qa else ()
         ),
         events=events,
+        valuation=valuation,
         limit=20,
     )
     thesis_synthesis = synthesize_ic_thesis(

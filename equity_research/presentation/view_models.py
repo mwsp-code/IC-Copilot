@@ -150,13 +150,23 @@ class ResearchRouteViewModel:
 
 
 @dataclass(frozen=True)
+class ValuationInputResolutionViewModel:
+    input_name: str
+    status: str
+    value: str
+    source: str
+    formula: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class ThesisDriversViewModel(ResearchRouteViewModel):
     pass
 
 
 @dataclass(frozen=True)
 class ModelValuationViewModel(ResearchRouteViewModel):
-    pass
+    input_resolutions: tuple[ValuationInputResolutionViewModel, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -562,11 +572,23 @@ def build_research_route_view_model(
             metrics=(("Cases", str(len(cases))), ("Model status", str(getattr(model, "status", "Unknown") or "Unknown")), ("Valuation confidence", str(getattr(valuation, "confidence", "Unknown") or "Unknown"))),
             what_matters=_clean_summary_items([
                 str(getattr(model, "summary", "") or ""),
+                _valuation_input_summary(valuation),
                 str(getattr(getattr(result, "market_implied_expectations", None), "summary", "") or ""),
                 str(getattr(getattr(result, "earnings_surprise_proxy", None), "headline", "") or ""),
             ]),
             strongest_limitation=_research_limitation(result, "valuation"),
             action_references=action_refs,
+            input_resolutions=tuple(
+                ValuationInputResolutionViewModel(
+                    input_name=str(getattr(item, "input_name", "Input") or "Input"),
+                    status=str(getattr(item, "status", "unknown") or "unknown").replace("_", " ").title(),
+                    value=_formatted_resolution_value(item),
+                    source=_without_raw_ids(str(getattr(item, "source", "") or "Not recorded")),
+                    formula=_without_raw_ids(str(getattr(item, "formula", "") or "")),
+                    reason=_without_raw_ids(str(getattr(item, "reason", "") or "")),
+                )
+                for item in list(getattr(valuation, "input_resolutions", []) or [])
+            ),
         )
     if selected == ResearchSubroute.EXPECTATIONS_REACTION:
         reactions = list(getattr(result, "event_window_reactions", {}).values())
@@ -1257,6 +1279,35 @@ def _research_limitation(result: Any, route: str) -> str:
     else:
         values = list(getattr(getattr(result, "thesis_validation", None), "required_next_evidence", []) or [])
     return _without_raw_ids(str(values[0])) if values else "No material limitation was separately reported."
+
+
+def _valuation_input_summary(valuation: Any) -> str:
+    resolutions = list(getattr(valuation, "input_resolutions", []) or [])
+    if not resolutions:
+        return "Valuation input resolution was not recorded for this historical result."
+    resolved = sum(
+        str(getattr(item, "status", "")).casefold() in {"available", "derived"}
+        for item in resolutions
+    )
+    derived = [
+        str(getattr(item, "input_name", "input") or "input")
+        for item in resolutions
+        if str(getattr(item, "status", "")).casefold() == "derived"
+    ]
+    summary = f"{resolved} of {len(resolutions)} recorded valuation inputs are resolved."
+    if derived:
+        summary += " Deterministic derivations: " + ", ".join(derived[:3]) + "."
+    return summary
+
+
+def _formatted_resolution_value(item: Any) -> str:
+    value = getattr(item, "value", None)
+    unit = str(getattr(item, "unit", "") or "")
+    if value is None:
+        return "Not available"
+    if unit.casefold() in {"shares", "share", "usd", "eur", "gbp", "cny", "jpy"}:
+        return f"{float(value):,.0f} {unit}".strip()
+    return f"{float(value):,.2f} {unit}".strip()
 
 
 def _first_nonempty(*values: Any) -> str:

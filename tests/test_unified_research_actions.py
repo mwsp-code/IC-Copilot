@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import date, timedelta
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -138,6 +139,38 @@ def test_duplicate_cash_conversion_actions_merge_into_one_canonical_item() -> No
     assert queue[0].action_kind == "cash_conversion_analysis"
     assert queue[0].related_work_order_ids == ["cash-work", "cash-judge"]
     assert "AAPL" in queue[0].objective
+
+
+def test_missing_valuation_input_becomes_a_targeted_automatic_action() -> None:
+    work_order = EvidenceWorkOrder(
+        status="Closed",
+        summary="No other open work",
+        items=[],
+    )
+    valuation = SimpleNamespace(input_resolutions=[SimpleNamespace(
+        input_name="Forward EBITDA",
+        status="missing",
+        reason=(
+            "No normalized EBITDA fact or aligned Operating Income plus "
+            "Depreciation and Amortization pair is available."
+        ),
+    )])
+
+    queue = build_prioritized_research_queue(
+        work_order,
+        ticker="AAPL",
+        valuation=valuation,
+    )
+
+    assert len(queue) == 1
+    assert queue[0].action_kind == "valuation_input_resolution"
+    assert queue[0].auto_resolvable is True
+    assert "Forward EBITDA" in queue[0].title
+    assert queue[0].preferred_connectors == [
+        "sec_companyfacts",
+        "issuer_filings",
+        "configured_consensus",
+    ]
 
 
 def test_decision_uses_canonical_actions_and_research_has_lazy_route_models() -> None:

@@ -317,8 +317,15 @@ def _handle_decision_page_intent(
             ),
         )
         action.attempt_summary = "Queued for the next targeted research pass."
+        st.session_state._pending_research_operation = {
+            "operation_kind": "targeted_investigation",
+            "operation_label": action.title,
+            "investigation_action_id": action.action_id,
+            "result_route": "Evidence",
+        }
         st.session_state._pending_live_refresh = result.identity.ticker
-        st.info(queued.summary)
+        st.session_state._investigation_queue_notice = queued.summary
+        st.rerun()
         return
     event = next(
         (
@@ -686,6 +693,18 @@ def _inject_global_styles() -> None:
     )
 
 
+def _is_displayable_research_result(value: object) -> bool:
+    """Accept compatible results across Streamlit hot-reload class identities."""
+
+    return bool(
+        value is not None
+        and getattr(value, "identity", None) is not None
+        and getattr(value, "run_manifest", None) is not None
+        and hasattr(value, "valuation")
+        and hasattr(value, "ideas")
+    )
+
+
 def main() -> None:
     _inject_global_styles()
     title_col, repo_col = st.columns([4, 1])
@@ -718,15 +737,30 @@ def main() -> None:
     if hybrid_job_id:
         hybrid_job = _hybrid_job_manager().get(hybrid_job_id)
         if hybrid_job and hybrid_job.status == "completed":
-            if isinstance(hybrid_job.result, ResearchResult):
+            if _is_displayable_research_result(hybrid_job.result):
                 st.session_state.result = hybrid_job.result
                 st.session_state.demo_mode = None
                 st.session_state._displayed_research_setup = dict(
                     st.session_state.get("_active_research_setup") or {}
                 )
+                result_route = str(
+                    getattr(hybrid_job, "result_route", "Decision")
+                    or "Decision"
+                )
+                st.session_state.research_view = result_route
+                operation_label = str(
+                    getattr(hybrid_job, "operation_label", "")
+                    or f"Research for {hybrid_job.ticker}"
+                )
                 st.success(
-                    f"Independent Research QA completed for "
-                    f"{hybrid_job.ticker}."
+                    f"Completed: {operation_label}. The new result is loaded "
+                    f"below in {result_route}."
+                )
+            else:
+                st.warning(
+                    "The background job finished, but it did not return a "
+                    "displayable research artifact. The previously displayed "
+                    "result has been preserved."
                 )
             st.session_state.hybrid_job_id = ""
             hybrid_job_id = ""
@@ -740,15 +774,31 @@ def main() -> None:
             "validation_failed",
             "not_started_missing_credentials",
         }:
-            if isinstance(hybrid_job.result, ResearchResult):
+            displayable_partial = _is_displayable_research_result(
+                hybrid_job.result
+            )
+            if displayable_partial:
                 st.session_state.result = hybrid_job.result
                 st.session_state.demo_mode = None
                 st.session_state._displayed_research_setup = dict(
                     st.session_state.get("_active_research_setup") or {}
                 )
+                st.session_state.research_view = str(
+                    getattr(hybrid_job, "result_route", "Audit") or "Audit"
+                )
+            operation_label = str(
+                getattr(hybrid_job, "operation_label", "")
+                or f"Research for {hybrid_job.ticker}"
+            )
             st.warning(
-                f"Research QA run ended as {hybrid_job.status}. "
-                f"{hybrid_job.error or 'Deterministic research remains available.'}"
+                f"{operation_label} ended as {hybrid_job.status}. "
+                f"{hybrid_job.error or 'Deterministic research remains available.'} "
+                + (
+                    f"The latest draft is loaded in "
+                    f"{getattr(hybrid_job, 'result_route', 'Audit') or 'Audit'}."
+                    if displayable_partial else
+                    "The previously displayed result has been preserved."
+                )
             )
             st.session_state.hybrid_job_id = ""
             hybrid_job_id = ""
@@ -1843,17 +1893,17 @@ def main() -> None:
             active_job = _hybrid_job_manager().get(active_hybrid_job_id)
             if active_job:
                 st.info(
-                    f"Independent Research QA for {active_job.ticker}: "
-                    f"{active_job.status}. The job survives this page rerun."
+                    f"Active: {getattr(active_job, 'operation_label', '') or f'Research for {active_job.ticker}'}. "
+                    f"Status: {active_job.status}. The job survives this page rerun."
                 )
                 job_cols = st.columns(2)
                 if job_cols[0].button(
-                    "Refresh QA status",
+                    "Refresh status",
                     use_container_width=True,
                 ):
                     st.rerun()
                 if job_cols[1].button(
-                    "Cancel QA run",
+                    "Cancel active work",
                     use_container_width=True,
                 ):
                     _hybrid_job_manager().cancel(active_hybrid_job_id)
@@ -1937,14 +1987,59 @@ def main() -> None:
         ) or None
         run_clicked = True
 
+    pending_research_operation = st.session_state.pop(
+        "_pending_research_operation",
+        None,
+    ) or {}
+
     pending_publication_repair = st.session_state.pop(
         "_pending_publication_repair",
         None,
     )
 
     if (run_clicked or investigate_clicked) and ticker:
-        st.session_state.demo_mode = None
         effective_profile = "investigate_event" if investigate_clicked else selected_profile_id
+        operation_kind = str(
+            pending_research_operation.get("operation_kind")
+            or "full_research"
+        )
+        operation_label = str(
+            pending_research_operation.get("operation_label") or ""
+        )
+        investigation_action_id = str(
+            pending_research_operation.get("investigation_action_id") or ""
+        )
+        result_route = str(
+            pending_research_operation.get("result_route") or "Decision"
+        )
+        if investigate_clicked:
+            operation_kind = "event_investigation"
+            operation_label = "Investigate " + str(
+                event_labels.get(
+                    investigate_event_id,
+                    f"selected {ticker} event",
+                )
+            )
+            result_route = "Research"
+        elif investigate_analog_id:
+            operation_kind = "analog_investigation"
+            operation_label = str(
+                (pending_analog_investigation or {}).get("episode")
+                or f"Investigate historical analog {investigate_analog_id}"
+            )
+            result_route = "Research"
+        elif pending_publication_repair:
+            operation_kind = "repair_and_recheck"
+            operation_label = "Repair and recheck publication readiness"
+            result_route = "Audit"
+        elif not operation_label:
+            operation_label = (
+                f"{selected_profile.label} for {ticker}"
+                + (
+                    " with Independent Research QA"
+                    if effective_hybrid_research else ""
+                )
+            )
         active_research_setup = dict(current_research_setup)
         active_research_setup["profile"] = effective_profile
         active_research_setup["ticker"] = ticker
@@ -1977,6 +2072,10 @@ def main() -> None:
             investigate_event_id=(
                 investigate_event_id if investigate_clicked else ""
             ) or "",
+            investigation_action_id=investigation_action_id,
+            operation_kind=operation_kind,
+            operation_label=operation_label,
+            result_route=result_route,
             execution_mode=(
                 "repair_and_recheck"
                 if pending_publication_repair else "research"
@@ -2100,12 +2199,12 @@ def main() -> None:
                         DisplayedResultContext(
                             result_type=(
                                 "frozen_demo"
-                                if st.session_state.get("demo_mode")
+                                if getattr(displayed, "demo_case", None)
                                 else "previous_live"
                             ),
                             label=(
                                 f"Frozen {displayed.identity.ticker} demo"
-                                if st.session_state.get("demo_mode")
+                                if getattr(displayed, "demo_case", None)
                                 else f"Previous {displayed.identity.ticker} live result"
                             ),
                             ticker=displayed.identity.ticker,
@@ -2128,6 +2227,10 @@ def main() -> None:
                         research_profile=effective_profile,
                         preflight=hybrid_preflight,
                         displayed_result=displayed_context,
+                        operation_kind=operation_kind,
+                        operation_label=operation_label,
+                        investigation_action_id=investigation_action_id,
+                        result_route=result_route,
                         job_id=lifecycle_run_id,
                     )
                     st.session_state.hybrid_job_id = state.job_id
@@ -2150,6 +2253,7 @@ def main() -> None:
                 )
                 with st.spinner(f"Running research workflow for {ticker}..."):
                     st.session_state.result = execute_live_research()
+                    st.session_state.demo_mode = None
                     st.session_state._displayed_research_setup = dict(
                         active_research_setup
                     )
@@ -2221,9 +2325,6 @@ def main() -> None:
         return
 
     demo_mode = st.session_state.get("demo_mode")
-    render_active_hybrid_job_banner(
-        str(st.session_state.get("hybrid_job_id") or "")
-    )
     if demo_mode:
         st.caption(
             f"Sample artifact: frozen {demo_mode} Deep Initiation research. "
@@ -2232,8 +2333,14 @@ def main() -> None:
     repair_notice = st.session_state.pop("_publication_repair_notice", "")
     if repair_notice:
         st.info(repair_notice)
+    investigation_notice = st.session_state.pop("_investigation_queue_notice", "")
+    if investigation_notice:
+        st.info(investigation_notice)
 
-    render_header(result)
+    render_header(
+        result,
+        active_job_id=str(st.session_state.get("hybrid_job_id") or ""),
+    )
     if str(st.session_state.get("research_view") or "") not in {
         "Decision", "Research", "Evidence", "Audit",
     }:
@@ -2470,13 +2577,27 @@ def render_active_hybrid_job_banner(job_id: str) -> None:
         return
     progress = getattr(state, "progress", None)
     displayed = getattr(state, "displayed_result", None)
+    operation_kind = str(
+        getattr(state, "operation_kind", "full_research")
+        or "full_research"
+    )
+    operation_label = str(
+        getattr(state, "operation_label", "")
+        or f"Research for {state.ticker}"
+    )
+    verb = {
+        "targeted_investigation": "Investigating",
+        "event_investigation": "Investigating",
+        "analog_investigation": "Investigating",
+        "repair_and_recheck": "Repairing and rechecking",
+    }.get(operation_kind, "Running")
     st.warning(
-        f"Independent Research QA for {state.ticker} is {state.status}. "
+        f"{verb}: {operation_label}. Status: {state.status}. "
         + (
-            f"The result below is {displayed.label.lower()} and does not "
-            "contain output from this active job."
+            f"The displayed result is {displayed.label.lower()} and does not "
+            "yet contain output from this active work."
             if displayed else
-            "No completed result from this active job is displayed yet."
+            "No completed result from this active work is displayed yet."
         )
     )
     _wrapped_metric_grid([
@@ -2505,7 +2626,8 @@ def render_active_hybrid_job_banner(job_id: str) -> None:
     ])
     st.caption(
         f"Started {_display_timestamp(getattr(progress, 'started_at', ''))}; "
-        f"last update {_display_timestamp(getattr(state, 'updated_at', ''))}."
+        f"last update {_display_timestamp(getattr(state, 'updated_at', ''))}. "
+        "Use Refresh status to load the finished artifact when this run completes."
     )
     if getattr(progress, "message", ""):
         st.caption(progress.message)
@@ -2519,13 +2641,13 @@ def render_active_hybrid_job_banner(job_id: str) -> None:
         st.caption(f"Automatic retries used: {progress.retry_count}.")
     controls = st.columns(2)
     if controls[0].button(
-        "Refresh Research QA status",
+        "Refresh status",
         key=f"refresh-active-job-{job_id}",
         use_container_width=True,
     ):
         st.rerun()
     if controls[1].button(
-        "Cancel Research QA",
+        "Cancel active work",
         key=f"cancel-active-job-{job_id}",
         use_container_width=True,
     ):
@@ -2533,7 +2655,11 @@ def render_active_hybrid_job_banner(job_id: str) -> None:
         st.rerun()
 
 
-def render_header(result: ResearchResult) -> None:
+def render_header(
+    result: ResearchResult,
+    *,
+    active_job_id: str = "",
+) -> None:
     identity = result.identity
     profile = getattr(result, "research_profile", None)
     result_type = "Frozen demo" if getattr(result, "demo_case", None) else "Live research"
@@ -2547,10 +2673,11 @@ def render_header(result: ResearchResult) -> None:
         else getattr(result.run_manifest, "generated_at", "")
     )
     st.subheader(f"{identity.name.title()} ({identity.ticker})")
+    render_active_hybrid_job_banner(active_job_id)
     st.caption(
         " · ".join(
             value for value in (
-                result_type,
+                f"Displayed result: {result_type}",
                 getattr(profile, "label", "") if profile else "",
                 f"Research completed {_display_timestamp(run_timestamp)}",
             ) if value
@@ -3534,6 +3661,7 @@ def render_historical_analog_intelligence(result: ResearchResult, *, compact: bo
                 st.session_state._pending_analog_investigation = {
                     "ticker": result.identity.ticker,
                     "analog_id": assessment.analog_id,
+                    "episode": f"Investigate historical analog: {assessment.episode}",
                 }
                 st.rerun()
     hidden = max(

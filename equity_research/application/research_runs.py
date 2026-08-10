@@ -58,13 +58,17 @@ class ResearchRunCommand:
     max_model_spend_usd: float | None = None
     cache_bypass: bool = False
     investigate_event_id: str = ""
+    investigation_action_id: str = ""
+    operation_kind: str = "full_research"
+    operation_label: str = ""
+    result_route: str = "Decision"
     execution_mode: str = "research"
     parent_run_id: str = ""
     parent_evidence_hash: str = ""
     repair_action_ids: tuple[str, ...] = ()
     workspace_scope: str = "local"
     credential_lease_ids: tuple[str, ...] = ()
-    command_version: str = "research-run-command-v1"
+    command_version: str = "research-run-command-v2"
 
     def __post_init__(self) -> None:
         ticker = self.ticker.strip().upper()
@@ -81,6 +85,8 @@ class ResearchRunCommand:
             raise ValueError("The model spend limit cannot be negative.")
         if self.execution_mode not in {"research", "repair_and_recheck"}:
             raise ValueError(f"Unsupported execution mode: {self.execution_mode}.")
+        if self.result_route not in {"Decision", "Research", "Evidence", "Audit"}:
+            raise ValueError(f"Unsupported result route: {self.result_route}.")
         if self.execution_mode == "repair_and_recheck" and not self.parent_run_id:
             raise ValueError("Repair and recheck requires a parent run ID.")
         object.__setattr__(self, "ticker", ticker)
@@ -196,7 +202,13 @@ class ResearchRunService:
             stage="preflight",
             status="queued",
             summary="Research command frozen and queued for deterministic preflight.",
-            details={"command_version": command.command_version},
+            details={
+                "command_version": command.command_version,
+                "operation_kind": command.operation_kind,
+                "operation_label": command.operation_label,
+                "investigation_action_id": command.investigation_action_id,
+                "result_route": command.result_route,
+            },
         )
         if self.runner is not None:
             self.runner.submit(run_id, command)

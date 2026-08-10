@@ -997,6 +997,23 @@ class SensitivityPoint:
 
 
 @dataclass
+class ValuationInputResolution:
+    """Readable, auditable status for one valuation input.
+
+    Model output may suggest a mapping, but only normalized or deterministically
+    derived values are recorded here as available.
+    """
+
+    input_name: str
+    status: str
+    value: float | None = None
+    unit: str = ""
+    source: str = ""
+    formula: str = ""
+    reason: str = ""
+
+
+@dataclass
 class ValuationResult:
     template: str
     status: str
@@ -1013,6 +1030,7 @@ class ValuationResult:
     bridge: list[ValuationBridgeStep] = field(default_factory=list)
     sensitivity: list[SensitivityPoint] = field(default_factory=list)
     reference_sources: list[str] = field(default_factory=list)
+    input_resolutions: list[ValuationInputResolution] = field(default_factory=list)
 
 
 @dataclass

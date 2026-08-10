@@ -32,6 +32,10 @@ def test_sqlite_run_lifecycle_is_durable_resumable_and_idempotent(tmp_path) -> N
         auditor_provider_id="local-codex",
         independent_qa_enabled=True,
         enabled_source_families=("sec", "wisburg"),
+        investigation_action_id="action-forward-ebitda",
+        operation_kind="targeted_investigation",
+        operation_label="Resolve AAPL Forward EBITDA",
+        result_route="Evidence",
     )
 
     started = service.start(command)
@@ -63,6 +67,9 @@ def test_sqlite_run_lifecycle_is_durable_resumable_and_idempotent(tmp_path) -> N
         runner,
     )
     assert reloaded.inspect(started.run_id).command == command
+    assert reloaded.inspect(started.run_id).command.operation_label == (
+        "Resolve AAPL Forward EBITDA"
+    )
     reloaded.resume(started.run_id)
     assert len(runner.submitted) == 2
 

@@ -4856,6 +4856,10 @@ class HybridJobState:
     preflight: HybridExecutionPreflight | None = None
     progress: HybridJobProgress | None = None
     displayed_result: DisplayedResultContext | None = None
+    operation_kind: str = "full_research"
+    operation_label: str = ""
+    investigation_action_id: str = ""
+    result_route: str = "Decision"
 
     def __post_init__(self) -> None:
         if self.progress is None:
@@ -4882,6 +4886,10 @@ class HybridResearchJobManager:
         research_profile: str = "",
         preflight: HybridExecutionPreflight | None = None,
         displayed_result: DisplayedResultContext | None = None,
+        operation_kind: str = "full_research",
+        operation_label: str = "",
+        investigation_action_id: str = "",
+        result_route: str = "Decision",
         job_id: str = "",
     ) -> HybridJobState:
         if preflight is not None and preflight.status != "ready":
@@ -4900,6 +4908,10 @@ class HybridResearchJobManager:
             research_profile=research_profile,
             preflight=preflight,
             displayed_result=displayed_result,
+            operation_kind=operation_kind,
+            operation_label=operation_label,
+            investigation_action_id=investigation_action_id,
+            result_route=result_route,
         )
         cancel_event = threading.Event()
         with self._lock:

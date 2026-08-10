@@ -132,6 +132,26 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(by_name["Gross Profit"].value, 40)
         self.assertEqual(by_name["Gross Margin"].value, 40)
 
+    def test_build_financial_metrics_derives_ebitda_only_on_aligned_periods(self) -> None:
+        facts = {
+            "facts": {"us-gaap": {
+                "OperatingIncomeLoss": {"units": {"USD": [
+                    {"val": 30, "start": "2025-01-01", "end": "2025-03-31", "filed": "2025-04-25", "form": "10-Q", "fp": "Q1", "fy": 2025},
+                    {"val": 40, "start": "2026-01-01", "end": "2026-03-31", "filed": "2026-04-25", "form": "10-Q", "fp": "Q1", "fy": 2026},
+                ]}},
+                "DepreciationDepletionAndAmortization": {"units": {"USD": [
+                    {"val": 5, "start": "2025-01-01", "end": "2025-03-31", "filed": "2025-04-25", "form": "10-Q", "fp": "Q1", "fy": 2025},
+                    {"val": 6, "start": "2026-01-01", "end": "2026-03-31", "filed": "2026-04-25", "form": "10-Q", "fp": "Q1", "fy": 2026},
+                ]}},
+            }}
+        }
+
+        by_name = {item.name: item for item in build_financial_metrics(facts)}
+
+        self.assertEqual(by_name["EBITDA"].value, 46)
+        self.assertEqual(by_name["EBITDA"].previous_value, 35)
+        self.assertEqual(by_name["EBITDA"].source_kind, "derived_companyfacts")
+
     def test_period_aligned_revenue_and_cost_replace_stale_gross_profit_tag(self) -> None:
         facts = {
             "facts": {"us-gaap": {

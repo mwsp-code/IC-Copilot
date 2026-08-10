@@ -10,6 +10,7 @@ from .models import (
     FinancialMetric,
     ProviderObservation,
     SensitivityPoint,
+    ValuationInputResolution,
     ValuationBridgeStep,
     ValuationCase,
     ValuationResult,
@@ -33,7 +34,7 @@ def build_valuation(
     if not current_price or current_price <= 0:
         return _insufficient(template, "Current share price is unavailable.", currency)
 
-    by_name = {metric.name: metric for metric in metrics}
+    by_name = _valuation_metric_map(metrics)
     estimates = _future_estimates(consensus.estimates)
     target = _consensus_target_value(consensus.target)
     adr_profile = adr_profile_for(identity.ticker)
@@ -104,7 +105,9 @@ def _non_financial_valuation(
     gaps: list[str] = []
     bridge: list[ValuationBridgeStep] = []
     references: list[str] = []
+    input_resolutions: list[ValuationInputResolution] = []
     eps = _estimate(estimates, "EPS")
+    input_resolutions.append(_estimate_resolution("Forward EPS", eps, currency))
     if _usable_per_share_estimate(eps, currency):
         observed_pe = _observation_value(observations, "forward_pe")
         base_pe = observed_pe if observed_pe and observed_pe > 0 else current_price / eps.average
@@ -134,8 +137,21 @@ def _non_financial_valuation(
     market_cap = _normalized_market_cap(
         observations, current_price, shares, adr_ratio, currency,
     )
+    input_resolutions.extend(_capital_input_resolutions(
+        metrics,
+        shares=shares,
+        net_debt=net_debt,
+        market_cap=market_cap,
+        currency=currency,
+    ))
     for metric_name, method in (("Revenue", "EV/revenue"), ("EBITDA", "EV/EBITDA")):
-        estimate = _estimate(estimates, metric_name)
+        estimate, resolution = _resolve_operating_estimate(
+            estimates,
+            metrics,
+            metric_name,
+            currency,
+        )
+        input_resolutions.append(resolution)
         if estimate and estimate.average and estimate.average > 0 and _currency(estimate.currency) == _currency(currency) and shares and net_debt is not None and market_cap:
             base_multiple = (market_cap + net_debt) / estimate.average
             for index, factor in enumerate((0.8, 1.0, 1.2)):
@@ -162,8 +178,18 @@ def _non_financial_valuation(
                 "operating estimate -10% / base / +10%; multiple -20% / base / +20%."
             )
             references.append(f"Current market-implied {method}")
+            if resolution.status == "derived":
+                assumptions.append(resolution.formula)
+                references.append(resolution.source)
         else:
-            gaps.append(f"{metric_name}, net debt, shares, or currency normalization is insufficient for {method}.")
+            gaps.append(_operating_method_gap(
+                method,
+                resolution,
+                shares=shares,
+                net_debt=net_debt,
+                market_cap=market_cap,
+                currency=currency,
+            ))
 
     operating_cash = metrics.get("Operating Cash Flow")
     capex = metrics.get("Capital Expenditure")
@@ -201,7 +227,7 @@ def _non_financial_valuation(
         return _insufficient("Non-financial", "No model-specific valuation method has sufficient normalized data.", currency, gaps)
     return _result_from_values(
         "Non-financial", values, current_price, methods, assumptions, currency, gaps,
-        bridge, references,
+        bridge, references, input_resolutions,
     )
 
 
@@ -415,6 +441,7 @@ def _result_from_values(
     gaps: list[str],
     bridge: list[ValuationBridgeStep] | None = None,
     reference_sources: list[str] | None = None,
+    input_resolutions: list[ValuationInputResolution] | None = None,
 ) -> ValuationResult:
     names = ("Bear", "Base", "Bull")
     probabilities = (0.25, 0.5, 0.25)
@@ -451,6 +478,7 @@ def _result_from_values(
         bridge=bridge or [],
         sensitivity=sensitivity,
         reference_sources=list(dict.fromkeys(reference_sources or [])),
+        input_resolutions=list(input_resolutions or []),
     )
 
 
@@ -479,6 +507,306 @@ def _future_estimates(estimates: list[EstimatePoint]) -> list[EstimatePoint]:
 
 def _estimate(estimates: list[EstimatePoint], metric: str) -> EstimatePoint | None:
     return next((item for item in estimates if item.metric == metric and item.period_type == "annual"), None)
+
+
+def _valuation_metric_map(
+    metrics: list[FinancialMetric],
+) -> dict[str, FinancialMetric]:
+    """Resolve deterministic valuation metrics without letting models invent facts."""
+
+    resolved = {metric.name: metric for metric in metrics}
+    if "EBITDA" in resolved:
+        return resolved
+    operating_income = resolved.get("Operating Income")
+    depreciation = resolved.get("Depreciation and Amortization")
+    if not _aligned_metric_basis(operating_income, depreciation):
+        return resolved
+    assert operating_income is not None and depreciation is not None
+    previous_value = None
+    if (
+        operating_income.previous_value is not None
+        and depreciation.previous_value is not None
+        and (
+            not operating_income.previous_period_end
+            or not depreciation.previous_period_end
+            or operating_income.previous_period_end
+            == depreciation.previous_period_end
+        )
+    ):
+        previous_value = (
+            operating_income.previous_value + abs(depreciation.previous_value)
+        )
+    value = operating_income.value + abs(depreciation.value)
+    resolved["EBITDA"] = FinancialMetric(
+        name="EBITDA",
+        value=value,
+        unit=operating_income.unit,
+        period_end=operating_income.period_end,
+        fiscal_period=operating_income.fiscal_period,
+        fiscal_year=operating_income.fiscal_year,
+        form=operating_income.form,
+        filed=max(
+            str(operating_income.filed or ""),
+            str(depreciation.filed or ""),
+        ) or None,
+        previous_value=previous_value,
+        yoy_change_pct=(
+            (value / previous_value - 1.0) * 100
+            if previous_value not in (None, 0) else None
+        ),
+        source_url=operating_income.source_url or depreciation.source_url,
+        accession=operating_income.accession or depreciation.accession,
+        source_kind="derived_normalized_facts",
+        previous_period_end=(
+            operating_income.previous_period_end
+            if operating_income.previous_period_end
+            == depreciation.previous_period_end else None
+        ),
+        period_start=operating_income.period_start,
+        duration_days=operating_income.duration_days,
+        fiscal_frame=operating_income.fiscal_frame,
+    )
+    return resolved
+
+
+def _aligned_metric_basis(
+    left: FinancialMetric | None,
+    right: FinancialMetric | None,
+) -> bool:
+    if left is None or right is None:
+        return False
+    if (
+        _currency(left.unit) != _currency(right.unit)
+        or left.period_end != right.period_end
+    ):
+        return False
+    if (left.period_start or right.period_start) and left.period_start != right.period_start:
+        return False
+    if (
+        (left.duration_days is not None or right.duration_days is not None)
+        and left.duration_days != right.duration_days
+    ):
+        return False
+    if (
+        left.fiscal_period
+        and right.fiscal_period
+        and left.fiscal_period != right.fiscal_period
+    ):
+        return False
+    return True
+
+
+def _resolve_operating_estimate(
+    estimates: list[EstimatePoint],
+    metrics: dict[str, FinancialMetric],
+    metric_name: str,
+    currency: str,
+) -> tuple[EstimatePoint | None, ValuationInputResolution]:
+    direct = _estimate(estimates, metric_name)
+    if direct is not None:
+        return direct, _estimate_resolution(f"Forward {metric_name}", direct, currency)
+    if metric_name != "EBITDA":
+        return None, ValuationInputResolution(
+            input_name=f"Forward {metric_name}",
+            status="missing",
+            unit=currency,
+            reason=f"No annual {metric_name} estimate was returned by an eligible consensus source.",
+        )
+
+    forward_revenue = _estimate(estimates, "Revenue")
+    historical_revenue = metrics.get("Revenue")
+    historical_ebitda = metrics.get("EBITDA")
+    if forward_revenue is None:
+        reason = "No annual forward revenue estimate is available for a margin-based EBITDA derivation."
+    elif not _usable_estimate(forward_revenue, currency):
+        reason = "The forward revenue estimate is missing, non-positive, or in an unnormalized currency."
+    elif historical_ebitda is None:
+        reason = (
+            "No normalized EBITDA fact or aligned Operating Income plus Depreciation and "
+            "Amortization pair is available."
+        )
+    elif not _aligned_metric_basis(historical_revenue, historical_ebitda):
+        reason = (
+            "Revenue and EBITDA are available, but their reporting periods are not aligned; "
+            "mixing quarter, year-to-date, or annual values is prohibited."
+        )
+    elif not historical_revenue or historical_revenue.value <= 0:
+        reason = "The aligned historical revenue denominator is unavailable or non-positive."
+    else:
+        margin = historical_ebitda.value / historical_revenue.value
+        average = forward_revenue.average * margin
+        derived = EstimatePoint(
+            ticker=forward_revenue.ticker,
+            as_of=forward_revenue.as_of,
+            metric="EBITDA",
+            period_end=forward_revenue.period_end,
+            period_type=forward_revenue.period_type,
+            average=average,
+            high=(forward_revenue.high * margin if forward_revenue.high is not None else None),
+            low=(forward_revenue.low * margin if forward_revenue.low is not None else None),
+            analyst_count=forward_revenue.analyst_count,
+            currency=forward_revenue.currency,
+            source="Deterministic proxy from admitted forward revenue and aligned filing EBITDA margin",
+            observed_at=forward_revenue.observed_at,
+            source_as_of=forward_revenue.source_as_of,
+            entitlement_status=forward_revenue.entitlement_status,
+            provenance=(
+                "Derived after period, unit, currency, and admission checks; not a vendor EBITDA estimate."
+            ),
+            official=False,
+            period_precision=forward_revenue.period_precision,
+        )
+        formula = (
+            f"Forward EBITDA proxy = forward revenue x aligned filing EBITDA margin "
+            f"({margin * 100:.1f}%)."
+        )
+        return derived, ValuationInputResolution(
+            input_name="Forward EBITDA",
+            status="derived",
+            value=average,
+            unit=currency,
+            source=derived.source,
+            formula=formula,
+            reason=(
+                "A direct eligible consensus EBITDA estimate was unavailable, so the app "
+                "used an auditable margin-based proxy."
+            ),
+        )
+    return None, ValuationInputResolution(
+        input_name="Forward EBITDA",
+        status="missing",
+        unit=currency,
+        reason=reason,
+    )
+
+
+def _usable_estimate(estimate: EstimatePoint, currency: str) -> bool:
+    return bool(
+        estimate.average is not None
+        and estimate.average > 0
+        and _currency(estimate.currency) == _currency(currency)
+    )
+
+
+def _estimate_resolution(
+    label: str,
+    estimate: EstimatePoint | None,
+    currency: str,
+) -> ValuationInputResolution:
+    if estimate is None:
+        return ValuationInputResolution(
+            input_name=label,
+            status="missing",
+            unit=currency,
+            reason=f"No eligible annual {label.casefold()} estimate is available.",
+        )
+    if not _usable_estimate(estimate, currency):
+        return ValuationInputResolution(
+            input_name=label,
+            status="missing",
+            value=estimate.average,
+            unit=estimate.currency,
+            source=estimate.source,
+            reason="The estimate is non-positive, missing, or in an unnormalized currency.",
+        )
+    return ValuationInputResolution(
+        input_name=label,
+        status="available",
+        value=estimate.average,
+        unit=estimate.currency,
+        source=estimate.source,
+    )
+
+
+def _capital_input_resolutions(
+    metrics: dict[str, FinancialMetric],
+    *,
+    shares: float | None,
+    net_debt: float | None,
+    market_cap: float | None,
+    currency: str,
+) -> list[ValuationInputResolution]:
+    share_metric = metrics.get("Shares")
+    debt_names = [
+        name for name in ("Current Debt", "Long-term Debt")
+        if metrics.get(name) is not None
+    ]
+    return [
+        ValuationInputResolution(
+            input_name="Shares",
+            status="available" if shares is not None else "missing",
+            value=shares,
+            unit="shares",
+            source=(share_metric.source_kind if share_metric else ""),
+            reason=(
+                "A positive normalized share count is available."
+                if shares is not None else
+                "A positive normalized share count was not found."
+            ),
+        ),
+        ValuationInputResolution(
+            input_name="Net debt",
+            status="derived" if net_debt is not None else "missing",
+            value=net_debt,
+            unit=currency,
+            source="Normalized filing balance-sheet facts" if net_debt is not None else "",
+            formula=(
+                f"{' + '.join(debt_names)} - Cash"
+                if net_debt is not None else ""
+            ),
+            reason=(
+                "Debt and cash are normalized in the valuation currency."
+                if net_debt is not None else
+                "Cash, debt, or currency alignment is incomplete."
+            ),
+        ),
+        ValuationInputResolution(
+            input_name="Market capitalization",
+            status="derived" if market_cap is not None else "missing",
+            value=market_cap,
+            unit=currency,
+            source="Provider observation or price x normalized shares",
+            formula="Current price x listed-security shares" if market_cap is not None else "",
+            reason=(
+                "Market capitalization is available on the listed-security basis."
+                if market_cap is not None else
+                "Neither an eligible market-cap observation nor usable price-and-share pair is available."
+            ),
+        ),
+        ValuationInputResolution(
+            input_name="Valuation currency",
+            status="available" if currency else "missing",
+            unit=currency,
+            source="Consensus/listed-security currency",
+            reason=(
+                f"All method inputs must resolve to {currency}."
+                if currency else "The listed-security currency is unavailable."
+            ),
+        ),
+    ]
+
+
+def _operating_method_gap(
+    method: str,
+    operating: ValuationInputResolution,
+    *,
+    shares: float | None,
+    net_debt: float | None,
+    market_cap: float | None,
+    currency: str,
+) -> str:
+    reasons: list[str] = []
+    if operating.status == "missing":
+        reasons.append(operating.reason or f"{operating.input_name} is unavailable")
+    if shares is None:
+        reasons.append("normalized shares are unavailable")
+    if net_debt is None:
+        reasons.append("cash/debt or currency alignment prevents net-debt calculation")
+    if market_cap is None:
+        reasons.append("market capitalization cannot be resolved from an admitted observation or price and shares")
+    if not currency:
+        reasons.append("listed-security currency is unavailable")
+    return f"{method} not calculated: " + "; ".join(reasons) + "."
 
 
 def _append_per_share(values: list[list[float]], amount: float | None, multiples) -> None:
