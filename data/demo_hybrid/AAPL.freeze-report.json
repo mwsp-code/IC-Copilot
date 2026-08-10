@@ -2,7 +2,7 @@
   "ticker": "AAPL",
   "status": "blocked",
   "policy_version": "demo-quality-policy-v2",
-  "candidate_count": 19,
+  "candidate_count": 21,
   "selection_policy": "newest_completed_closed_and_gate_passing",
   "sanitization_status": "passed_decision_metadata_only",
   "candidates": [
@@ -10,7 +10,1068 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:11:48+00:00",
+      "evaluated_at": "2026-08-10T17:27:40+00:00",
+      "failed_claim_ids": [
+        "7afd3e86aaf92b34",
+        "ebe8ab00b84c094f",
+        "0669c3fa7fdcba86",
+        "f06db3464fa27f0b",
+        "4eaf0c174d2a2fe4",
+        "72bd449745fb146b",
+        "8a7bef207887b4b6",
+        "fef005b70ba6e4fc",
+        "943d9ea162f17ad9",
+        "867cb8fc9b3f5521"
+      ],
+      "blockers": [
+        "Deterministic validation did not pass.",
+        "DeepSeek-led dossier did not pass the final Sol audit.",
+        "10 material claim(s) failed claim-level evidence audit.",
+        "Quantitative dossier 1e9c0fc0a4cdad43 has fewer than two independent validated source origins.",
+        "AAPL DeepSeek-led dossier did not pass the 85/100 semantic quality gate without critical failures.",
+        "Semantic review contains one or more critical failures."
+      ],
+      "next_actions": [
+        "Complete deterministic validation for the affected research artifact.",
+        "Rerun independent closure against the revised evidence snapshot.",
+        "Retrieve and admit primary evidence for the failed material claims.",
+        "Add an independent origin for 1e9c0fc0a4cdad43, or narrow its quantified conclusion.",
+        "Recompute semantic quality after the material artifact changes.",
+        "Narrow or remove the unsupported material conclusion.",
+        "historical_filing: Claim states a fiscal duration that the cited evidence does not establish.; A numerical or dated claim is not present in the cited evidence.",
+        "historical_filing: A numerical or dated claim is not present in the cited evidence.",
+        "sec_filing: Claim states a fiscal duration that the cited evidence does not establish.",
+        "sec_filing: A numerical or dated claim is not present in the cited evidence.",
+        "sec_filing: Financial metric change requires aligned current and prior periods.",
+        "sec_filing: Financial metric change requires numerical reconciliation."
+      ],
+      "output_path": "data/demo_hybrid/AAPL.json",
+      "evidence_hash": "6ae8f96e6d512d7deeb10a3e66ab927f7a9e386390701f2076514934588d2860",
+      "validation_status": "partial",
+      "source_run_id": "364fe1a8-1d8c-49f5-bf5c-9967224f0727",
+      "source_run_completed_at": "",
+      "qa_closure_state": "failed_material_findings_unaddressed",
+      "policy_version": "demo-quality-policy-v2",
+      "artifact_schema_version": "demo-hybrid-artifact-v2",
+      "sanitization_status": "pending",
+      "research_profile": "deepseek-primary-sol-audit-dual-five-round",
+      "source_policy_summary": "registry=source-registry-v3-auditable-retrieval; evidence=6ae8f96e6d512d7deeb10a3e66ab927f7a9e386390701f2076514934588d2860",
+      "publication_gate_evaluation": {
+        "evaluation_id": "publication-evaluation-9124eebfebd9f52abb0e",
+        "run_id": "364fe1a8-1d8c-49f5-bf5c-9967224f0727",
+        "artifact_version": "",
+        "evidence_hash": "6ae8f96e6d512d7deeb10a3e66ab927f7a9e386390701f2076514934588d2860",
+        "publication_policy_version": "demo-quality-policy-v2",
+        "validation_policy_version": "deterministic-validation-v1",
+        "schema_version": "demo-hybrid-artifact-v2",
+        "parser_version": "registered-parser-v1",
+        "evaluated_at": "2026-08-10T17:27:40.450923+00:00",
+        "decision": "repair_required",
+        "failures": [
+          {
+            "failure_id": "gate-failure-c419ee8527d1c7c998d7",
+            "code": "deterministic_validation_partial",
+            "run_id": "364fe1a8-1d8c-49f5-bf5c-9967224f0727",
+            "summary": "Deterministic evidence validation is incomplete.",
+            "technical_diagnosis": "Validation status is partial.",
+            "materiality": "High",
+            "scope_type": "artifact",
+            "scope_id": "",
+            "retryable": true,
+            "required_source_families": [],
+            "blocking_rule": "Publication requires passed deterministic validation before final audit.",
+            "recommended_repair_kind": "complete_deterministic_validation",
+            "related_evidence_ids": [],
+            "related_finding_ids": [],
+            "related_claim_ids": [],
+            "related_action_ids": [],
+            "dependency_fingerprint": "dependency-31265cd9b629bb9da74d",
+            "schema_version": "publication-gate-failure-v1"
+          },
+          {
+            "failure_id": "gate-failure-1f0b5337b7923b8f89d0",
+            "code": "final_closure_not_passed",
+            "run_id": "364fe1a8-1d8c-49f5-bf5c-9967224f0727",
+            "summary": "Independent closure has not passed.",
+            "technical_diagnosis": "No passing closure artifact exists.",
+            "materiality": "High",
+            "scope_type": "artifact",
+            "scope_id": "",
+            "retryable": true,
+            "required_source_families": [],
+            "blocking_rule": "Publication requires an eligible independent closure result.",
+            "recommended_repair_kind": "rerun_closure",
+            "related_evidence_ids": [],
+            "related_finding_ids": [],
+            "related_claim_ids": [],
+            "related_action_ids": [],
+            "dependency_fingerprint": "dependency-a6d36a21292364ddd9e1",
+            "schema_version": "publication-gate-failure-v1"
+          },
+          {
+            "failure_id": "gate-failure-410207a7e9d9dc9b8004",
+            "code": "material_claim_validation_failed",
+            "run_id": "364fe1a8-1d8c-49f5-bf5c-9967224f0727",
+            "summary": "10 material claim(s) failed evidence validation.",
+            "technical_diagnosis": "Claim states a fiscal duration that the cited evidence does not establish.; A numerical or dated claim is not present in the cited evidence.; Financial metric change requires aligned current and prior periods.; Financial metric change requires aligned current and prior periods.; Financial metric change lacks an eligible driver-specific source.; Financial metric change requires aligned current and prior periods.; Financial metric change lacks an eligible driver-specific source.; Financial metric change requires aligned current and prior periods.",
+            "materiality": "High",
+            "scope_type": "artifact",
+            "scope_id": "",
+            "retryable": true,
+            "required_source_families": [
+              "historical_filing"
+            ],
+            "blocking_rule": "Every material published claim must pass claim-to-evidence validation.",
+            "recommended_repair_kind": "retrieve_missing_primary_evidence",
+            "related_evidence_ids": [],
+            "related_finding_ids": [],
+            "related_claim_ids": [
+              "7afd3e86aaf92b34",
+              "ebe8ab00b84c094f",
+              "0669c3fa7fdcba86",
+              "f06db3464fa27f0b",
+              "4eaf0c174d2a2fe4",
+              "72bd449745fb146b",
+              "8a7bef207887b4b6",
+              "fef005b70ba6e4fc",
+              "943d9ea162f17ad9",
+              "867cb8fc9b3f5521"
+            ],
+            "related_action_ids": [],
+            "dependency_fingerprint": "dependency-f3d5cd5e732113d1dc3b",
+            "schema_version": "publication-gate-failure-v1"
+          },
+          {
+            "failure_id": "gate-failure-9e994bf00a250fe7e7df",
+            "code": "analog_independent_provenance_insufficient",
+            "run_id": "364fe1a8-1d8c-49f5-bf5c-9967224f0727",
+            "summary": "A quantified analog conclusion lacks independent provenance.",
+            "technical_diagnosis": "Analog 1e9c0fc0a4cdad43 has 0 independent origin group(s); 2 required.",
+            "materiality": "High",
+            "scope_type": "analog",
+            "scope_id": "1e9c0fc0a4cdad43",
+            "retryable": true,
+            "required_source_families": [
+              "historical_filing",
+              "quantitative_historical_price",
+              "industry_archive"
+            ],
+            "blocking_rule": "Quantified analog conclusions require independently originated support.",
+            "recommended_repair_kind": "retrieve_independent_analog_origin",
+            "related_evidence_ids": [],
+            "related_finding_ids": [],
+            "related_claim_ids": [],
+            "related_action_ids": [],
+            "dependency_fingerprint": "dependency-c515ae0cc095686dada9",
+            "schema_version": "publication-gate-failure-v1"
+          },
+          {
+            "failure_id": "gate-failure-c14b3de27499ec3ef6d3",
+            "code": "semantic_quality_below_threshold",
+            "run_id": "364fe1a8-1d8c-49f5-bf5c-9967224f0727",
+            "summary": "Semantic quality is below the 85/100 publication threshold.",
+            "technical_diagnosis": "Current deterministic/provider-constrained score is 44/100.",
+            "materiality": "High",
+            "scope_type": "artifact",
+            "scope_id": "",
+            "retryable": true,
+            "required_source_families": [],
+            "blocking_rule": "Publication requires the configured semantic-quality threshold.",
+            "recommended_repair_kind": "recompute_semantic_quality",
+            "related_evidence_ids": [],
+            "related_finding_ids": [],
+            "related_claim_ids": [],
+            "related_action_ids": [],
+            "dependency_fingerprint": "dependency-4ae939b9aa0d608f25a1",
+            "schema_version": "publication-gate-failure-v1"
+          },
+          {
+            "failure_id": "gate-failure-0ec71eb5fd85db9c7f14",
+            "code": "semantic_critical_failure",
+            "run_id": "364fe1a8-1d8c-49f5-bf5c-9967224f0727",
+            "summary": "Semantic review contains one or more critical failures.",
+            "technical_diagnosis": "7afd3e86aaf92b34; ebe8ab00b84c094f; 0669c3fa7fdcba86; f06db3464fa27f0b; 4eaf0c174d2a2fe4; 72bd449745fb146b; 8a7bef207887b4b6; fef005b70ba6e4fc; 943d9ea162f17ad9; 867cb8fc9b3f5521",
+            "materiality": "High",
+            "scope_type": "artifact",
+            "scope_id": "",
+            "retryable": true,
+            "required_source_families": [],
+            "blocking_rule": "Critical semantic failures must be repaired or the affected conclusion removed.",
+            "recommended_repair_kind": "narrow_or_remove_unsupported_conclusion",
+            "related_evidence_ids": [],
+            "related_finding_ids": [],
+            "related_claim_ids": [],
+            "related_action_ids": [],
+            "dependency_fingerprint": "dependency-a5930a9d840f855211bd",
+            "schema_version": "publication-gate-failure-v1"
+          }
+        ],
+        "repair_actions": [
+          {
+            "action_id": "repair-8b45060ed6a1399bf94f",
+            "idempotency_key": "repair-key-d405f050e04fd3154d1e",
+            "failure_ids": [
+              "gate-failure-c419ee8527d1c7c998d7"
+            ],
+            "repair_kind": "complete_deterministic_validation",
+            "objective": "Complete deterministic validation for the affected research artifact.",
+            "readable_explanation": "Deterministic evidence validation is incomplete.",
+            "materiality": "High",
+            "priority": "High",
+            "execution_mode": "deterministic",
+            "required_connector_ids": [],
+            "required_source_families": [],
+            "expected_information_gain": "material",
+            "cost_allowance_usd": null,
+            "depth_allowance": 1,
+            "dependency_action_ids": [
+              "repair-4bd4aa7f2a27727da8b9",
+              "repair-312287302b5b308d51b0"
+            ],
+            "completion_criteria": [
+              "All material validation gates pass."
+            ],
+            "status": "planned",
+            "attempts": 0,
+            "admitted_evidence_ids": [],
+            "conclusion_changes": [],
+            "resolution_summary": "",
+            "stopping_reason": "",
+            "schema_version": "research-repair-action-v1"
+          },
+          {
+            "action_id": "repair-cf342b1d5f270596b9f1",
+            "idempotency_key": "repair-key-4f3a243bd25ee5a99e5c",
+            "failure_ids": [
+              "gate-failure-1f0b5337b7923b8f89d0"
+            ],
+            "repair_kind": "rerun_closure",
+            "objective": "Rerun independent closure against the revised evidence snapshot.",
+            "readable_explanation": "Independent closure has not passed.",
+            "materiality": "High",
+            "priority": "High",
+            "execution_mode": "closure_auditor",
+            "required_connector_ids": [],
+            "required_source_families": [],
+            "expected_information_gain": "material",
+            "cost_allowance_usd": null,
+            "depth_allowance": 1,
+            "dependency_action_ids": [
+              "repair-09f87020db2506a2d424",
+              "repair-8b45060ed6a1399bf94f"
+            ],
+            "completion_criteria": "Closure covers every material response and newly admitted contrary item.",
+            "status": "planned",
+            "attempts": 0,
+            "admitted_evidence_ids": [],
+            "conclusion_changes": [],
+            "resolution_summary": "",
+            "stopping_reason": "",
+            "schema_version": "research-repair-action-v1"
+          },
+          {
+            "action_id": "repair-4bd4aa7f2a27727da8b9",
+            "idempotency_key": "repair-key-74d08e1e894dc7fc103d",
+            "failure_ids": [
+              "gate-failure-410207a7e9d9dc9b8004"
+            ],
+            "repair_kind": "retrieve_missing_primary_evidence",
+            "objective": "Retrieve and admit primary evidence for the failed material claims.",
+            "readable_explanation": "10 material claim(s) failed evidence validation.",
+            "materiality": "High",
+            "priority": "High",
+            "execution_mode": "registered_connector",
+            "required_connector_ids": [],
+            "required_source_families": [
+              "historical_filing"
+            ],
+            "expected_information_gain": "material",
+            "cost_allowance_usd": null,
+            "depth_allowance": 2,
+            "dependency_action_ids": [],
+            "completion_criteria": [
+              "Registered retrieval completes.",
+              "Affected claims pass revalidation."
+            ],
+            "status": "planned",
+            "attempts": 0,
+            "admitted_evidence_ids": [],
+            "conclusion_changes": [],
+            "resolution_summary": "",
+            "stopping_reason": "",
+            "schema_version": "research-repair-action-v1"
+          },
+          {
+            "action_id": "repair-312287302b5b308d51b0",
+            "idempotency_key": "repair-key-e2de67f8884a605f7708",
+            "failure_ids": [
+              "gate-failure-9e994bf00a250fe7e7df"
+            ],
+            "repair_kind": "retrieve_independent_analog_origin",
+            "objective": "Add an independent origin for 1e9c0fc0a4cdad43, or narrow its quantified conclusion.",
+            "readable_explanation": "A quantified analog conclusion lacks independent provenance.",
+            "materiality": "High",
+            "priority": "High",
+            "execution_mode": "registered_connector",
+            "required_connector_ids": [],
+            "required_source_families": [
+              "historical_filing",
+              "quantitative_historical_price",
+              "industry_archive"
+            ],
+            "expected_information_gain": "material",
+            "cost_allowance_usd": null,
+            "depth_allowance": 2,
+            "dependency_action_ids": [],
+            "completion_criteria": "Origin requirement is satisfied, or the unsupported quantified claim is narrowed.",
+            "status": "planned",
+            "attempts": 0,
+            "admitted_evidence_ids": [],
+            "conclusion_changes": [],
+            "resolution_summary": "",
+            "stopping_reason": "",
+            "schema_version": "research-repair-action-v1"
+          },
+          {
+            "action_id": "repair-96c6ba2e7edf65babff4",
+            "idempotency_key": "repair-key-c854f878af4cea9c9929",
+            "failure_ids": [
+              "gate-failure-c14b3de27499ec3ef6d3"
+            ],
+            "repair_kind": "recompute_semantic_quality",
+            "objective": "Recompute semantic quality after the material artifact changes.",
+            "readable_explanation": "Semantic quality is below the 85/100 publication threshold.",
+            "materiality": "High",
+            "priority": "High",
+            "execution_mode": "deterministic",
+            "required_connector_ids": [],
+            "required_source_families": [],
+            "expected_information_gain": "material",
+            "cost_allowance_usd": null,
+            "depth_allowance": 1,
+            "dependency_action_ids": [
+              "repair-09f87020db2506a2d424",
+              "repair-8b45060ed6a1399bf94f"
+            ],
+            "completion_criteria": "A versioned quality score reflects the current evidence and conclusions.",
+            "status": "planned",
+            "attempts": 0,
+            "admitted_evidence_ids": [],
+            "conclusion_changes": [],
+            "resolution_summary": "",
+            "stopping_reason": "",
+            "schema_version": "research-repair-action-v1"
+          },
+          {
+            "action_id": "repair-09f87020db2506a2d424",
+            "idempotency_key": "repair-key-b05ab2d19d5e3eadca86",
+            "failure_ids": [
+              "gate-failure-0ec71eb5fd85db9c7f14"
+            ],
+            "repair_kind": "narrow_or_remove_unsupported_conclusion",
+            "objective": "Narrow or remove the unsupported material conclusion.",
+            "readable_explanation": "Semantic review contains one or more critical failures.",
+            "materiality": "High",
+            "priority": "High",
+            "execution_mode": "primary_revision_provider",
+            "required_connector_ids": [],
+            "required_source_families": [],
+            "expected_information_gain": "material",
+            "cost_allowance_usd": null,
+            "depth_allowance": 1,
+            "dependency_action_ids": [
+              "repair-312287302b5b308d51b0",
+              "repair-4bd4aa7f2a27727da8b9",
+              "repair-8b45060ed6a1399bf94f"
+            ],
+            "completion_criteria": "The unsupported conclusion no longer appears as established research.",
+            "status": "planned",
+            "attempts": 0,
+            "admitted_evidence_ids": [],
+            "conclusion_changes": [],
+            "resolution_summary": "",
+            "stopping_reason": "",
+            "schema_version": "research-repair-action-v1"
+          }
+        ],
+        "applicable_gate_codes": [
+          "analog_independent_provenance_insufficient",
+          "deterministic_validation_partial",
+          "final_closure_not_passed",
+          "material_claim_validation_failed",
+          "semantic_critical_failure",
+          "semantic_quality_below_threshold"
+        ],
+        "passed_gate_codes": [],
+        "skipped_gate_codes": [],
+        "supersedes_evaluation_id": ""
+      },
+      "repair_actions": [
+        {
+          "action_id": "repair-8b45060ed6a1399bf94f",
+          "idempotency_key": "repair-key-d405f050e04fd3154d1e",
+          "failure_ids": [
+            "gate-failure-c419ee8527d1c7c998d7"
+          ],
+          "repair_kind": "complete_deterministic_validation",
+          "objective": "Complete deterministic validation for the affected research artifact.",
+          "readable_explanation": "Deterministic evidence validation is incomplete.",
+          "materiality": "High",
+          "priority": "High",
+          "execution_mode": "deterministic",
+          "required_connector_ids": [],
+          "required_source_families": [],
+          "expected_information_gain": "material",
+          "cost_allowance_usd": null,
+          "depth_allowance": 1,
+          "dependency_action_ids": [
+            "repair-4bd4aa7f2a27727da8b9",
+            "repair-312287302b5b308d51b0"
+          ],
+          "completion_criteria": [
+            "All material validation gates pass."
+          ],
+          "status": "planned",
+          "attempts": 0,
+          "admitted_evidence_ids": [],
+          "conclusion_changes": [],
+          "resolution_summary": "",
+          "stopping_reason": "",
+          "schema_version": "research-repair-action-v1"
+        },
+        {
+          "action_id": "repair-cf342b1d5f270596b9f1",
+          "idempotency_key": "repair-key-4f3a243bd25ee5a99e5c",
+          "failure_ids": [
+            "gate-failure-1f0b5337b7923b8f89d0"
+          ],
+          "repair_kind": "rerun_closure",
+          "objective": "Rerun independent closure against the revised evidence snapshot.",
+          "readable_explanation": "Independent closure has not passed.",
+          "materiality": "High",
+          "priority": "High",
+          "execution_mode": "closure_auditor",
+          "required_connector_ids": [],
+          "required_source_families": [],
+          "expected_information_gain": "material",
+          "cost_allowance_usd": null,
+          "depth_allowance": 1,
+          "dependency_action_ids": [
+            "repair-09f87020db2506a2d424",
+            "repair-8b45060ed6a1399bf94f"
+          ],
+          "completion_criteria": "Closure covers every material response and newly admitted contrary item.",
+          "status": "planned",
+          "attempts": 0,
+          "admitted_evidence_ids": [],
+          "conclusion_changes": [],
+          "resolution_summary": "",
+          "stopping_reason": "",
+          "schema_version": "research-repair-action-v1"
+        },
+        {
+          "action_id": "repair-4bd4aa7f2a27727da8b9",
+          "idempotency_key": "repair-key-74d08e1e894dc7fc103d",
+          "failure_ids": [
+            "gate-failure-410207a7e9d9dc9b8004"
+          ],
+          "repair_kind": "retrieve_missing_primary_evidence",
+          "objective": "Retrieve and admit primary evidence for the failed material claims.",
+          "readable_explanation": "10 material claim(s) failed evidence validation.",
+          "materiality": "High",
+          "priority": "High",
+          "execution_mode": "registered_connector",
+          "required_connector_ids": [],
+          "required_source_families": [
+            "historical_filing"
+          ],
+          "expected_information_gain": "material",
+          "cost_allowance_usd": null,
+          "depth_allowance": 2,
+          "dependency_action_ids": [],
+          "completion_criteria": [
+            "Registered retrieval completes.",
+            "Affected claims pass revalidation."
+          ],
+          "status": "planned",
+          "attempts": 0,
+          "admitted_evidence_ids": [],
+          "conclusion_changes": [],
+          "resolution_summary": "",
+          "stopping_reason": "",
+          "schema_version": "research-repair-action-v1"
+        },
+        {
+          "action_id": "repair-312287302b5b308d51b0",
+          "idempotency_key": "repair-key-e2de67f8884a605f7708",
+          "failure_ids": [
+            "gate-failure-9e994bf00a250fe7e7df"
+          ],
+          "repair_kind": "retrieve_independent_analog_origin",
+          "objective": "Add an independent origin for 1e9c0fc0a4cdad43, or narrow its quantified conclusion.",
+          "readable_explanation": "A quantified analog conclusion lacks independent provenance.",
+          "materiality": "High",
+          "priority": "High",
+          "execution_mode": "registered_connector",
+          "required_connector_ids": [],
+          "required_source_families": [
+            "historical_filing",
+            "quantitative_historical_price",
+            "industry_archive"
+          ],
+          "expected_information_gain": "material",
+          "cost_allowance_usd": null,
+          "depth_allowance": 2,
+          "dependency_action_ids": [],
+          "completion_criteria": "Origin requirement is satisfied, or the unsupported quantified claim is narrowed.",
+          "status": "planned",
+          "attempts": 0,
+          "admitted_evidence_ids": [],
+          "conclusion_changes": [],
+          "resolution_summary": "",
+          "stopping_reason": "",
+          "schema_version": "research-repair-action-v1"
+        },
+        {
+          "action_id": "repair-96c6ba2e7edf65babff4",
+          "idempotency_key": "repair-key-c854f878af4cea9c9929",
+          "failure_ids": [
+            "gate-failure-c14b3de27499ec3ef6d3"
+          ],
+          "repair_kind": "recompute_semantic_quality",
+          "objective": "Recompute semantic quality after the material artifact changes.",
+          "readable_explanation": "Semantic quality is below the 85/100 publication threshold.",
+          "materiality": "High",
+          "priority": "High",
+          "execution_mode": "deterministic",
+          "required_connector_ids": [],
+          "required_source_families": [],
+          "expected_information_gain": "material",
+          "cost_allowance_usd": null,
+          "depth_allowance": 1,
+          "dependency_action_ids": [
+            "repair-09f87020db2506a2d424",
+            "repair-8b45060ed6a1399bf94f"
+          ],
+          "completion_criteria": "A versioned quality score reflects the current evidence and conclusions.",
+          "status": "planned",
+          "attempts": 0,
+          "admitted_evidence_ids": [],
+          "conclusion_changes": [],
+          "resolution_summary": "",
+          "stopping_reason": "",
+          "schema_version": "research-repair-action-v1"
+        },
+        {
+          "action_id": "repair-09f87020db2506a2d424",
+          "idempotency_key": "repair-key-b05ab2d19d5e3eadca86",
+          "failure_ids": [
+            "gate-failure-0ec71eb5fd85db9c7f14"
+          ],
+          "repair_kind": "narrow_or_remove_unsupported_conclusion",
+          "objective": "Narrow or remove the unsupported material conclusion.",
+          "readable_explanation": "Semantic review contains one or more critical failures.",
+          "materiality": "High",
+          "priority": "High",
+          "execution_mode": "primary_revision_provider",
+          "required_connector_ids": [],
+          "required_source_families": [],
+          "expected_information_gain": "material",
+          "cost_allowance_usd": null,
+          "depth_allowance": 1,
+          "dependency_action_ids": [
+            "repair-312287302b5b308d51b0",
+            "repair-4bd4aa7f2a27727da8b9",
+            "repair-8b45060ed6a1399bf94f"
+          ],
+          "completion_criteria": "The unsupported conclusion no longer appears as established research.",
+          "status": "planned",
+          "attempts": 0,
+          "admitted_evidence_ids": [],
+          "conclusion_changes": [],
+          "resolution_summary": "",
+          "stopping_reason": "",
+          "schema_version": "research-repair-action-v1"
+        }
+      ]
+    },
+    {
+      "ticker": "AAPL",
+      "status": "blocked",
+      "allowed": false,
+      "evaluated_at": "2026-08-10T17:27:44+00:00",
+      "failed_claim_ids": [],
+      "blockers": [
+        "Hybrid research run is not completed.",
+        "Deterministic validation did not pass.",
+        "DeepSeek-led dossier did not pass the final Sol audit.",
+        "Quantitative dossier 1e9c0fc0a4cdad43 has fewer than two independent validated source origins.",
+        "AAPL DeepSeek-led dossier did not pass the 85/100 semantic quality gate without critical failures."
+      ],
+      "next_actions": [
+        "Resume the unfinished research attempt before validation and audit.",
+        "Complete deterministic validation for the affected research artifact.",
+        "Rerun independent closure against the revised evidence snapshot.",
+        "Add an independent origin for 1e9c0fc0a4cdad43, or narrow its quantified conclusion.",
+        "Recompute semantic quality after the material artifact changes."
+      ],
+      "output_path": "data/demo_hybrid/AAPL.json",
+      "evidence_hash": "abc342e94fa325340200de8a5bf4365fbb658221f81fce477fdff74a90e92f62",
+      "validation_status": "not_run",
+      "source_run_id": "e02bc245-dd73-4a63-a83d-2b6fb10c7199",
+      "source_run_completed_at": "2026-08-10T17:18:40.601398+00:00",
+      "qa_closure_state": "failed_material_findings_unaddressed",
+      "policy_version": "demo-quality-policy-v2",
+      "artifact_schema_version": "demo-hybrid-artifact-v2",
+      "sanitization_status": "pending",
+      "research_profile": "deepseek-primary-sol-audit-dual-five-round",
+      "source_policy_summary": "registry=source-registry-v3-auditable-retrieval; evidence=abc342e94fa325340200de8a5bf4365fbb658221f81fce477fdff74a90e92f62",
+      "publication_gate_evaluation": {
+        "evaluation_id": "publication-evaluation-375072957c22b3137e61",
+        "run_id": "e02bc245-dd73-4a63-a83d-2b6fb10c7199",
+        "artifact_version": "",
+        "evidence_hash": "abc342e94fa325340200de8a5bf4365fbb658221f81fce477fdff74a90e92f62",
+        "publication_policy_version": "demo-quality-policy-v2",
+        "validation_policy_version": "deterministic-validation-v1",
+        "schema_version": "demo-hybrid-artifact-v2",
+        "parser_version": "registered-parser-v1",
+        "evaluated_at": "2026-08-10T17:27:44.874408+00:00",
+        "decision": "repair_required",
+        "failures": [
+          {
+            "failure_id": "gate-failure-b804df485f583c150922",
+            "code": "run_incomplete",
+            "run_id": "e02bc245-dd73-4a63-a83d-2b6fb10c7199",
+            "summary": "Research execution has not reached a completed lifecycle state.",
+            "technical_diagnosis": "Stored run status is unavailable.",
+            "materiality": "High",
+            "scope_type": "artifact",
+            "scope_id": "",
+            "retryable": true,
+            "required_source_families": [],
+            "blocking_rule": "Only completed research attempts may enter publication review.",
+            "recommended_repair_kind": "complete_deterministic_validation",
+            "related_evidence_ids": [],
+            "related_finding_ids": [],
+            "related_claim_ids": [],
+            "related_action_ids": [],
+            "dependency_fingerprint": "dependency-8f32c9db7c86950ac942",
+            "schema_version": "publication-gate-failure-v1"
+          },
+          {
+            "failure_id": "gate-failure-39ef99e01765d1fafab0",
+            "code": "deterministic_validation_not_run",
+            "run_id": "e02bc245-dd73-4a63-a83d-2b6fb10c7199",
+            "summary": "Deterministic evidence validation is incomplete.",
+            "technical_diagnosis": "Validation status is not_run.",
+            "materiality": "High",
+            "scope_type": "artifact",
+            "scope_id": "",
+            "retryable": true,
+            "required_source_families": [],
+            "blocking_rule": "Publication requires passed deterministic validation before final audit.",
+            "recommended_repair_kind": "complete_deterministic_validation",
+            "related_evidence_ids": [],
+            "related_finding_ids": [],
+            "related_claim_ids": [],
+            "related_action_ids": [],
+            "dependency_fingerprint": "dependency-001931bb9f5346fa6e91",
+            "schema_version": "publication-gate-failure-v1"
+          },
+          {
+            "failure_id": "gate-failure-6dad2c9137515f3c1d1e",
+            "code": "final_closure_not_passed",
+            "run_id": "e02bc245-dd73-4a63-a83d-2b6fb10c7199",
+            "summary": "Independent closure has not passed.",
+            "technical_diagnosis": "No passing closure artifact exists.",
+            "materiality": "High",
+            "scope_type": "artifact",
+            "scope_id": "",
+            "retryable": true,
+            "required_source_families": [],
+            "blocking_rule": "Publication requires an eligible independent closure result.",
+            "recommended_repair_kind": "rerun_closure",
+            "related_evidence_ids": [],
+            "related_finding_ids": [],
+            "related_claim_ids": [],
+            "related_action_ids": [],
+            "dependency_fingerprint": "dependency-0d64057edb5e874516ca",
+            "schema_version": "publication-gate-failure-v1"
+          },
+          {
+            "failure_id": "gate-failure-e112d2ff0ee667170e34",
+            "code": "analog_independent_provenance_insufficient",
+            "run_id": "e02bc245-dd73-4a63-a83d-2b6fb10c7199",
+            "summary": "A quantified analog conclusion lacks independent provenance.",
+            "technical_diagnosis": "Analog 1e9c0fc0a4cdad43 has 0 independent origin group(s); 2 required.",
+            "materiality": "High",
+            "scope_type": "analog",
+            "scope_id": "1e9c0fc0a4cdad43",
+            "retryable": true,
+            "required_source_families": [
+              "historical_filing",
+              "quantitative_historical_price",
+              "industry_archive"
+            ],
+            "blocking_rule": "Quantified analog conclusions require independently originated support.",
+            "recommended_repair_kind": "retrieve_independent_analog_origin",
+            "related_evidence_ids": [],
+            "related_finding_ids": [],
+            "related_claim_ids": [],
+            "related_action_ids": [],
+            "dependency_fingerprint": "dependency-d09422373e06011accba",
+            "schema_version": "publication-gate-failure-v1"
+          },
+          {
+            "failure_id": "gate-failure-294f6486a66a75f44543",
+            "code": "semantic_quality_below_threshold",
+            "run_id": "e02bc245-dd73-4a63-a83d-2b6fb10c7199",
+            "summary": "Semantic quality is below the 85/100 publication threshold.",
+            "technical_diagnosis": "Current deterministic/provider-constrained score is 60/100.",
+            "materiality": "High",
+            "scope_type": "artifact",
+            "scope_id": "",
+            "retryable": true,
+            "required_source_families": [],
+            "blocking_rule": "Publication requires the configured semantic-quality threshold.",
+            "recommended_repair_kind": "recompute_semantic_quality",
+            "related_evidence_ids": [],
+            "related_finding_ids": [],
+            "related_claim_ids": [],
+            "related_action_ids": [],
+            "dependency_fingerprint": "dependency-f6675443d36472f991e3",
+            "schema_version": "publication-gate-failure-v1"
+          }
+        ],
+        "repair_actions": [
+          {
+            "action_id": "repair-a47ef5cf0b1552f6800f",
+            "idempotency_key": "repair-key-0041d89a15115e5cbe1b",
+            "failure_ids": [
+              "gate-failure-b804df485f583c150922"
+            ],
+            "repair_kind": "complete_deterministic_validation",
+            "objective": "Resume the unfinished research attempt before validation and audit.",
+            "readable_explanation": "Research execution has not reached a completed lifecycle state.",
+            "materiality": "High",
+            "priority": "High",
+            "execution_mode": "application_service",
+            "required_connector_ids": [],
+            "required_source_families": [],
+            "expected_information_gain": "material",
+            "cost_allowance_usd": null,
+            "depth_allowance": 1,
+            "dependency_action_ids": [
+              "repair-ba2374296fe4303e97e7"
+            ],
+            "completion_criteria": [
+              "The research attempt reaches a resumable finished state.",
+              "Deterministic validation is scheduled before final audit."
+            ],
+            "status": "planned",
+            "attempts": 0,
+            "admitted_evidence_ids": [],
+            "conclusion_changes": [],
+            "resolution_summary": "",
+            "stopping_reason": "",
+            "schema_version": "research-repair-action-v1"
+          },
+          {
+            "action_id": "repair-4fed5bb3942ae3963ebd",
+            "idempotency_key": "repair-key-48340ed09beb747f9325",
+            "failure_ids": [
+              "gate-failure-39ef99e01765d1fafab0"
+            ],
+            "repair_kind": "complete_deterministic_validation",
+            "objective": "Complete deterministic validation for the affected research artifact.",
+            "readable_explanation": "Deterministic evidence validation is incomplete.",
+            "materiality": "High",
+            "priority": "High",
+            "execution_mode": "deterministic",
+            "required_connector_ids": [],
+            "required_source_families": [],
+            "expected_information_gain": "material",
+            "cost_allowance_usd": null,
+            "depth_allowance": 1,
+            "dependency_action_ids": [
+              "repair-ba2374296fe4303e97e7"
+            ],
+            "completion_criteria": [
+              "All material validation gates pass."
+            ],
+            "status": "planned",
+            "attempts": 0,
+            "admitted_evidence_ids": [],
+            "conclusion_changes": [],
+            "resolution_summary": "",
+            "stopping_reason": "",
+            "schema_version": "research-repair-action-v1"
+          },
+          {
+            "action_id": "repair-b316fa57b5d2058d929b",
+            "idempotency_key": "repair-key-f1f6f4c7f75425546bb5",
+            "failure_ids": [
+              "gate-failure-6dad2c9137515f3c1d1e"
+            ],
+            "repair_kind": "rerun_closure",
+            "objective": "Rerun independent closure against the revised evidence snapshot.",
+            "readable_explanation": "Independent closure has not passed.",
+            "materiality": "High",
+            "priority": "High",
+            "execution_mode": "closure_auditor",
+            "required_connector_ids": [],
+            "required_source_families": [],
+            "expected_information_gain": "material",
+            "cost_allowance_usd": null,
+            "depth_allowance": 1,
+            "dependency_action_ids": [
+              "repair-4fed5bb3942ae3963ebd",
+              "repair-a47ef5cf0b1552f6800f"
+            ],
+            "completion_criteria": "Closure covers every material response and newly admitted contrary item.",
+            "status": "planned",
+            "attempts": 0,
+            "admitted_evidence_ids": [],
+            "conclusion_changes": [],
+            "resolution_summary": "",
+            "stopping_reason": "",
+            "schema_version": "research-repair-action-v1"
+          },
+          {
+            "action_id": "repair-ba2374296fe4303e97e7",
+            "idempotency_key": "repair-key-c5a7e8576a72fce3117d",
+            "failure_ids": [
+              "gate-failure-e112d2ff0ee667170e34"
+            ],
+            "repair_kind": "retrieve_independent_analog_origin",
+            "objective": "Add an independent origin for 1e9c0fc0a4cdad43, or narrow its quantified conclusion.",
+            "readable_explanation": "A quantified analog conclusion lacks independent provenance.",
+            "materiality": "High",
+            "priority": "High",
+            "execution_mode": "registered_connector",
+            "required_connector_ids": [],
+            "required_source_families": [
+              "historical_filing",
+              "quantitative_historical_price",
+              "industry_archive"
+            ],
+            "expected_information_gain": "material",
+            "cost_allowance_usd": null,
+            "depth_allowance": 2,
+            "dependency_action_ids": [],
+            "completion_criteria": "Origin requirement is satisfied, or the unsupported quantified claim is narrowed.",
+            "status": "planned",
+            "attempts": 0,
+            "admitted_evidence_ids": [],
+            "conclusion_changes": [],
+            "resolution_summary": "",
+            "stopping_reason": "",
+            "schema_version": "research-repair-action-v1"
+          },
+          {
+            "action_id": "repair-764b5dec07c78b61c2f3",
+            "idempotency_key": "repair-key-f68d47d163f0758ebd30",
+            "failure_ids": [
+              "gate-failure-294f6486a66a75f44543"
+            ],
+            "repair_kind": "recompute_semantic_quality",
+            "objective": "Recompute semantic quality after the material artifact changes.",
+            "readable_explanation": "Semantic quality is below the 85/100 publication threshold.",
+            "materiality": "High",
+            "priority": "High",
+            "execution_mode": "deterministic",
+            "required_connector_ids": [],
+            "required_source_families": [],
+            "expected_information_gain": "material",
+            "cost_allowance_usd": null,
+            "depth_allowance": 1,
+            "dependency_action_ids": [
+              "repair-4fed5bb3942ae3963ebd",
+              "repair-a47ef5cf0b1552f6800f"
+            ],
+            "completion_criteria": "A versioned quality score reflects the current evidence and conclusions.",
+            "status": "planned",
+            "attempts": 0,
+            "admitted_evidence_ids": [],
+            "conclusion_changes": [],
+            "resolution_summary": "",
+            "stopping_reason": "",
+            "schema_version": "research-repair-action-v1"
+          }
+        ],
+        "applicable_gate_codes": [
+          "analog_independent_provenance_insufficient",
+          "deterministic_validation_not_run",
+          "final_closure_not_passed",
+          "run_incomplete",
+          "semantic_quality_below_threshold"
+        ],
+        "passed_gate_codes": [],
+        "skipped_gate_codes": [],
+        "supersedes_evaluation_id": ""
+      },
+      "repair_actions": [
+        {
+          "action_id": "repair-a47ef5cf0b1552f6800f",
+          "idempotency_key": "repair-key-0041d89a15115e5cbe1b",
+          "failure_ids": [
+            "gate-failure-b804df485f583c150922"
+          ],
+          "repair_kind": "complete_deterministic_validation",
+          "objective": "Resume the unfinished research attempt before validation and audit.",
+          "readable_explanation": "Research execution has not reached a completed lifecycle state.",
+          "materiality": "High",
+          "priority": "High",
+          "execution_mode": "application_service",
+          "required_connector_ids": [],
+          "required_source_families": [],
+          "expected_information_gain": "material",
+          "cost_allowance_usd": null,
+          "depth_allowance": 1,
+          "dependency_action_ids": [
+            "repair-ba2374296fe4303e97e7"
+          ],
+          "completion_criteria": [
+            "The research attempt reaches a resumable finished state.",
+            "Deterministic validation is scheduled before final audit."
+          ],
+          "status": "planned",
+          "attempts": 0,
+          "admitted_evidence_ids": [],
+          "conclusion_changes": [],
+          "resolution_summary": "",
+          "stopping_reason": "",
+          "schema_version": "research-repair-action-v1"
+        },
+        {
+          "action_id": "repair-4fed5bb3942ae3963ebd",
+          "idempotency_key": "repair-key-48340ed09beb747f9325",
+          "failure_ids": [
+            "gate-failure-39ef99e01765d1fafab0"
+          ],
+          "repair_kind": "complete_deterministic_validation",
+          "objective": "Complete deterministic validation for the affected research artifact.",
+          "readable_explanation": "Deterministic evidence validation is incomplete.",
+          "materiality": "High",
+          "priority": "High",
+          "execution_mode": "deterministic",
+          "required_connector_ids": [],
+          "required_source_families": [],
+          "expected_information_gain": "material",
+          "cost_allowance_usd": null,
+          "depth_allowance": 1,
+          "dependency_action_ids": [
+            "repair-ba2374296fe4303e97e7"
+          ],
+          "completion_criteria": [
+            "All material validation gates pass."
+          ],
+          "status": "planned",
+          "attempts": 0,
+          "admitted_evidence_ids": [],
+          "conclusion_changes": [],
+          "resolution_summary": "",
+          "stopping_reason": "",
+          "schema_version": "research-repair-action-v1"
+        },
+        {
+          "action_id": "repair-b316fa57b5d2058d929b",
+          "idempotency_key": "repair-key-f1f6f4c7f75425546bb5",
+          "failure_ids": [
+            "gate-failure-6dad2c9137515f3c1d1e"
+          ],
+          "repair_kind": "rerun_closure",
+          "objective": "Rerun independent closure against the revised evidence snapshot.",
+          "readable_explanation": "Independent closure has not passed.",
+          "materiality": "High",
+          "priority": "High",
+          "execution_mode": "closure_auditor",
+          "required_connector_ids": [],
+          "required_source_families": [],
+          "expected_information_gain": "material",
+          "cost_allowance_usd": null,
+          "depth_allowance": 1,
+          "dependency_action_ids": [
+            "repair-4fed5bb3942ae3963ebd",
+            "repair-a47ef5cf0b1552f6800f"
+          ],
+          "completion_criteria": "Closure covers every material response and newly admitted contrary item.",
+          "status": "planned",
+          "attempts": 0,
+          "admitted_evidence_ids": [],
+          "conclusion_changes": [],
+          "resolution_summary": "",
+          "stopping_reason": "",
+          "schema_version": "research-repair-action-v1"
+        },
+        {
+          "action_id": "repair-ba2374296fe4303e97e7",
+          "idempotency_key": "repair-key-c5a7e8576a72fce3117d",
+          "failure_ids": [
+            "gate-failure-e112d2ff0ee667170e34"
+          ],
+          "repair_kind": "retrieve_independent_analog_origin",
+          "objective": "Add an independent origin for 1e9c0fc0a4cdad43, or narrow its quantified conclusion.",
+          "readable_explanation": "A quantified analog conclusion lacks independent provenance.",
+          "materiality": "High",
+          "priority": "High",
+          "execution_mode": "registered_connector",
+          "required_connector_ids": [],
+          "required_source_families": [
+            "historical_filing",
+            "quantitative_historical_price",
+            "industry_archive"
+          ],
+          "expected_information_gain": "material",
+          "cost_allowance_usd": null,
+          "depth_allowance": 2,
+          "dependency_action_ids": [],
+          "completion_criteria": "Origin requirement is satisfied, or the unsupported quantified claim is narrowed.",
+          "status": "planned",
+          "attempts": 0,
+          "admitted_evidence_ids": [],
+          "conclusion_changes": [],
+          "resolution_summary": "",
+          "stopping_reason": "",
+          "schema_version": "research-repair-action-v1"
+        },
+        {
+          "action_id": "repair-764b5dec07c78b61c2f3",
+          "idempotency_key": "repair-key-f68d47d163f0758ebd30",
+          "failure_ids": [
+            "gate-failure-294f6486a66a75f44543"
+          ],
+          "repair_kind": "recompute_semantic_quality",
+          "objective": "Recompute semantic quality after the material artifact changes.",
+          "readable_explanation": "Semantic quality is below the 85/100 publication threshold.",
+          "materiality": "High",
+          "priority": "High",
+          "execution_mode": "deterministic",
+          "required_connector_ids": [],
+          "required_source_families": [],
+          "expected_information_gain": "material",
+          "cost_allowance_usd": null,
+          "depth_allowance": 1,
+          "dependency_action_ids": [
+            "repair-4fed5bb3942ae3963ebd",
+            "repair-a47ef5cf0b1552f6800f"
+          ],
+          "completion_criteria": "A versioned quality score reflects the current evidence and conclusions.",
+          "status": "planned",
+          "attempts": 0,
+          "admitted_evidence_ids": [],
+          "conclusion_changes": [],
+          "resolution_summary": "",
+          "stopping_reason": "",
+          "schema_version": "research-repair-action-v1"
+        }
+      ]
+    },
+    {
+      "ticker": "AAPL",
+      "status": "blocked",
+      "allowed": false,
+      "evaluated_at": "2026-08-10T17:27:48+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -46,7 +1107,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:11:48.993359+00:00",
+        "evaluated_at": "2026-08-10T17:27:48.407001+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -482,7 +1543,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:11:49+00:00",
+      "evaluated_at": "2026-08-10T17:27:51+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Deterministic validation did not pass.",
@@ -516,7 +1577,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:11:49.713171+00:00",
+        "evaluated_at": "2026-08-10T17:27:51.690993+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -863,7 +1924,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:11:50+00:00",
+      "evaluated_at": "2026-08-10T17:27:54+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -899,7 +1960,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:11:50.617433+00:00",
+        "evaluated_at": "2026-08-10T17:27:54.394751+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -1335,7 +2396,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:11:51+00:00",
+      "evaluated_at": "2026-08-10T17:27:57+00:00",
       "failed_claim_ids": [
         "641f4f395555079d",
         "3a8ed32af023c878",
@@ -1390,7 +2451,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:11:51.514867+00:00",
+        "evaluated_at": "2026-08-10T17:27:57.089947+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -2119,7 +3180,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:11:52+00:00",
+      "evaluated_at": "2026-08-10T17:28:00+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -2167,7 +3228,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:11:52.370943+00:00",
+        "evaluated_at": "2026-08-10T17:28:00.161077+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -2705,7 +3766,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:11:53+00:00",
+      "evaluated_at": "2026-08-10T17:28:02+00:00",
       "failed_claim_ids": [
         "d57dd315e35da2f9"
       ],
@@ -2757,7 +3818,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:11:53.144750+00:00",
+        "evaluated_at": "2026-08-10T17:28:02.723094+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -3395,7 +4456,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:11:53+00:00",
+      "evaluated_at": "2026-08-10T17:28:05+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -3436,7 +4497,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:11:53.992357+00:00",
+        "evaluated_at": "2026-08-10T17:28:05.471292+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -4048,7 +5109,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:11:54+00:00",
+      "evaluated_at": "2026-08-10T17:28:08+00:00",
       "failed_claim_ids": [
         "f36594a88cca81bf",
         "96609ed09be4c835",
@@ -4100,7 +5161,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:11:54.718841+00:00",
+        "evaluated_at": "2026-08-10T17:28:08.180518+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -4745,7 +5806,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:11:55+00:00",
+      "evaluated_at": "2026-08-10T17:28:10+00:00",
       "failed_claim_ids": [
         "338426759bf91c07",
         "956d2ef070b15cf6",
@@ -4814,7 +5875,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:11:55.583031+00:00",
+        "evaluated_at": "2026-08-10T17:28:10.930178+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -5465,7 +6526,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:11:57+00:00",
+      "evaluated_at": "2026-08-10T17:28:13+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -5501,7 +6562,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:11:57.116540+00:00",
+        "evaluated_at": "2026-08-10T17:28:13.767479+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -5941,7 +7002,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:11:59+00:00",
+      "evaluated_at": "2026-08-10T17:28:16+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -5983,7 +7044,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:11:59.464386+00:00",
+        "evaluated_at": "2026-08-10T17:28:16.362012+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -6682,7 +7743,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:12:01+00:00",
+      "evaluated_at": "2026-08-10T17:28:18+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -6724,7 +7785,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:12:01.762866+00:00",
+        "evaluated_at": "2026-08-10T17:28:18.736961+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -7423,7 +8484,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:12:04+00:00",
+      "evaluated_at": "2026-08-10T17:28:21+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -7467,7 +8528,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:12:04.007085+00:00",
+        "evaluated_at": "2026-08-10T17:28:21.576731+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -8249,7 +9310,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:12:06+00:00",
+      "evaluated_at": "2026-08-10T17:28:24+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -8291,7 +9352,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:12:06.071511+00:00",
+        "evaluated_at": "2026-08-10T17:28:24.113649+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -8990,7 +10051,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:12:08+00:00",
+      "evaluated_at": "2026-08-10T17:28:26+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -9032,7 +10093,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:12:08.211827+00:00",
+        "evaluated_at": "2026-08-10T17:28:26.702904+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -9731,7 +10792,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:12:10+00:00",
+      "evaluated_at": "2026-08-10T17:28:29+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -9775,7 +10836,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:12:10.404315+00:00",
+        "evaluated_at": "2026-08-10T17:28:29.288820+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -10557,7 +11618,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:12:12+00:00",
+      "evaluated_at": "2026-08-10T17:28:31+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Quantitative dossier 1e9c0fc0a4cdad43 has fewer than two independent validated source origins.",
@@ -10591,7 +11652,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:12:12.688817+00:00",
+        "evaluated_at": "2026-08-10T17:28:31.950843+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -10938,7 +11999,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:12:14+00:00",
+      "evaluated_at": "2026-08-10T17:28:34+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -10982,7 +12043,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:12:14.969693+00:00",
+        "evaluated_at": "2026-08-10T17:28:34.918317+00:00",
         "decision": "repair_required",
         "failures": [
           {
@@ -11764,7 +12825,7 @@
       "ticker": "AAPL",
       "status": "blocked",
       "allowed": false,
-      "evaluated_at": "2026-08-09T21:12:17+00:00",
+      "evaluated_at": "2026-08-10T17:28:39+00:00",
       "failed_claim_ids": [],
       "blockers": [
         "Hybrid research run is not completed.",
@@ -11806,7 +12867,7 @@
         "validation_policy_version": "deterministic-validation-v1",
         "schema_version": "demo-hybrid-artifact-v2",
         "parser_version": "registered-parser-v1",
-        "evaluated_at": "2026-08-09T21:12:17.403998+00:00",
+        "evaluated_at": "2026-08-10T17:28:39.143292+00:00",
         "decision": "repair_required",
         "failures": [
           {

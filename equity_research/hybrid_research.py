@@ -1677,13 +1677,16 @@ def run_quality_first_research(
             model=str(getattr(provider, "model", "") or ""),
             attempted_increment=1,
         )
-        research_round = _run_round(
+        research_round = _run_round_with_retry(
             round_number,
             role,
             provider,
             execution_backend,
             prompt,
             context,
+            retries=1,
+            retry_any_failure=False,
+            retry_malformed_json=True,
         )
         run.rounds.append(research_round)
         run.audit_findings.extend(research_round.findings)

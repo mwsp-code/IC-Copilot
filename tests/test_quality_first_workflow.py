@@ -200,6 +200,30 @@ def test_missing_optional_auditor_preserves_primary_result_and_labels_qa_not_run
     assert any(round_.role == "closure_checker" and round_.status == "not_configured" for round_ in run.rounds)
 
 
+def test_quality_first_planner_retries_truncated_json_once() -> None:
+    primary = RecordingProvider(
+        "deepseek",
+        "deepseek-v4-pro",
+        [
+            ValueError("Unterminated string starting at: line 10 column 200"),
+            {"summary": "Recovered research plan."},
+            {"summary": "Primary research after recovery.", "evidence_ids": ["e1"]},
+        ],
+    )
+
+    run = run_quality_first_research(
+        _context(),
+        primary_provider=primary,
+        auditor_provider=None,
+    )
+
+    assert run.status == "completed"
+    assert run.rounds[0].status == "completed"
+    assert run.rounds[0].retry_count == 1
+    assert "Provider retry count: 1" in run.rounds[0].message
+    assert len(primary.prompts) == 3
+
+
 def test_deep_initiation_allows_two_bounded_investigation_cycles_before_final_closure() -> None:
     context = _context()
     context["research_profile"] = "deep_initiation"
