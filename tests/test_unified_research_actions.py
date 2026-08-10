@@ -190,9 +190,19 @@ def test_decision_uses_canonical_actions_and_research_has_lazy_route_models() ->
         }
         for action in decision.investigation_actions
     )
-    assert all(
-        action.primary_cta != "Configure source"
+    source_setup_actions = [
+        action
         for action in decision.investigation_actions
+        if action.intent_type == "configure_source"
+    ]
+    assert source_setup_actions
+    assert all(
+        action.primary_cta == "Set up source, then rerun"
+        and action.setup_steps == (
+            "Set up an eligible source.",
+            "Run / Refresh Research to create an updated live result.",
+        )
+        for action in source_setup_actions
     )
     assert decision.debate is not None
     assert decision.debate.resolution_actions == ()

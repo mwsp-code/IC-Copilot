@@ -119,6 +119,7 @@ class InvestigationActionViewModel:
     blocking_reason: str = ""
     completion_criteria: tuple[str, ...] = ()
     source_families: tuple[str, ...] = ()
+    setup_steps: tuple[str, ...] = ()
     primary_cta: str = ""
     intent_type: str = "configure_source"
     allow_price_upload: bool = False
@@ -1187,10 +1188,9 @@ def _investigation_action_view_models(
         )
         primary_cta = (
             "Retry attribution" if action_kind == "market_event_attribution"
-            else "Open source setup"
+            else "Set up source, then rerun"
             if intent_type == "configure_source"
-            else "Run investigation" if auto_resolvable
-            else "Open source setup"
+            else "Run investigation"
         )
         rows.append(InvestigationActionViewModel(
             rank=int(getattr(item, "rank", len(rows) + 1) or len(rows) + 1),
@@ -1222,6 +1222,10 @@ def _investigation_action_view_models(
                 for value in list(getattr(item, "required_source_families", []) or [])
                 if value
             ),
+            setup_steps=(
+                "Set up an eligible source.",
+                "Run / Refresh Research to create an updated live result.",
+            ) if intent_type == "configure_source" else (),
             primary_cta=primary_cta,
             intent_type=intent_type,
             allow_price_upload=action_kind == "market_event_attribution",

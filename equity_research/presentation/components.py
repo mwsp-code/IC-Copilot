@@ -521,6 +521,9 @@ def render_decision_page(
                 if action.objective.casefold() != action.title.casefold():
                     st.write(action.objective)
                 st.caption(f"Why it matters: {action.why_it_matters}")
+                if action.setup_steps:
+                    st.caption("Step 1 of 2 — " + action.setup_steps[0])
+                    st.caption("Step 2 of 2 — " + action.setup_steps[1])
                 if action.attempt_summary:
                     st.caption(f"Latest attempt: {action.attempt_summary}")
                 if action.blocking_reason:

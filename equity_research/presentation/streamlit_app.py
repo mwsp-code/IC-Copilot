@@ -937,12 +937,14 @@ def main() -> None:
                 source_setup_request.get("connectors") or ()
             )
             st.info(
-                f"Source setup for {setup_title}. "
+                f"Step 1 of 2 — source setup for {setup_title}. "
                 + (
-                    "Frozen demos are read-only; connect an eligible source "
-                    "below, then use Run / Refresh Research. "
+                    "Frozen demos are read-only. Connect an eligible source "
+                    "below; step 2 is to use Run / Refresh Research for an "
+                    "updated live result. "
                     if source_setup_request.get("is_frozen_demo")
-                    else "Connect an eligible source below, then rerun the action. "
+                    else "Connect an eligible source below; step 2 is to use "
+                    "Run / Refresh Research for an updated live result. "
                 )
                 + (
                     "Requested source families: " + ", ".join(setup_sources) + "."
