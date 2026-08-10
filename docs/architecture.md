@@ -196,12 +196,23 @@ only the opaque lease handles and resumes the same idempotent run.
 
 ### Demo publication policy
 
-`DemoQualityPolicy` selects saved runs newest first but publishes only a
-completed, deterministically validated and independently closed artifact. AAPL
-also requires the semantic-score threshold, no critical failures, audited
-independently sourced analog conclusions, and available free-cash-flow, debt,
-and repurchase paths. The freezer writes atomically and records the source run,
-completion time, evidence hash, policy/schema versions, closure state, and
+`DemoQualityPolicy v3` publishes one canonical result per ticker. A completed,
+deterministically validated artifact with accepted independent closure may be
+`Publication-quality research` at 85 or above, or `Research completed with
+residual diligence` at 75 through 84 (or when an explicit non-blocking
+qualification remains). Both outcomes use the same routes and artifact.
+
+Unsupported claims are removed or narrowed before evaluation, converted into
+canonical investigation actions, and excluded from valuation, confidence, and
+direction. An analog without independent provenance may remain visible only as
+a candidate that cannot support a conclusion or score. A missing financial path
+is non-blocking only when dependency analysis proves that no displayed decision
+or valuation uses it. Evidence integrity, no-lookahead, licensing, sanitization,
+critical-failure, and closure gates remain hard blockers.
+
+The freezer selects eligible saved runs newest first and writes atomically. It
+records the source run, canonical revision, completion time, evidence hash,
+policy/schema versions, closure state, publication label, qualifications, and
 sanitization status. If no candidate passes, the public artifact is preserved
 and a repair report is generated; thresholds and frozen JSON are never edited to
 conceal a failure.

@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import re
 from typing import Any, Callable, Iterable, Protocol
 
 from ..domain.publication_readiness import (
+    CanonicalPublicationRevision,
     DEFAULT_COVERAGE_PROFILES,
     DerivedArtifactDependency,
     IndependentOriginRequirement,
     PublicationFailureCode,
     PublicationGateEvaluation,
     PublicationGateFailure,
+    PublicationQualification,
+    PublicationQualificationCode,
     RepairKind,
     RepairStatus,
     ResearchRepairAction,
@@ -27,7 +31,7 @@ from ..domain.research_integrity import (
     EvidenceAdmissionPolicy,
     ResearchRequest,
 )
-from ..models import DemoQualityPolicy
+from ..models import DemoQualityPolicy, ResearchRoundArtifact
 from .research_requests import ResearchRequestDispatcher
 
 
@@ -56,6 +60,284 @@ class RepairExecutionContext:
     evidence_hash: str
     recursion_depth: int
     event_recorder: Callable[[str, dict[str, Any]], None] | None = None
+
+
+def canonicalize_artifact_for_publication(
+    run: Any,
+    artifact: ResearchRoundArtifact,
+    *,
+    reason: str = "deterministic_validation_failed",
+) -> tuple[ResearchRoundArtifact, CanonicalPublicationRevision] | None:
+    """Remove unsupported conclusions while retaining them as research leads."""
+
+    audits = list(getattr(run, "claim_evidence_audits", []) or [])
+    unsupported = [
+        item for item in audits
+        if str(getattr(item, "status", "")).casefold() != "passed"
+    ]
+    if not unsupported:
+        return None
+
+    unsupported_by_text = {
+        _normalized_claim_text(str(getattr(item, "claim_text", ""))): item
+        for item in unsupported
+        if str(getattr(item, "claim_text", "")).strip()
+    }
+    payload = deepcopy(artifact.payload)
+    retained_claims: list[dict[str, Any]] = []
+    removed_claim_ids: list[str] = []
+    narrowed_claim_ids: list[str] = []
+    research_leads = list(payload.get("research_leads") or [])
+    source_requests = list(payload.get("source_requests") or [])
+    generated_action_ids: list[str] = []
+
+    for claim in payload.get("claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        claim_text = str(claim.get("claim") or claim.get("statement") or "").strip()
+        audit = unsupported_by_text.get(_normalized_claim_text(claim_text))
+        if audit is None:
+            retained_claims.append(claim)
+            continue
+        claim_id = str(getattr(audit, "claim_id", "") or stable_contract_id(
+            "canonical-claim", getattr(run, "run_id", ""), claim_text
+        ))
+        action_id = stable_contract_id(
+            "canonical-investigation-action",
+            getattr(run, "ticker", ""),
+            claim_id,
+        )
+        generated_action_ids.append(action_id)
+        status = str(getattr(audit, "status", "") or "failed")
+        if status == "qualitative_required":
+            narrowed_claim_ids.append(claim_id)
+        else:
+            removed_claim_ids.append(claim_id)
+        blockers = tuple(str(item) for item in getattr(audit, "blockers", []) or [])
+        research_leads.append({
+            "lead_id": action_id,
+            "claim_id": claim_id,
+            "statement": claim_text,
+            "status": "investigation_required",
+            "reason": blockers[0] if blockers else "Claim-level validation did not pass.",
+            "cannot_support_conclusions": True,
+        })
+        source_type = _repair_source_type(audit)
+        source_requests.append({
+            "request_id": action_id,
+            "source_type": source_type,
+            "title": f"Validate {getattr(run, 'ticker', '')} claim",
+            "objective": f"Confirm or disprove with admitted evidence: {claim_text}",
+            "desired_confirming_evidence": claim_text,
+            "desired_contradicting_evidence": f"Evidence that contradicts or qualifies: {claim_text}",
+            "priority": "High",
+            "scope": "claim",
+            "stopping_rule": "Stop when the claim passes validation or is removed.",
+            "status": "open",
+        })
+
+    payload["claims"] = retained_claims
+    payload["research_leads"] = _dedupe_dicts(research_leads, "lead_id")
+    payload["source_requests"] = _dedupe_dicts(source_requests, "request_id")
+    retained_text = [
+        str(item.get("claim") or item.get("statement") or "").strip()
+        for item in retained_claims
+        if isinstance(item, dict)
+    ]
+    payload["summary"] = (
+        "Deterministically validated observations: " + " ".join(retained_text[:3])
+        if retained_text else
+        "No material model-authored claim cleared deterministic validation. "
+        "Remaining items are research leads and cannot support valuation or trade direction."
+    )
+    payload["verdict"] = "No validated trade conclusion established."
+    payload["publication_scope"] = {
+        "status": "residual_diligence",
+        "unsupported_claims_removed": len(removed_claim_ids),
+        "claims_narrowed_to_research_leads": len(narrowed_claim_ids),
+        "valuation_or_trade_direction_supported": False,
+        "reason": reason,
+    }
+    for key in (
+        "fair_value",
+        "price_target",
+        "expected_return",
+        "expected_return_pct",
+        "valuation_conclusion",
+        "timing_signal",
+        "confidence_score",
+    ):
+        payload.pop(key, None)
+    limitations = list(payload.get("limitations") or [])
+    limitations.append(
+        f"{len(removed_claim_ids) + len(narrowed_claim_ids)} unsupported or qualified claim(s) were removed from conclusions and moved to investigation."
+    )
+    payload["limitations"] = list(dict.fromkeys(str(item) for item in limitations if item))
+
+    downgraded_analog_ids: list[str] = []
+    dossiers = []
+    for index, dossier in enumerate(payload.get("historical_analog_dossiers") or []):
+        if not isinstance(dossier, dict):
+            continue
+        revised = dict(dossier)
+        analog_id = str(revised.get("analog_id") or revised.get("dossier_id") or stable_contract_id(
+            "canonical-analog", getattr(run, "run_id", ""), index
+        ))
+        if str(revised.get("status") or "") not in {
+            "Audited Research Analog", "Frozen Demo Dossier"
+        }:
+            revised["status"] = "Historical analog candidate"
+            revised["cannot_support_conclusions"] = True
+            for key in (
+                "quantified_outcome", "return_pct", "valuation_outcome",
+                "probability", "score_impact",
+            ):
+                revised.pop(key, None)
+            downgraded_analog_ids.append(analog_id)
+        dossiers.append(revised)
+    if dossiers:
+        payload["historical_analog_dossiers"] = dossiers
+
+    parent_hash = str(getattr(run, "evidence_hash", "") or "")
+    revision_id = stable_contract_id(
+        "canonical-publication-revision",
+        getattr(run, "run_id", ""),
+        artifact.artifact_id,
+        tuple(sorted((*removed_claim_ids, *narrowed_claim_ids))),
+        parent_hash,
+    )
+    invalidated = tuple(sorted({
+        str(getattr(item, "artifact_id", ""))
+        for item in getattr(run, "derived_artifact_dependencies", []) or []
+        if set(getattr(item, "claim_ids", ()) or ())
+        & set((*removed_claim_ids, *narrowed_claim_ids))
+    }))
+    revision = CanonicalPublicationRevision(
+        revision_id=revision_id,
+        run_id=str(getattr(run, "run_id", "") or ""),
+        parent_artifact_id=artifact.artifact_id,
+        parent_evidence_hash=parent_hash,
+        revised_evidence_hash=parent_hash,
+        removed_claim_ids=tuple(removed_claim_ids),
+        narrowed_claim_ids=tuple(narrowed_claim_ids),
+        downgraded_analog_ids=tuple(downgraded_analog_ids),
+        invalidated_artifact_ids=invalidated,
+        generated_action_ids=tuple(generated_action_ids),
+        counter_thesis_status=(
+            "established" if payload.get("adverse_hypotheses") else "diligence_gap"
+        ),
+        summary=(
+            f"Removed {len(removed_claim_ids)} unsupported claim(s) and narrowed "
+            f"{len(narrowed_claim_ids)} item(s) to research leads."
+        ),
+        created_at=_utc_now(),
+    )
+    payload["canonical_publication_revision"] = asdict(revision)
+    revised_artifact = replace(
+        artifact,
+        artifact_id=stable_contract_id("canonical-artifact", artifact.artifact_id, revision_id),
+        artifact_type="canonical_primary_for_publication",
+        status="accepted_with_gaps",
+        summary=str(payload["summary"]),
+        payload=payload,
+        evidence_ids=sorted({
+            str(evidence_id)
+            for claim in retained_claims
+            for evidence_id in claim.get("evidence_ids", [])
+            if evidence_id
+        }),
+        source_request_ids=sorted(set(artifact.source_request_ids + generated_action_ids)),
+        validation_gaps=list(dict.fromkeys([
+            *artifact.validation_gaps,
+            revision.summary,
+        ])),
+    )
+    revisions = getattr(run, "canonical_publication_revisions", None)
+    if isinstance(revisions, list) and not any(
+        getattr(item, "revision_id", "") == revision_id for item in revisions
+    ):
+        revisions.append(revision)
+    return revised_artifact, revision
+
+
+def record_analog_candidate_revision(
+    run: Any,
+    analog_ids: Iterable[str],
+) -> CanonicalPublicationRevision | None:
+    """Record a deterministic, non-concluding downgrade for unproven analogs."""
+
+    normalized_ids = tuple(sorted({str(item) for item in analog_ids if item}))
+    if not normalized_ids:
+        return None
+    revisions = getattr(run, "canonical_publication_revisions", None)
+    if not isinstance(revisions, list):
+        return None
+    for revision in reversed(revisions):
+        if tuple(sorted(getattr(revision, "downgraded_analog_ids", ()) or ())) == normalized_ids:
+            return revision
+    artifact = getattr(run, "final_artifact", None)
+    parent_artifact_id = str(getattr(artifact, "artifact_id", "") or "")
+    evidence_hash = str(getattr(run, "evidence_hash", "") or "")
+    revision = CanonicalPublicationRevision(
+        revision_id=stable_contract_id(
+            "canonical-analog-candidate-revision",
+            getattr(run, "run_id", ""),
+            parent_artifact_id,
+            normalized_ids,
+            evidence_hash,
+        ),
+        run_id=str(getattr(run, "run_id", "") or ""),
+        parent_artifact_id=parent_artifact_id,
+        parent_evidence_hash=evidence_hash,
+        revised_evidence_hash=evidence_hash,
+        downgraded_analog_ids=normalized_ids,
+        generated_action_ids=tuple(
+            stable_contract_id(
+                "canonical-analog-investigation-action",
+                getattr(run, "ticker", ""),
+                analog_id,
+            )
+            for analog_id in normalized_ids
+        ),
+        counter_thesis_status="established",
+        summary=(
+            f"Downgraded {len(normalized_ids)} historical analog(s) to "
+            "non-concluding investigation candidates."
+        ),
+        created_at=_utc_now(),
+    )
+    revisions.append(revision)
+    return revision
+
+
+def _normalized_claim_text(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _repair_source_type(audit: Any) -> str:
+    claim_type = str(getattr(audit, "claim_type", "") or "").casefold()
+    classification = str(getattr(audit, "classification", "") or "").casefold()
+    if "price" in claim_type or "valuation" in claim_type:
+        return "quantitative_historical_price"
+    if "regulatory" in claim_type or "disclosure" in claim_type:
+        return "sec_filing"
+    if classification in {"inference", "hypothesis"}:
+        return "issuer_management_remarks"
+    return "historical_filing"
+
+
+def _dedupe_dicts(items: Iterable[Any], key: str) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        semantic = str(item.get(key) or stable_contract_id("canonical-item", item))
+        if semantic in seen:
+            continue
+        seen.add(semantic)
+        result.append(item)
+    return result
 
 
 class RepairStrategy(Protocol):
@@ -311,6 +593,7 @@ class PublicationGateEvaluator:
         ticker = ticker.upper()
         run_id = str(getattr(run, "run_id", "") or "")
         failures: list[PublicationGateFailure] = []
+        qualifications: list[PublicationQualification] = []
         dossiers = list(audited_dossiers)
         status = str(getattr(run, "status", "") or "")
         lifecycle_state = str(getattr(run, "lifecycle_state", "") or "")
@@ -351,9 +634,9 @@ class PublicationGateEvaluator:
         )
         audit_decision = getattr(primary, "audit_decision", None)
         closure_state = _closure_state(run, audit_decision)
-        if policy.require_closed_qa and closure_state not in {
-            "closed", "closed_with_residual_risk"
-        }:
+        if policy.require_closed_qa and closure_state not in set(
+            policy.eligible_closure_states
+        ):
             failures.append(_failure(
                 PublicationFailureCode.FINAL_CLOSURE_NOT_PASSED,
                 run_id,
@@ -361,6 +644,13 @@ class PublicationGateEvaluator:
                 str(getattr(audit_decision, "decision", "No passing closure artifact exists.")),
                 RepairKind.RERUN_CLOSURE,
                 "Publication requires an eligible independent closure result.",
+            ))
+        elif closure_state == "closed_with_residual_risk":
+            qualifications.append(_qualification(
+                PublicationQualificationCode.CLOSURE_WITH_RESIDUAL_RISK,
+                run_id,
+                "Independent QA closed with residual risk.",
+                "No material contradiction was ignored, but residual diligence remains.",
             ))
         failed_claims = [
             item for item in getattr(run, "claim_evidence_audits", []) or []
@@ -411,6 +701,43 @@ class PublicationGateEvaluator:
             item for item in dossiers
             if str(getattr(item, "status", "")) in {"Audited Research Analog", "Frozen Demo Dossier"}
         ]
+        candidate_dossiers = [
+            item for item in dossiers
+            if str(getattr(item, "status", "")).casefold() in {
+                "historical analog candidate", "candidate", "candidate watch"
+            }
+        ]
+        origin_requirements = independent_origin_requirements(
+            run,
+            eligible_dossiers,
+            required=policy.require_independent_quantified_origins,
+        )
+        insufficient_analog_ids = {
+            requirement.analog_id
+            for requirement in origin_requirements
+            if not requirement.satisfied and requirement.analog_id
+        }
+        if (
+            insufficient_analog_ids
+            and policy.allow_analog_candidates
+            and not policy.require_audited_analog
+        ):
+            downgraded = [
+                item for item in eligible_dossiers
+                if _analog_identity(item) in insufficient_analog_ids
+            ]
+            eligible_dossiers = [
+                item for item in eligible_dossiers
+                if _analog_identity(item) not in insufficient_analog_ids
+            ]
+            candidate_dossiers.extend(downgraded)
+            qualifications.append(_qualification(
+                PublicationQualificationCode.ANALOG_DOWNGRADED_TO_CANDIDATE,
+                run_id,
+                "Historical analogs remain investigation candidates.",
+                "Missing independent provenance prevents these analogs from supporting conclusions, scores, valuation, or trade direction.",
+                analog_ids=tuple(sorted(insufficient_analog_ids)),
+            ))
         if policy.require_audited_analog and not eligible_dossiers:
             failures.append(_failure(
                 PublicationFailureCode.ANALOG_INDEPENDENT_PROVENANCE_INSUFFICIENT,
@@ -421,12 +748,29 @@ class PublicationGateEvaluator:
                 "Publication policy requires at least one audited decision-useful analog.",
                 source_families=("historical_filing", "quantitative_historical_price"),
             ))
-        for requirement in independent_origin_requirements(
-            run,
-            eligible_dossiers,
-            required=policy.require_independent_quantified_origins,
+        elif (
+            not eligible_dossiers
+            and policy.allow_analog_candidates
+            and (candidate_dossiers or _run_has_analog_leads(run))
         ):
+            qualifications.append(_qualification(
+                PublicationQualificationCode.ANALOG_DOWNGRADED_TO_CANDIDATE,
+                run_id,
+                "Historical analogs remain investigation candidates.",
+                "They cannot support conclusions, scores, valuation, or trade direction until independently validated.",
+                analog_ids=tuple(
+                    str(getattr(item, "analog_id", "") or getattr(item, "dossier_id", ""))
+                    for item in candidate_dossiers
+                ),
+            ))
+        for requirement in origin_requirements:
             if requirement.satisfied:
+                continue
+            if (
+                requirement.analog_id in insufficient_analog_ids
+                and policy.allow_analog_candidates
+                and not policy.require_audited_analog
+            ):
                 continue
             failures.append(_failure(
                 PublicationFailureCode.ANALOG_INDEPENDENT_PROVENANCE_INSUFFICIENT,
@@ -450,17 +794,25 @@ class PublicationGateEvaluator:
             if str(getattr(item, "status", "")) == "available"
         }
         for missing_path in sorted(required_paths - available_paths):
-            failures.append(_failure(
-                PublicationFailureCode.REQUIRED_FINANCIAL_PATH_MISSING,
-                run_id,
-                f"Required financial path unavailable: {missing_path}.",
-                f"The active coverage profile requires {missing_path}, but no available validated path exists.",
-                RepairKind.COMPLETE_REQUIRED_FINANCIAL_PATH,
-                "Publication requires the decision-critical financial paths in the active coverage profile.",
-                scope_type="financial_path",
-                scope_id=missing_path,
-                source_families=("historical_filing",),
-            ))
+            if _financial_path_is_decision_dependency(run, missing_path):
+                failures.append(_failure(
+                    PublicationFailureCode.REQUIRED_FINANCIAL_PATH_MISSING,
+                    run_id,
+                    f"Decision-critical financial path unavailable: {missing_path}.",
+                    f"A displayed conclusion depends on {missing_path}, but no validated path exists.",
+                    RepairKind.COMPLETE_REQUIRED_FINANCIAL_PATH,
+                    "Publication requires every financial path used by thesis, valuation, or trade direction.",
+                    scope_type="financial_path",
+                    scope_id=missing_path,
+                    source_families=("historical_filing",),
+                ))
+            else:
+                qualifications.append(_qualification(
+                    PublicationQualificationCode.OPTIONAL_FINANCIAL_PATH_UNAVAILABLE,
+                    run_id,
+                    f"Optional financial path unavailable: {missing_path}.",
+                    "No displayed conclusion depends on this path; it remains a diligence item.",
+                ))
         gaps = " ".join(str(item) for item in getattr(run, "data_gaps", []) or []).casefold()
         if "mapping" in gaps and ("unresolved" in gaps or "failed" in gaps):
             failures.append(_failure(
@@ -472,7 +824,10 @@ class PublicationGateEvaluator:
                 "Material numeric observations require a validated concept, period, unit, and source mapping.",
                 source_families=("historical_filing",),
             ))
-        threshold = int(policy.ticker_minimum_scores.get(ticker, 85))
+        threshold = int(policy.ticker_minimum_scores.get(
+            ticker,
+            policy.minimum_publishable_score,
+        ))
         quality = self.scorer.score(
             run,
             eligible_dossiers,
@@ -507,7 +862,16 @@ class PublicationGateEvaluator:
                 RepairKind.RECOMPUTE_SEMANTIC_QUALITY,
                 "Publication requires the configured semantic-quality threshold.",
             ))
-        if quality.critical_failures or provider_critical:
+        elif effective_score < policy.publication_quality_score:
+            qualifications.append(_qualification(
+                PublicationQualificationCode.SEMANTIC_SCORE_RESIDUAL,
+                run_id,
+                "Semantic quality supports publication with residual diligence.",
+                f"Current score is {effective_score}/100; publication quality begins at {policy.publication_quality_score}/100.",
+            ))
+        if policy.require_no_critical_failures and (
+            quality.critical_failures or provider_critical
+        ):
             failures.append(_failure(
                 PublicationFailureCode.SEMANTIC_CRITICAL_FAILURE,
                 run_id,
@@ -516,11 +880,40 @@ class PublicationGateEvaluator:
                 RepairKind.NARROW_OR_REMOVE_UNSUPPORTED_CONCLUSION,
                 "Critical semantic failures must be repaired or the affected conclusion removed.",
             ))
+        latest_revision = _latest_canonical_revision(run)
+        if latest_revision is not None:
+            affected_claim_ids = tuple(sorted({
+                *latest_revision.removed_claim_ids,
+                *latest_revision.narrowed_claim_ids,
+            }))
+            if affected_claim_ids:
+                qualifications.append(_qualification(
+                    PublicationQualificationCode.UNSUPPORTED_CLAIM_REMOVED,
+                    run_id,
+                    "Unsupported claims were removed from conclusions.",
+                    latest_revision.summary,
+                    claim_ids=affected_claim_ids,
+                    action_ids=latest_revision.generated_action_ids,
+                ))
+            if latest_revision.counter_thesis_status == "diligence_gap":
+                qualifications.append(_qualification(
+                    PublicationQualificationCode.COUNTER_THESIS_DILIGENCE_GAP,
+                    run_id,
+                    "Counter-thesis remains a diligence gap.",
+                    "Incomplete contrary work is not presented as an established counter-thesis.",
+                ))
         failures = _deduplicate_failures(failures)
+        qualifications = _deduplicate_qualifications(qualifications)
         actions = compile_repair_actions(failures)
         prior = list(getattr(run, "publication_gate_evaluations", []) or [])
         evaluated_at = _utc_now()
-        decision = "publishable" if not failures else "repair_required"
+        decision = (
+            "repair_required"
+            if failures else
+            "publishable_with_residual_diligence"
+            if qualifications else
+            "publishable"
+        )
         evaluation = PublicationGateEvaluation(
             evaluation_id=stable_contract_id(
                 "publication-evaluation",
@@ -539,8 +932,12 @@ class PublicationGateEvaluator:
             evaluated_at=evaluated_at,
             decision=decision,
             failures=tuple(failures),
+            qualifications=tuple(qualifications),
             repair_actions=actions,
-            applicable_gate_codes=tuple(sorted({item.code for item in failures})),
+            applicable_gate_codes=tuple(sorted({
+                *(item.code for item in failures),
+                *(item.code for item in qualifications),
+            })),
             passed_gate_codes=() if failures else ("all_material_publication_gates",),
             supersedes_evaluation_id=(prior[-1].evaluation_id if prior else ""),
         )
@@ -898,6 +1295,34 @@ def _failure(
     )
 
 
+def _qualification(
+    code: PublicationQualificationCode,
+    run_id: str,
+    summary: str,
+    detail: str,
+    *,
+    claim_ids: tuple[str, ...] = (),
+    analog_ids: tuple[str, ...] = (),
+    action_ids: tuple[str, ...] = (),
+) -> PublicationQualification:
+    return PublicationQualification(
+        qualification_id=stable_contract_id(
+            "publication-qualification",
+            run_id,
+            code.value,
+            claim_ids,
+            analog_ids,
+        ),
+        code=code.value,
+        run_id=run_id,
+        summary=summary,
+        detail=detail,
+        affected_claim_ids=claim_ids,
+        affected_analog_ids=analog_ids,
+        related_action_ids=action_ids,
+    )
+
+
 def _repair_copy(
     kind: RepairKind,
     failure: PublicationGateFailure,
@@ -976,6 +1401,56 @@ def _required_paths(ticker: str, run: Any, policy: DemoQualityPolicy) -> set[str
     profile_id = str(provenance.get("security_archetype") or policy.default_coverage_profile_id)
     profile = DEFAULT_COVERAGE_PROFILES.get(profile_id, DEFAULT_COVERAGE_PROFILES["operating_company"])
     return set(profile.required_financial_paths)
+
+
+def _financial_path_is_decision_dependency(run: Any, path: str) -> bool:
+    normalized = path.casefold()
+    return any(
+        str(getattr(item, "status", "current")) == "current"
+        and normalized in {
+            str(value).casefold()
+            for value in getattr(item, "financial_paths", ()) or ()
+        }
+        and any(token in str(getattr(item, "artifact_type", "")).casefold() for token in (
+            "decision", "thesis", "valuation", "expected_return", "closed_primary"
+        ))
+        for item in getattr(run, "derived_artifact_dependencies", []) or []
+    )
+
+
+def _analog_identity(item: Any) -> str:
+    return str(
+        getattr(item, "analog_id", "")
+        or getattr(item, "dossier_id", "")
+        or ""
+    )
+
+
+def _run_has_analog_leads(run: Any) -> bool:
+    revision = _latest_canonical_revision(run)
+    if revision is not None and revision.downgraded_analog_ids:
+        return True
+    artifacts = [
+        getattr(run, "final_artifact", None),
+        *(
+            getattr(item, "artifact", None)
+            for item in getattr(run, "rounds", []) or []
+        ),
+    ]
+    return any(
+        isinstance(getattr(artifact, "payload", None), dict)
+        and bool(
+            artifact.payload.get("historical_analog_questions")
+            or artifact.payload.get("historical_analog_dossiers")
+        )
+        for artifact in artifacts
+        if artifact is not None
+    )
+
+
+def _latest_canonical_revision(run: Any) -> CanonicalPublicationRevision | None:
+    revisions = list(getattr(run, "canonical_publication_revisions", []) or [])
+    return revisions[-1] if revisions else None
 
 
 def _promoted_quarantine_count(run: Any, records: list[Any]) -> int:
@@ -1074,6 +1549,15 @@ def _deduplicate_failures(failures: Iterable[PublicationGateFailure]) -> list[Pu
     by_key: dict[tuple[str, str, str], PublicationGateFailure] = {}
     for failure in failures:
         by_key[(failure.code, failure.scope_type, failure.scope_id)] = failure
+    return list(by_key.values())
+
+
+def _deduplicate_qualifications(
+    qualifications: Iterable[PublicationQualification],
+) -> list[PublicationQualification]:
+    by_key: dict[tuple[str, str], PublicationQualification] = {}
+    for qualification in qualifications:
+        by_key[(qualification.code, qualification.summary)] = qualification
     return list(by_key.values())
 
 

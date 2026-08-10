@@ -97,15 +97,20 @@ from .domain.research_integrity import (
     RetrievedCandidateDocument,
 )
 from .domain.publication_readiness import (
+    CanonicalPublicationRevision,
     DerivedArtifactDependency,
     PublicationGateEvaluation,
     PublicationGateFailure,
+    PublicationQualification,
     ResearchRepairAction,
     SemanticQualityDimension,
     SemanticQualityEvaluation,
     ScopeInvalidationResult,
 )
-from .application.publication_readiness import invalidate_derived_artifacts
+from .application.publication_readiness import (
+    canonicalize_artifact_for_publication,
+    invalidate_derived_artifacts,
+)
 
 
 HYBRID_PROMPT_VERSION = "hybrid-research-v12-balanced-repair-evidence"
@@ -1809,6 +1814,23 @@ def run_quality_first_research(
         run.generation_provenance["pre_audit_repair_evidence_count"] = str(
             prior_count + len(changed_ids)
         )
+    if not validation_passed:
+        canonicalized = canonicalize_artifact_for_publication(
+            run,
+            artifacts["primary_investment_analyst"],
+            reason="pre_audit_claim_validation_failed",
+        )
+        if canonicalized is not None:
+            revised_primary, canonical_revision = canonicalized
+            artifacts["primary_investment_analyst"] = revised_primary
+            validation_passed = _apply_retrieval_and_claim_audit(
+                run,
+                context,
+                revised_primary,
+            )
+            run.generation_provenance["canonical_pre_audit_revision_id"] = (
+                canonical_revision.revision_id
+            )
     run.validation_completed_at = _utc_now()
     if not validation_passed:
         run.status = "investigated_draft"
@@ -2078,6 +2100,37 @@ def run_quality_first_research(
             break
         if cycle_index + 1 >= scout_pass_limit:
             workflow_stopping_reason = "configured_depth_limit"
+
+    revision = artifacts["primary_revision"]
+    revision_validation_passed = _apply_retrieval_and_claim_audit(
+        run,
+        context,
+        revision,
+    )
+    if not revision_validation_passed:
+        canonicalized = canonicalize_artifact_for_publication(
+            run,
+            revision,
+            reason="post_revision_claim_validation_failed",
+        )
+        if canonicalized is not None:
+            revision, canonical_revision = canonicalized
+            artifacts["primary_revision"] = revision
+            revision_validation_passed = _apply_retrieval_and_claim_audit(
+                run,
+                context,
+                revision,
+            )
+            run.generation_provenance["canonical_post_revision_id"] = (
+                canonical_revision.revision_id
+            )
+    run.validation_completed_at = _utc_now()
+    if not revision_validation_passed:
+        return stop_before_closure(
+            "post_revision_validation_failed",
+            "The revised primary artifact still contains unsupported material claims; closure was not run.",
+        )
+    run.deterministic_validation_status = "passed"
 
     closure_prompt = _round_prompt(
         5,
@@ -4380,6 +4433,7 @@ def hybrid_run_from_payload(payload: dict[str, Any]) -> HybridResearchRun:
     semantic_quality_payload = payload.get("semantic_quality_history")
     dependency_payload = payload.get("derived_artifact_dependencies")
     invalidation_payload = payload.get("scope_invalidations")
+    canonical_revision_payload = payload.get("canonical_publication_revisions")
     base = {
         key: value for key, value in payload.items()
         if key not in {
@@ -4413,6 +4467,7 @@ def hybrid_run_from_payload(payload: dict[str, Any]) -> HybridResearchRun:
             "semantic_quality_history",
             "derived_artifact_dependencies",
             "scope_invalidations",
+            "canonical_publication_revisions",
         }
     }
     repair_queue = None
@@ -4559,6 +4614,11 @@ def hybrid_run_from_payload(payload: dict[str, Any]) -> HybridResearchRun:
             for item in invalidation_payload or []
             if isinstance(item, dict)
         ],
+        canonical_publication_revisions=[
+            _canonical_revision_from_payload(item)
+            for item in canonical_revision_payload or []
+            if isinstance(item, dict)
+        ],
     )
     primary = next(
         (
@@ -4617,6 +4677,11 @@ def _publication_evaluation_from_payload(payload: dict[str, Any]) -> Publication
         for item in normalized.get("failures", [])
         if isinstance(item, dict)
     )
+    normalized["qualifications"] = tuple(
+        _publication_qualification_from_payload(item)
+        for item in normalized.get("qualifications", [])
+        if isinstance(item, dict)
+    )
     normalized["repair_actions"] = tuple(
         _repair_action_from_payload(item)
         for item in normalized.get("repair_actions", [])
@@ -4629,6 +4694,34 @@ def _publication_evaluation_from_payload(payload: dict[str, Any]) -> Publication
     ):
         normalized[key] = tuple(normalized.get(key) or ())
     return PublicationGateEvaluation(**normalized)
+
+
+def _publication_qualification_from_payload(
+    payload: dict[str, Any],
+) -> PublicationQualification:
+    normalized = dict(payload)
+    for key in (
+        "affected_claim_ids",
+        "affected_analog_ids",
+        "related_action_ids",
+    ):
+        normalized[key] = tuple(normalized.get(key) or ())
+    return PublicationQualification(**normalized)
+
+
+def _canonical_revision_from_payload(
+    payload: dict[str, Any],
+) -> CanonicalPublicationRevision:
+    normalized = dict(payload)
+    for key in (
+        "removed_claim_ids",
+        "narrowed_claim_ids",
+        "downgraded_analog_ids",
+        "invalidated_artifact_ids",
+        "generated_action_ids",
+    ):
+        normalized[key] = tuple(normalized.get(key) or ())
+    return CanonicalPublicationRevision(**normalized)
 
 
 def _semantic_quality_from_payload(payload: dict[str, Any]) -> SemanticQualityEvaluation:
@@ -5962,7 +6055,9 @@ def _normalize_source_requests(
                     item.get("desired_contradicting_evidence")
                 )[:10]
             ],
-            "scope": dict(item.get("scope") or {}),
+            "scope": _normalize_research_request_scope(
+                item.get("scope"), gaps
+            ),
             "materiality": str(
                 item.get("materiality") or item.get("priority") or "Medium"
             ),
@@ -5992,6 +6087,37 @@ def _normalize_source_requests(
             "suggested_url": suggested_url,
         })
     return normalized
+
+
+def _normalize_research_request_scope(
+    value: Any,
+    gaps: list[str],
+) -> dict[str, Any]:
+    """Preserve useful request scope while tolerating harmless model shape drift."""
+
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        gaps.append(
+            "Normalized a text Research Request scope into structured metadata."
+        )
+        return {"description": _cap_text(value.strip(), 500)}
+    if isinstance(value, (list, tuple)):
+        items = [
+            _cap_text(str(item), 240)
+            for item in value
+            if item is not None and str(item).strip()
+        ][:20]
+        if items:
+            gaps.append(
+                "Normalized an array Research Request scope into structured metadata."
+            )
+            return {"items": items}
+    if value not in (None, "", [], ()):
+        gaps.append(
+            "Removed a Research Request scope that was not an object, text, or array."
+        )
+    return {}
 
 
 def _normalize_source_candidates(

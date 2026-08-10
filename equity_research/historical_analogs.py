@@ -656,6 +656,7 @@ def apply_hybrid_analog_results(
     report.primary_variant = variants.get("deepseek_led")
     report.challenger_variant = variants.get("sol_led_challenger")
     report.comparison = run.analog_comparison
+    _apply_canonical_analog_candidate_revisions(report, run)
     if report.research_manifest:
         report.research_manifest.evidence_hash = run.evidence_hash
         report.research_manifest.source_registry_version = (
@@ -740,7 +741,56 @@ def apply_hybrid_analog_results(
         if report.research_manifest:
             report.research_manifest.validation_failures.extend(failures)
     report.data_gaps = _dedupe(report.data_gaps)
+    _apply_canonical_analog_candidate_revisions(report, run)
     return report
+
+
+def _apply_canonical_analog_candidate_revisions(
+    report: HistoricalAnalogIntelligence,
+    run: HybridResearchRun,
+) -> None:
+    downgraded_ids = {
+        analog_id
+        for revision in run.canonical_publication_revisions
+        for analog_id in revision.downgraded_analog_ids
+    }
+    if not downgraded_ids:
+        return
+    changed = False
+    for dossier in report.dossiers:
+        if dossier.analog_id not in downgraded_ids:
+            continue
+        changed = True
+        dossier.status = "Historical analog candidate"
+        dossier.operating_outcome = "Not established — candidate requires independent provenance."
+        dossier.financing_outcome = "Not established — candidate requires independent provenance."
+        dossier.valuation_outcome = "Not established — candidate cannot support valuation."
+        dossier.price_outcome = "Not established — candidate cannot support trade direction."
+        dossier.quantitative_verified = False
+        dossier.audited_similarity_score = None
+        dossier.similarity_band = "Candidate"
+        dossier.audit_status = "candidate"
+        dossier.audit_decision = None
+        dossier.quality_scorecard = None
+        dossier.confidence = "Low"
+        dossier.limitations = _dedupe([
+            *dossier.limitations,
+            "This candidate lacks independent provenance and cannot support conclusions, scores, valuation, or trade direction.",
+        ])
+        dossier.generation_provenance = {
+            **dossier.generation_provenance,
+            "publication_status": "non_concluding_candidate",
+        }
+    if changed:
+        report.top_lesson = ""
+        report.coverage_status = (
+            "Historical analog candidates are available for investigation; "
+            "none may support the published thesis or valuation."
+        )
+        report.data_gaps = _dedupe([
+            *report.data_gaps,
+            "One or more historical analogs need independent provenance.",
+        ])
 
 
 def _validated_audited_dossier(

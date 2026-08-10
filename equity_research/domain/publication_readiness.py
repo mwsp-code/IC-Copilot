@@ -80,6 +80,15 @@ class RepairStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class PublicationQualificationCode(str, Enum):
+    SEMANTIC_SCORE_RESIDUAL = "semantic_score_residual"
+    CLOSURE_WITH_RESIDUAL_RISK = "closure_with_residual_risk"
+    ANALOG_DOWNGRADED_TO_CANDIDATE = "analog_downgraded_to_candidate"
+    COUNTER_THESIS_DILIGENCE_GAP = "counter_thesis_diligence_gap"
+    OPTIONAL_FINANCIAL_PATH_UNAVAILABLE = "optional_financial_path_unavailable"
+    UNSUPPORTED_CLAIM_REMOVED = "unsupported_claim_removed"
+
+
 @dataclass(frozen=True)
 class RunLifecycleTimestamps:
     research_attempt_finished_at: str = ""
@@ -133,6 +142,42 @@ class PublicationGateFailure:
             RepairKind(self.recommended_repair_kind)
         if not self.summary.strip() or not self.blocking_rule.strip():
             raise ValueError("A publication failure requires readable summary and rule.")
+
+
+@dataclass(frozen=True)
+class PublicationQualification:
+    qualification_id: str
+    code: str
+    run_id: str
+    summary: str
+    detail: str = ""
+    affected_claim_ids: tuple[str, ...] = ()
+    affected_analog_ids: tuple[str, ...] = ()
+    related_action_ids: tuple[str, ...] = ()
+    schema_version: str = "publication-qualification-v1"
+
+    def __post_init__(self) -> None:
+        PublicationQualificationCode(self.code)
+        if not self.summary.strip():
+            raise ValueError("A publication qualification requires a readable summary.")
+
+
+@dataclass(frozen=True)
+class CanonicalPublicationRevision:
+    revision_id: str
+    run_id: str
+    parent_artifact_id: str
+    parent_evidence_hash: str
+    revised_evidence_hash: str
+    removed_claim_ids: tuple[str, ...] = ()
+    narrowed_claim_ids: tuple[str, ...] = ()
+    downgraded_analog_ids: tuple[str, ...] = ()
+    invalidated_artifact_ids: tuple[str, ...] = ()
+    generated_action_ids: tuple[str, ...] = ()
+    counter_thesis_status: str = "established"
+    summary: str = ""
+    created_at: str = ""
+    schema_version: str = "canonical-publication-revision-v1"
 
 
 @dataclass
@@ -228,6 +273,7 @@ class PublicationGateEvaluation:
     evaluated_at: str
     decision: str
     failures: tuple[PublicationGateFailure, ...] = ()
+    qualifications: tuple[PublicationQualification, ...] = ()
     repair_actions: tuple[ResearchRepairAction, ...] = ()
     applicable_gate_codes: tuple[str, ...] = ()
     passed_gate_codes: tuple[str, ...] = ()
@@ -236,7 +282,14 @@ class PublicationGateEvaluation:
 
     @property
     def publishable(self) -> bool:
-        return self.decision == "publishable" and not self.failures
+        return self.decision in {
+            "publishable",
+            "publishable_with_residual_diligence",
+        } and not self.failures
+
+    @property
+    def residual_diligence(self) -> bool:
+        return self.decision == "publishable_with_residual_diligence"
 
 
 @dataclass(frozen=True)

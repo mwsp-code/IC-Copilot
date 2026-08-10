@@ -196,6 +196,8 @@ class DecisionBriefViewModel:
     debate: DebateViewModel | None = None
     technical_evidence_ids: tuple[str, ...] = ()
     investigation_actions: tuple[InvestigationActionViewModel, ...] = ()
+    publication_label: str = "Research draft · validation or QA incomplete"
+    publication_qualifications: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -241,6 +243,8 @@ class PublicationReadinessViewModel:
     progress_label: str
     repair_cards: tuple[RepairActionCardViewModel, ...] = ()
     can_repair: bool = False
+    publication_eligible: bool = False
+    qualification_summaries: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -419,6 +423,25 @@ def build_decision_brief_view_model(result: Any) -> DecisionBriefViewModel:
     qa_report = getattr(qa, "qa_report", None)
     freshness = getattr(result, "research_freshness", None)
     data_quality = getattr(result, "data_quality", None)
+    hybrid = getattr(result, "hybrid_research", None)
+    freeze_decision = getattr(hybrid, "demo_freeze_decision", None) if hybrid else None
+    publication_evaluation = (
+        getattr(freeze_decision, "publication_gate_evaluation", None)
+        or (
+            list(getattr(hybrid, "publication_gate_evaluations", []) or [])[-1]
+            if hybrid and getattr(hybrid, "publication_gate_evaluations", None)
+            else None
+        )
+    )
+    publication_label = str(
+        getattr(freeze_decision, "publication_label", "")
+        or _publication_label(publication_evaluation)
+    )
+    publication_qualifications = tuple(
+        _without_raw_ids(str(getattr(item, "summary", "") or ""))
+        for item in getattr(publication_evaluation, "qualifications", ()) or ()
+        if str(getattr(item, "summary", "") or "").strip()
+    )
 
     cases = tuple(
         ValuationCaseViewModel(
@@ -497,6 +520,8 @@ def build_decision_brief_view_model(result: Any) -> DecisionBriefViewModel:
         debate=_debate_view_model(result),
         technical_evidence_ids=technical_ids,
         investigation_actions=investigation_actions,
+        publication_label=publication_label,
+        publication_qualifications=publication_qualifications,
     )
 
 
@@ -775,12 +800,22 @@ def build_publication_readiness_view_model(
         getattr(evaluation, "publishable", False)
         or str(getattr(hybrid, "lifecycle_state", "")) in {"publishable", "published"}
     )
+    publication_label = _publication_label(evaluation)
+    qualifications = tuple(
+        _without_raw_ids(str(getattr(item, "summary", "") or ""))
+        for item in getattr(evaluation, "qualifications", ()) or ()
+        if str(getattr(item, "summary", "") or "").strip()
+    )
     research_status = str(
         getattr(hybrid, "lifecycle_state", "")
         or getattr(hybrid, "status", "")
         or "Historical result"
     ).replace("_", " ").title()
-    if eligible:
+    if eligible and qualifications:
+        summary = (
+            "This result passed the active integrity gates with explicitly recorded residual diligence."
+        )
+    elif eligible:
         summary = "This result passed the active validation, Independent QA, and publication-quality gates."
     elif cards:
         summary = (
@@ -801,13 +836,24 @@ def build_publication_readiness_view_model(
         validation_status=validation.replace("_", " ").title(),
         independent_qa_status=qa_status.replace("_", " ").title(),
         semantic_quality=quality_label,
-        publication_eligibility=("Publication-quality research" if eligible else "Not publication-ready"),
+        publication_eligibility=publication_label,
         summary=summary,
         repairs_remaining=max(0, len(actions) - completed),
         progress_label=f"{completed} of {len(actions)} repairs completed" if actions else "No repair plan recorded",
         repair_cards=tuple(cards),
         can_repair=bool(cards and hybrid is not None),
+        publication_eligible=eligible,
+        qualification_summaries=qualifications,
     )
+
+
+def _publication_label(evaluation: Any) -> str:
+    decision = str(getattr(evaluation, "decision", "") or "")
+    if decision == "publishable":
+        return "Publication-quality research"
+    if decision == "publishable_with_residual_diligence":
+        return "Research completed with residual diligence"
+    return "Research draft · validation or QA incomplete"
 
 
 def _model_execution_summary(record: Any) -> str:

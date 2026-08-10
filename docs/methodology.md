@@ -69,6 +69,26 @@ One reputable source may create a `Candidate Analog`. A displayed `Research Anal
 
 Historical analogs may challenge scenarios, counter-theses, and monitor rules. They cannot independently set direction, fair value, probability, or promotion status.
 
+## Public-result qualification
+
+The app exposes one canonical public result per ticker. A result scoring at
+least 85 with no residual qualification is labelled `Publication-quality
+research`. A result scoring at least 75 may be labelled `Research completed
+with residual diligence` only after deterministic validation and independent
+closure pass and every limitation is stated explicitly.
+
+Unsupported claims are removed from the thesis, timing, valuation, confidence,
+and verdict before publication and become investigation actions. Partially
+supported claims are narrowed to admitted evidence. Analog candidates without
+independent provenance may remain useful research leads, but cannot influence
+scores, valuation, or trade direction. Missing financial paths are eligible as
+qualifications only when no displayed conclusion depends on them.
+
+No score can override fabricated, missing, quarantined, unlicensed,
+lookahead-violating, or otherwise inadmissible evidence; ignored material
+contradictions; a critical semantic failure; failed sanitization; or absent or
+failed closure. Those conditions remain hard blockers.
+
 ## News intelligence
 
 The LLM may propose event-, driver-, peer-, and company-specific search terms

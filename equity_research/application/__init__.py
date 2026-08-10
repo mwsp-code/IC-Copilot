@@ -45,6 +45,8 @@ from .readiness import (
     preview_research_readiness,
 )
 from .publication_readiness import (
+    canonicalize_artifact_for_publication,
+    record_analog_candidate_revision,
     CallableRepairStrategy,
     build_source_lineage_graph,
     DurableRepairJobRepository,
@@ -86,6 +88,8 @@ __all__ = [
     "preview_research_readiness",
     "DurableRepairJobRepository",
     "CallableRepairStrategy",
+    "canonicalize_artifact_for_publication",
+    "record_analog_candidate_revision",
     "build_source_lineage_graph",
     "InMemoryRepairJobRepository",
     "PublicationGateEvaluator",

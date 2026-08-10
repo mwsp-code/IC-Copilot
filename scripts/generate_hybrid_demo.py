@@ -22,6 +22,12 @@ from equity_research.hybrid_research import (
     hybrid_run_from_payload,
 )
 from equity_research.auditable_retrieval import evaluate_demo_freeze
+from equity_research.application.publication_readiness import (
+    record_analog_candidate_revision,
+)
+from equity_research.domain.publication_readiness import (
+    PublicationQualificationCode,
+)
 from equity_research.historical_analogs import apply_hybrid_analog_results
 from equity_research.llm_vault import profile_api_key
 from equity_research.local_secrets import LocalSecretsManager
@@ -189,17 +195,14 @@ def main() -> int:
             or bool(getattr(run, "partial_rerun_manifest", None))
             else "fresh_run_due_to_changed_evidence"
         )
-    audited_analogs = [
-        item for item in result.historical_analogs.dossiers
-        if item.status == "Audited Research Analog"
-    ]
+    analogs = list(result.historical_analogs.dossiers)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{ticker}.json"
-    freeze_decision = evaluate_demo_freeze(
+    freeze_decision = _evaluate_with_canonical_analog_downgrade(
         ticker,
         run=run,
-        audited_dossiers=audited_analogs,
+        audited_dossiers=analogs,
         output_path=str(output_path),
         policy=DemoQualityPolicy(),
     )
@@ -208,9 +211,15 @@ def main() -> int:
         run.demo_freeze_decision = freeze_decision
     if not freeze_decision.allowed:
         report_path = output_dir / f"{ticker}.freeze-report.json"
+        repair_report = _bounded_freeze_report(
+            ticker,
+            [freeze_decision],
+            output_path=output_path,
+            selection_policy="requested_repair_candidate",
+        )
         report_path.write_text(
             json.dumps(
-                asdict(freeze_decision),
+                repair_report,
                 ensure_ascii=True,
                 indent=2,
             ) + "\n",
@@ -221,6 +230,7 @@ def main() -> int:
             f"Review {report_path}: "
             + "; ".join(freeze_decision.blockers[:5])
         )
+    _mark_run_published(run, freeze_decision)
     payload = asdict(run)
     serialized = json.dumps(payload, ensure_ascii=True, indent=2)
     _assert_no_secrets(serialized)
@@ -232,6 +242,7 @@ def main() -> int:
     temporary = output_path.with_suffix(".json.tmp")
     temporary.write_text(serialized + "\n", encoding="utf-8")
     temporary.replace(output_path)
+    _write_success_report(ticker, freeze_decision, output_path)
     print(
         f"Wrote {output_path} with {len(run.rounds)} validated rounds; "
         f"backend={run.execution_backend.label}; "
@@ -258,14 +269,11 @@ def _freeze_saved_candidates(
             continue
         base_report = demo_result(ticker).historical_analogs
         report = apply_hybrid_analog_results(base_report, run)
-        audited_analogs = [
-            item for item in report.dossiers
-            if item.status in {"Audited Research Analog", "Frozen Demo Dossier"}
-        ]
-        decision = evaluate_demo_freeze(
+        analogs = list(report.dossiers)
+        decision = _evaluate_with_canonical_analog_downgrade(
             ticker,
             run=run,
-            audited_dossiers=audited_analogs,
+            audited_dossiers=analogs,
             output_path=str(output_path),
             policy=policy,
         )
@@ -274,6 +282,7 @@ def _freeze_saved_candidates(
         if not decision.allowed:
             continue
         run.demo_freeze_decision = decision
+        _mark_run_published(run, decision)
         serialized = json.dumps(asdict(run), ensure_ascii=True, indent=2)
         _assert_no_secrets(serialized)
         _assert_license_safe(asdict(run))
@@ -283,6 +292,7 @@ def _freeze_saved_candidates(
         temporary = output_path.with_suffix(".json.tmp")
         temporary.write_text(serialized + "\n", encoding="utf-8")
         temporary.replace(output_path)
+        _write_success_report(ticker, decision, output_path)
         print(
             f"Published {run.run_id} to {output_path}; "
             f"completed_at={run.completed_at}; policy={policy.policy_version}."
@@ -290,17 +300,12 @@ def _freeze_saved_candidates(
         return 0
 
     report_path = output_dir / f"{ticker}.freeze-report.json"
-    repair_report = {
-        "ticker": ticker,
-        "status": "blocked",
-        "policy_version": policy.policy_version,
-        "candidate_count": len(evaluated),
-        "selection_policy": "newest_completed_closed_and_gate_passing",
-        "sanitization_status": "passed_decision_metadata_only",
-        "candidates": [asdict(item) for item in evaluated],
-        "published_artifact_preserved": output_path.exists(),
-        "built_in_fallback_available": True,
-    }
+    repair_report = _bounded_freeze_report(
+        ticker,
+        evaluated,
+        output_path=output_path,
+        selection_policy="newest_completed_closed_and_gate_passing",
+    )
     temporary = report_path.with_suffix(".json.tmp")
     temporary.write_text(
         json.dumps(repair_report, ensure_ascii=True, indent=2) + "\n",
@@ -310,6 +315,132 @@ def _freeze_saved_candidates(
     raise SystemExit(
         "No saved AAPL run passed the versioned demo quality policy. "
         f"The existing public artifact was preserved; review {report_path}."
+    )
+
+
+def _bounded_freeze_report(
+    ticker: str,
+    decisions: list,
+    *,
+    output_path: Path,
+    selection_policy: str,
+) -> dict:
+    """Keep maintainer repair reports readable without copying full manifests."""
+
+    policy_version = next(
+        (str(item.policy_version) for item in decisions if item.policy_version),
+        DemoQualityPolicy().policy_version,
+    )
+    candidates = []
+    for decision in decisions:
+        evaluation = decision.publication_gate_evaluation
+        candidates.append({
+            "source_run_id": decision.source_run_id,
+            "source_run_completed_at": decision.source_run_completed_at,
+            "status": decision.status,
+            "allowed": decision.allowed,
+            "publication_label": decision.publication_label,
+            "canonical_revision_id": decision.canonical_revision_id,
+            "validation_status": decision.validation_status,
+            "qa_closure_state": decision.qa_closure_state,
+            "evidence_hash": decision.evidence_hash,
+            "policy_version": decision.policy_version,
+            "failure_codes": [
+                item.code for item in evaluation.failures
+            ] if evaluation is not None else [],
+            "qualification_codes": [
+                item.code for item in evaluation.qualifications
+            ] if evaluation is not None else [],
+            "repair_kinds": list(dict.fromkeys(
+                item.repair_kind for item in decision.repair_actions
+            )),
+            "blockers": list(decision.blockers[:12]),
+            "next_actions": list(decision.next_actions[:12]),
+        })
+    return {
+        "ticker": ticker,
+        "status": "blocked",
+        "policy_version": policy_version,
+        "candidate_count": len(candidates),
+        "selection_policy": selection_policy,
+        "sanitization_status": "passed_decision_metadata_only",
+        "candidates": candidates,
+        "published_artifact_preserved": output_path.exists(),
+        "built_in_fallback_available": True,
+    }
+
+
+def _write_success_report(
+    ticker: str,
+    decision,
+    output_path: Path,
+) -> None:
+    report = _bounded_freeze_report(
+        ticker,
+        [decision],
+        output_path=output_path,
+        selection_policy="newest_completed_closed_and_gate_passing",
+    )
+    report.update({
+        "status": "published",
+        "published_artifact_preserved": True,
+        "built_in_fallback_available": True,
+    })
+    report_path = output_path.with_name(f"{ticker}.freeze-report.json")
+    temporary = report_path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(report, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(report_path)
+
+
+def _mark_run_published(run, decision) -> None:
+    published_at = str(decision.evaluated_at or "")
+    if not getattr(run, "publishable_at", ""):
+        run.publishable_at = published_at
+    run.published_at = published_at
+    run.lifecycle_state = "published"
+    if not getattr(run, "terminal_at", ""):
+        run.terminal_at = published_at
+
+
+def _evaluate_with_canonical_analog_downgrade(
+    ticker: str,
+    *,
+    run,
+    audited_dossiers: list,
+    output_path: str,
+    policy: DemoQualityPolicy,
+):
+    decision = evaluate_demo_freeze(
+        ticker,
+        run=run,
+        audited_dossiers=audited_dossiers,
+        output_path=output_path,
+        policy=policy,
+    )
+    evaluation = decision.publication_gate_evaluation
+    analog_ids = {
+        analog_id
+        for qualification in (
+            evaluation.qualifications if evaluation is not None else ()
+        )
+        if qualification.code == (
+            PublicationQualificationCode.ANALOG_DOWNGRADED_TO_CANDIDATE.value
+        )
+        for analog_id in qualification.affected_analog_ids
+        if analog_id
+    }
+    revision = record_analog_candidate_revision(run, analog_ids)
+    if revision is None:
+        return decision
+    return evaluate_demo_freeze(
+        ticker,
+        run=run,
+        audited_dossiers=audited_dossiers,
+        output_path=output_path,
+        policy=policy,
     )
 
 

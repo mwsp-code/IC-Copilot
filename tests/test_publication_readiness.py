@@ -6,6 +6,8 @@ from pathlib import Path
 
 from equity_research.application.publication_readiness import (
     build_source_lineage_graph,
+    canonicalize_artifact_for_publication,
+    record_analog_candidate_revision,
     invalidate_derived_artifacts,
     PublicationGateEvaluator,
     RepairExecutionResult,
@@ -18,14 +20,20 @@ from equity_research.domain.publication_readiness import (
     PublicationFailureCode,
     PublicationGateEvaluation,
     PublicationGateFailure,
+    PublicationQualificationCode,
     RepairKind,
     RepairStatus,
     ResearchRepairAction,
+    SemanticQualityEvaluation,
 )
 from equity_research.infrastructure.repair_repository import (
     SqliteRepairJobRepository,
 )
-from equity_research.models import DemoQualityPolicy
+from equity_research.models import (
+    ClaimEvidenceAudit,
+    DemoQualityPolicy,
+    ResearchRoundArtifact,
+)
 from equity_research.presentation.view_models import (
     build_publication_readiness_view_model,
 )
@@ -282,7 +290,7 @@ def test_publication_readiness_view_model_is_readable_and_schema_safe() -> None:
 
     model = build_publication_readiness_view_model(result)
 
-    assert model.publication_eligibility == "Not publication-ready"
+    assert model.publication_eligibility == "Research draft · validation or QA incomplete"
     assert model.repairs_remaining == 1
     assert "not ready for publication" in model.summary
     assert "deadbeef" not in " ".join(
@@ -301,7 +309,7 @@ def test_historical_result_without_new_fields_never_breaks_readiness_view() -> N
 
     model = build_publication_readiness_view_model(result)
 
-    assert model.publication_eligibility == "Not publication-ready"
+    assert model.publication_eligibility == "Research draft · validation or QA incomplete"
     assert model.repair_cards == ()
     assert "historical result" in model.summary
 
@@ -331,6 +339,8 @@ def _coverage_run(profile_id: str, paths=()):
         publication_gate_evaluations=[],
         repair_actions=[],
         semantic_quality_history=[],
+        derived_artifact_dependencies=[],
+        canonical_publication_revisions=[],
         publishable_at="",
     )
 
@@ -362,20 +372,179 @@ def test_cross_security_coverage_profiles_generate_systematic_repairs() -> None:
             audited_dossiers=[],
             policy=policy,
         )
-        missing = {
-            item.scope_id
-            for item in evaluation.failures
-            if item.code == PublicationFailureCode.REQUIRED_FINANCIAL_PATH_MISSING.value
+        optional = {
+            item.summary.removeprefix("Optional financial path unavailable: ").removesuffix(".")
+            for item in evaluation.qualifications
+            if item.code == PublicationQualificationCode.OPTIONAL_FINANCIAL_PATH_UNAVAILABLE.value
         }
-        assert missing == set(profile["required_paths"])
-        assert all(
-            action.repair_kind == RepairKind.COMPLETE_REQUIRED_FINANCIAL_PATH.value
-            for action in evaluation.repair_actions
-            if set(action.failure_ids) & {
-                item.failure_id for item in evaluation.failures
-                if item.code == PublicationFailureCode.REQUIRED_FINANCIAL_PATH_MISSING.value
-            }
+        assert optional == set(profile["required_paths"])
+
+
+class _FixedScore:
+    def __init__(self, score: int, critical=()) -> None:
+        self.score_value = score
+        self.critical = tuple(critical)
+
+    def score(self, run, dossiers, *, threshold, triggered_by):
+        return SemanticQualityEvaluation(
+            evaluation_id=f"score-{self.score_value}",
+            run_id=run.run_id,
+            artifact_version="artifact",
+            evidence_hash=run.evidence_hash,
+            total_score=self.score_value,
+            threshold=threshold,
+            status="failed" if self.critical or self.score_value < threshold else "passed",
+            critical_failures=self.critical,
+            triggered_by=triggered_by,
         )
+
+
+def _single_version_policy_run(closure_state="closed"):
+    run = _coverage_run("event_only")
+    run.final_artifact.payload["closure_state"] = closure_state
+    return run
+
+
+def test_single_version_score_outcomes_and_critical_failure_policy() -> None:
+    policy = DemoQualityPolicy(
+        require_audited_analog=False,
+        ticker_required_paths={},
+        enforce_coverage_profile_paths=False,
+    )
+    below = PublicationGateEvaluator(_FixedScore(74)).evaluate(
+        "AAPL", run=_single_version_policy_run(), audited_dossiers=[], policy=policy
+    )
+    residual = PublicationGateEvaluator(_FixedScore(80)).evaluate(
+        "AAPL", run=_single_version_policy_run(), audited_dossiers=[], policy=policy
+    )
+    quality = PublicationGateEvaluator(_FixedScore(85)).evaluate(
+        "AAPL", run=_single_version_policy_run(), audited_dossiers=[], policy=policy
+    )
+    critical = PublicationGateEvaluator(_FixedScore(90, ("critical",))).evaluate(
+        "AAPL", run=_single_version_policy_run(), audited_dossiers=[], policy=policy
+    )
+
+    assert below.decision == "repair_required"
+    assert residual.decision == "publishable_with_residual_diligence"
+    assert residual.publishable is True
+    assert quality.decision == "publishable"
+    assert critical.decision == "repair_required"
+
+
+def test_missing_financial_path_blocks_when_a_displayed_valuation_depends_on_it() -> None:
+    run = _single_version_policy_run()
+    run.derived_artifact_dependencies = [DerivedArtifactDependency(
+        artifact_id="displayed-valuation",
+        artifact_type="valuation",
+        financial_paths=("Free Cash Flow TTM",),
+    )]
+    policy = DemoQualityPolicy(
+        require_audited_analog=False,
+        ticker_required_paths={"AAPL": ("Free Cash Flow TTM",)},
+        enforce_coverage_profile_paths=False,
+    )
+
+    evaluation = PublicationGateEvaluator(_FixedScore(85)).evaluate(
+        "AAPL", run=run, audited_dossiers=[], policy=policy
+    )
+
+    assert PublicationFailureCode.REQUIRED_FINANCIAL_PATH_MISSING.value in {
+        item.code for item in evaluation.failures
+    }
+    assert PublicationQualificationCode.OPTIONAL_FINANCIAL_PATH_UNAVAILABLE.value not in {
+        item.code for item in evaluation.qualifications
+    }
+
+
+def test_missing_provenance_analog_is_downgraded_and_excluded_from_scoring() -> None:
+    run = _single_version_policy_run()
+    dossier = SimpleNamespace(
+        analog_id="analog-1",
+        status="Audited Research Analog",
+        source_ids=[],
+        operating_outcome="Revenue rose 20%.",
+        financing_outcome="Unknown",
+        valuation_outcome="Unknown",
+        price_outcome="Shares rose 30%.",
+    )
+    policy = DemoQualityPolicy(
+        require_audited_analog=False,
+        ticker_required_paths={},
+        enforce_coverage_profile_paths=False,
+    )
+
+    evaluation = PublicationGateEvaluator(_FixedScore(85)).evaluate(
+        "AAPL", run=run, audited_dossiers=[dossier], policy=policy
+    )
+    revision = record_analog_candidate_revision(run, ("analog-1",))
+
+    assert evaluation.decision == "publishable_with_residual_diligence"
+    assert PublicationFailureCode.ANALOG_INDEPENDENT_PROVENANCE_INSUFFICIENT.value not in {
+        item.code for item in evaluation.failures
+    }
+    analog_qualification = next(
+        item for item in evaluation.qualifications
+        if item.code == PublicationQualificationCode.ANALOG_DOWNGRADED_TO_CANDIDATE.value
+    )
+    assert analog_qualification.affected_analog_ids == ("analog-1",)
+    assert revision is not None
+    assert revision.downgraded_analog_ids == ("analog-1",)
+
+
+def test_residual_closure_is_eligible_and_missing_closure_is_not() -> None:
+    policy = DemoQualityPolicy(
+        require_audited_analog=False,
+        ticker_required_paths={},
+        enforce_coverage_profile_paths=False,
+    )
+    residual = PublicationGateEvaluator(_FixedScore(85)).evaluate(
+        "AAPL",
+        run=_single_version_policy_run("closed_with_residual_risk"),
+        audited_dossiers=[],
+        policy=policy,
+    )
+    missing = PublicationGateEvaluator(_FixedScore(85)).evaluate(
+        "AAPL",
+        run=_single_version_policy_run("indeterminate_provider_or_evidence_failure"),
+        audited_dossiers=[],
+        policy=policy,
+    )
+
+    assert residual.decision == "publishable_with_residual_diligence"
+    assert PublicationQualificationCode.CLOSURE_WITH_RESIDUAL_RISK.value in {
+        item.code for item in residual.qualifications
+    }
+    assert missing.decision == "repair_required"
+
+
+def test_canonical_revision_removes_failed_claim_and_creates_investigation() -> None:
+    claim = "Revenue increased 20% to $120 billion."
+    run = _single_version_policy_run()
+    run.ticker = "AAPL"
+    run.claim_evidence_audits = [ClaimEvidenceAudit(
+        claim_id="claim-1",
+        claim_text=claim,
+        classification="factual",
+        materiality="Material",
+        status="failed",
+        blockers=["The numerical claim is not present in admitted evidence."],
+    )]
+    artifact = ResearchRoundArtifact(
+        artifact_id="primary-1",
+        artifact_type="primary_research",
+        status="accepted_with_gaps",
+        summary=claim,
+        payload={"summary": claim, "claims": [{"claim": claim, "evidence_ids": ["e1"]}]},
+        evidence_ids=["e1"],
+    )
+
+    revised, revision = canonicalize_artifact_for_publication(run, artifact)
+
+    assert revised.payload["claims"] == []
+    assert revised.evidence_ids == []
+    assert revised.payload["research_leads"][0]["cannot_support_conclusions"] is True
+    assert revised.payload["source_requests"][0]["status"] == "open"
+    assert revision.removed_claim_ids == ("claim-1",)
 
 
 def test_policy_upgrade_creates_new_snapshot_without_rewriting_history() -> None:

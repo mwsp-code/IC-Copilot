@@ -16,10 +16,20 @@ from equity_research.hybrid_research import (
     hybrid_run_from_payload,
     load_frozen_hybrid_run,
 )
+from equity_research.models import DemoQualityPolicy
 from scripts.generate_hybrid_demo import _sort_saved_candidate_payloads
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "aapl_freeze_failures"
+
+
+LEGACY_DEMO_POLICY = DemoQualityPolicy(
+    policy_version="demo-quality-policy-v2",
+    minimum_publishable_score=85,
+    publication_quality_score=85,
+    require_audited_analog=True,
+    ticker_minimum_scores={"AAPL": 85},
+)
 
 
 @pytest.fixture(params=(
@@ -63,6 +73,7 @@ def _evaluate(payload: dict, tmp_path: Path):
         run=run,
         audited_dossiers=_dossiers(payload),
         output_path=str(tmp_path / "AAPL.json"),
+        policy=LEGACY_DEMO_POLICY,
     )
 
 

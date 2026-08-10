@@ -1395,6 +1395,14 @@ def evaluate_demo_freeze(
         for failure in evaluation.failures
     ]
     allowed = evaluation.publishable
+    publication_label = (
+        "Publication-quality research"
+        if evaluation.decision == "publishable" else
+        "Research completed with residual diligence"
+        if evaluation.decision == "publishable_with_residual_diligence" else
+        "Not publication-ready"
+    )
+    revisions = list(getattr(run, "canonical_publication_revisions", []) or [])
     failed_claim_ids = [
         item.claim_id for item in getattr(run, "claim_evidence_audits", [])
         if item.status == "failed"
@@ -1411,7 +1419,11 @@ def evaluate_demo_freeze(
         )
     return DemoFreezeDecision(
         ticker=ticker.upper(),
-        status="pass" if allowed else "blocked",
+        status=(
+            "pass_with_residual_diligence"
+            if evaluation.residual_diligence else
+            "pass" if allowed else "blocked"
+        ),
         allowed=allowed,
         evaluated_at=_utc_now(),
         failed_claim_ids=failed_claim_ids,
@@ -1437,6 +1449,8 @@ def evaluate_demo_freeze(
         ),
         publication_gate_evaluation=evaluation,
         repair_actions=list(evaluation.repair_actions),
+        publication_label=publication_label,
+        canonical_revision_id=(revisions[-1].revision_id if revisions else ""),
     )
 
 

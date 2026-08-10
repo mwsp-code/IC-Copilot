@@ -304,11 +304,17 @@ def render_decision_page(
 ) -> DecisionPageIntent | None:
     intent: DecisionPageIntent | None = None
     st.markdown("### Decision")
+    render_status_badge(st, "Research status", model.publication_label)
     st.caption(
         f"{model.run_status} · Freshness: {model.freshness} · "
         f"Evidence: {model.evidence_quality} | "
         f"Independent QA: {model.independent_qa_status}"
     )
+    if model.publication_qualifications:
+        st.info(
+            "Residual diligence: "
+            + " ".join(model.publication_qualifications[:3])
+        )
 
     with st.container(border=True):
         render_status_badge(st, "Investment conclusion", model.confidence)
@@ -601,6 +607,10 @@ def render_publication_readiness(
         ("Publication quality", model.publication_eligibility),
     ])
     st.write(model.summary)
+    if model.qualification_summaries:
+        with st.expander("Residual diligence", expanded=False):
+            for summary in model.qualification_summaries:
+                st.markdown(f"- {summary}")
     st.caption(
         f"Semantic quality: {model.semantic_quality} · {model.progress_label}"
     )
@@ -631,7 +641,7 @@ def render_publication_readiness(
                     card.action_id for card in model.repair_cards if card.action_id
                 ),
             )
-    else:
+    elif not model.publication_eligible:
         if model.validation_status.strip().lower() == "passed":
             empty_reason = (
                 "Run live Independent Research QA and the current publication "

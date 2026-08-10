@@ -115,6 +115,11 @@ def test_quality_first_sequence_preserves_frozen_audit_before_scout_and_closure_
         [
             {
                 "summary": "Frozen independent audit.",
+                "source_requests": [{
+                    "source_type": "sec_filing",
+                    "objective": "Confirm the regulatory countercase.",
+                    "scope": "AAPL regulatory disclosures",
+                }],
                 "findings": [
                     {
                         "finding_id": "finding-1",
@@ -171,6 +176,9 @@ def test_quality_first_sequence_preserves_frozen_audit_before_scout_and_closure_
     }
     assert "scout_artifact" not in frozen_prompt
     assert scout_prompt["audit_artifact"]["summary"] == "Frozen independent audit."
+    assert run.rounds[2].artifact.payload["source_requests"][0]["scope"] == {
+        "description": "AAPL regulatory disclosures"
+    }
     assert closure_prompt["role"] == "closure_checker"
     assert run.status == "completed"
     assert run.final_artifact.payload["closure_state"] == "closed_with_residual_risk"
@@ -222,6 +230,57 @@ def test_quality_first_planner_retries_truncated_json_once() -> None:
     assert run.rounds[0].retry_count == 1
     assert "Provider retry count: 1" in run.rounds[0].message
     assert len(primary.prompts) == 3
+
+
+def test_quality_first_narrows_failed_claims_before_frozen_audit() -> None:
+    unsupported = "Operating cash flow reached $117 billion, up 43% year over year."
+    primary = RecordingProvider(
+        "deepseek",
+        "deepseek-v4-pro",
+        [
+            {"summary": "Plan."},
+            {
+                "summary": unsupported,
+                "claims": [{"claim": unsupported, "evidence_ids": ["e1"]}],
+            },
+            {
+                "summary": "No validated directional conclusion.",
+                "claims": [],
+                "primary_responses": [],
+            },
+        ],
+    )
+    auditor = RecordingProvider(
+        "codex_local",
+        "gpt-5.6-sol",
+        [
+            {"summary": "Frozen audit found no supported directional claim.", "findings": []},
+            {"summary": "No additional evidence candidate was admitted."},
+            {
+                "summary": "Residual closure passed.",
+                "closure_state": "closed_with_residual_risk",
+                "audit_decision": {
+                    "status": "passed",
+                    "critical_failures": [],
+                    "unresolved_findings": [],
+                },
+            },
+        ],
+    )
+
+    run = run_quality_first_research(
+        _context(),
+        primary_provider=primary,
+        auditor_provider=auditor,
+    )
+
+    assert run.status == "completed"
+    assert run.deterministic_validation_status == "passed"
+    assert run.canonical_publication_revisions
+    frozen_primary = auditor.prompts[0]["investigation_artifact"]
+    assert frozen_primary["claims"] == []
+    assert frozen_primary["research_leads"][0]["cannot_support_conclusions"] is True
+    assert frozen_primary["source_requests"][0]["status"] == "open"
 
 
 def test_deep_initiation_allows_two_bounded_investigation_cycles_before_final_closure() -> None:

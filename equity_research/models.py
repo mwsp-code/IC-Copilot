@@ -19,6 +19,7 @@ from .domain.research_integrity import (
     ResearchRequest,
 )
 from .domain.publication_readiness import (
+    CanonicalPublicationRevision,
     DerivedArtifactDependency,
     PublicationGateEvaluation,
     ResearchRepairAction,
@@ -3122,29 +3123,39 @@ class DemoFreezeDecision:
     source_run_id: str = ""
     source_run_completed_at: str = ""
     qa_closure_state: str = ""
-    policy_version: str = "demo-quality-policy-v2"
+    policy_version: str = "demo-quality-policy-v3"
     artifact_schema_version: str = "demo-hybrid-artifact-v2"
     sanitization_status: str = "not_run"
     research_profile: str = ""
     source_policy_summary: str = ""
     publication_gate_evaluation: PublicationGateEvaluation | None = None
     repair_actions: list[ResearchRepairAction] = field(default_factory=list)
+    publication_label: str = "Not publication-ready"
+    canonical_revision_id: str = ""
 
 
 @dataclass(frozen=True)
 class DemoQualityPolicy:
-    policy_version: str = "demo-quality-policy-v2"
+    policy_version: str = "demo-quality-policy-v3"
     artifact_schema_version: str = "demo-hybrid-artifact-v2"
     require_completed_run: bool = True
     require_deterministic_validation: bool = True
     require_closed_qa: bool = True
-    require_audited_analog: bool = True
+    require_audited_analog: bool = False
     require_independent_quantified_origins: int = 2
     require_no_failed_material_claims: bool = True
     require_no_promoted_quarantined_metadata: bool = True
     require_sanitized_artifact: bool = True
+    minimum_publishable_score: int = 75
+    publication_quality_score: int = 85
+    eligible_closure_states: tuple[str, ...] = (
+        "closed",
+        "closed_with_residual_risk",
+    )
+    allow_analog_candidates: bool = True
+    require_no_critical_failures: bool = True
     ticker_minimum_scores: dict[str, int] = field(
-        default_factory=lambda: {"AAPL": 85}
+        default_factory=dict
     )
     ticker_required_paths: dict[str, tuple[str, ...]] = field(
         default_factory=lambda: {
@@ -3413,6 +3424,9 @@ class HybridResearchRun:
         default_factory=list
     )
     scope_invalidations: list[ScopeInvalidationResult] = field(
+        default_factory=list
+    )
+    canonical_publication_revisions: list[CanonicalPublicationRevision] = field(
         default_factory=list
     )
 
