@@ -145,6 +145,22 @@ def test_decision_uses_canonical_actions_and_research_has_lazy_route_models() ->
     decision = build_decision_brief_view_model(result)
 
     assert 0 < len(decision.investigation_actions) <= 3
+    assert decision.market_expectations is not None
+    assert decision.market_expectations.price_label == "Price at research cutoff"
+    assert decision.market_expectations.current_price == "$313.33"
+    assert decision.market_expectations.price_as_of == "2026-08-07"
+    assert all(
+        action.intent_type in {
+            "configure_source",
+            "execute_action",
+            "retry_attribution",
+        }
+        for action in decision.investigation_actions
+    )
+    assert all(
+        action.primary_cta != "Configure source"
+        for action in decision.investigation_actions
+    )
     assert decision.debate is not None
     assert decision.debate.resolution_actions == ()
     for route in ResearchSubroute:

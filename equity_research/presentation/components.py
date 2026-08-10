@@ -341,7 +341,7 @@ def render_decision_page(
     render_section_header(
         st,
         "Valuation and market-implied expectations",
-        "Compare the research value range with the operating outcome embedded in the current price.",
+        "Compare the research value range with the operating outcome embedded in the price used by this result.",
     )
     render_metric_cards(st, [
         ("Scenario range", model.valuation_range),
@@ -358,7 +358,7 @@ def render_decision_page(
                 expectations.status,
             )
             render_metric_cards(st, [
-                ("Current price", expectations.current_price),
+                (expectations.price_label, expectations.current_price),
                 (
                     expectations.implied_variable_label,
                     expectations.implied_variable_value,
@@ -373,7 +373,8 @@ def render_decision_page(
             if expectations.disagreement.casefold() != "unknown":
                 st.caption(expectations.disagreement)
             st.caption(
-                f"Price as of {expectations.price_as_of} · Weakest input: "
+                f"Price as of {expectations.price_as_of} · Source: "
+                f"{expectations.price_source} · Weakest input: "
                 f"{expectations.weakest_input}"
             )
             with st.expander("Assumptions and sensitivity", expanded=False):
@@ -520,11 +521,7 @@ def render_decision_page(
                 ):
                     intent = DecisionPageIntent(
                         action_id=action.action_id,
-                        intent_type=(
-                            "retry_attribution"
-                            if action.action_kind == "market_event_attribution"
-                            else "execute_action"
-                        ),
+                        intent_type=action.intent_type,
                         event_id=action.event_id,
                     )
                 if action.allow_price_upload:

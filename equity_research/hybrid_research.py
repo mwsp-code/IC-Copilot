@@ -4824,12 +4824,19 @@ def load_frozen_hybrid_run(
         run = hybrid_run_from_payload(payload)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return None
+    freeze_decision = getattr(run, "demo_freeze_decision", None)
+    publication_allowed = (
+        bool(getattr(freeze_decision, "allowed", False))
+        if freeze_decision is not None
+        else len(run.rounds) == 5
+    )
     if (
         run.ticker.upper() != ticker.upper()
         or run.status != "completed"
-        or len(run.rounds) != 5
+        or len(run.rounds) < 5
         or run.final_artifact is None
         or run.deterministic_validation_status != "passed"
+        or not publication_allowed
     ):
         return None
     run.cache_status = "frozen_fixture"

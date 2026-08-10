@@ -4,6 +4,11 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from .models import ResearchFreshnessSummary, SourceFreshnessStatus
+from .source_context import (
+    latest_validated_record,
+    record_source_label,
+    validated_source_records,
+)
 
 
 def build_research_freshness(
@@ -16,6 +21,8 @@ def build_research_freshness(
     external_evidence: Any | None,
     llm_run_manifest: Any | None,
     dual_model_research: Any | None,
+    hybrid_research: Any | None = None,
+    ticker: str = "",
     demo_case: Any | None = None,
     completed_at: str = "",
     now: datetime | None = None,
@@ -80,6 +87,23 @@ def build_research_freshness(
     )
 
     if demo_case is not None:
+        if hybrid_research is not None and getattr(
+            hybrid_research, "normalized_sources", None
+        ):
+            return _published_demo_freshness(
+                hybrid_research=hybrid_research,
+                ticker=ticker or str(getattr(hybrid_research, "ticker", "") or ""),
+                fallback_generated_at=generated_at,
+                fallback_filing_as_of=filing_as_of,
+                fallback_filing_message=filing_label,
+                fallback_price_as_of=price_as_of,
+                fallback_price_source=price_source,
+                fallback_consensus_as_of=consensus_as_of,
+                fallback_consensus_source=consensus_source,
+                fallback_news_as_of=news_as_of,
+                fallback_macro_as_of=macro_as_of,
+                demo_case=demo_case,
+            )
         frozen_at = str(
             getattr(demo_case, "refreshed_at", "") or generated_at
         )
@@ -227,6 +251,8 @@ def build_research_freshness_from_result(
         external_evidence=getattr(result, "external_evidence", None),
         llm_run_manifest=getattr(result, "llm_run_manifest", None),
         dual_model_research=getattr(result, "dual_model_research", None),
+        hybrid_research=getattr(result, "hybrid_research", None),
+        ticker=str(getattr(getattr(result, "identity", None), "ticker", "") or ""),
         demo_case=getattr(result, "demo_case", None),
         now=now,
     )
@@ -243,6 +269,243 @@ def _frozen_component(
         source_as_of=source_as_of,
         message=message or "Frozen fixture component.",
     )
+
+
+def _published_demo_freshness(
+    *,
+    hybrid_research: Any,
+    ticker: str,
+    fallback_generated_at: str,
+    fallback_filing_as_of: str,
+    fallback_filing_message: str,
+    fallback_price_as_of: str,
+    fallback_price_source: str,
+    fallback_consensus_as_of: str,
+    fallback_consensus_source: str,
+    fallback_news_as_of: str,
+    fallback_macro_as_of: str,
+    demo_case: Any,
+) -> ResearchFreshnessSummary:
+    """Describe the sources actually used by a published frozen artifact.
+
+    The base sample still supplies a few illustrative presentation inputs.  We
+    label those separately instead of making them look admitted to the QA run.
+    """
+
+    generated_at = str(
+        getattr(hybrid_research, "generated_at", "") or fallback_generated_at
+    )
+    completed_at = str(
+        getattr(hybrid_research, "completed_at", "") or generated_at
+    )
+    published_at = str(
+        getattr(hybrid_research, "published_at", "")
+        or getattr(hybrid_research, "publishable_at", "")
+        or completed_at
+    )
+    records = validated_source_records(hybrid_research, ticker=ticker)
+    illustrative_at = str(
+        getattr(demo_case, "refreshed_at", "") or fallback_generated_at
+    )
+
+    filing = latest_validated_record(
+        records,
+        lambda item: _record_has_date(item)
+        and str(getattr(item, "source_type", "") or "").casefold()
+        in {"sec_filing", "historical_filing", "hkex_document"},
+    )
+    price = latest_validated_record(
+        records,
+        lambda item: _record_has_date(item)
+        and str(getattr(item, "source_type", "") or "").casefold()
+        == "quantitative_historical_price"
+        and str(getattr(item, "metric_or_claim", "") or "").casefold()
+        in {"adjusted close", "adjusted_close"},
+    )
+    consensus = latest_validated_record(records, _is_consensus_record)
+    external = latest_validated_record(records, _is_external_record)
+    macro = latest_validated_record(records, _is_macro_record)
+    execution_backend = getattr(hybrid_research, "execution_backend", None)
+    llm_source = str(
+        getattr(execution_backend, "label", "")
+        or getattr(hybrid_research, "profile", "")
+        or "Recorded model workflow"
+    ).replace("_", " ")
+
+    filing_message = (
+        f"{getattr(filing, 'form', '') or 'Filing'} filed "
+        f"{getattr(filing, 'publication_date', '')}; reporting period "
+        f"{getattr(filing, 'reporting_period', '') or 'not recorded'}."
+        if filing is not None
+        else fallback_filing_message
+    )
+    components = [
+        SourceFreshnessStatus(
+            "Research run",
+            "Frozen demo",
+            completed_at,
+            published_at,
+            "Published research artifact",
+            "Research completion and publication times from the immutable demo manifest.",
+        ),
+        _artifact_or_illustrative_component(
+            "Filings",
+            filing,
+            generated_at=generated_at,
+            fallback_observed_at=illustrative_at,
+            fallback_as_of=fallback_filing_as_of,
+            fallback_source="Illustrative filing fixture",
+            admitted_message=filing_message,
+        ),
+        _artifact_or_illustrative_component(
+            "Market price",
+            price,
+            generated_at=generated_at,
+            fallback_observed_at=illustrative_at,
+            fallback_as_of=fallback_price_as_of,
+            fallback_source=fallback_price_source or "Illustrative price fixture",
+            admitted_message=(
+                "Validated adjusted close used as the research-cutoff price; "
+                "this is not a live quote."
+            ),
+        ),
+        _artifact_or_illustrative_component(
+            "Consensus",
+            consensus,
+            generated_at=generated_at,
+            fallback_observed_at=illustrative_at,
+            fallback_as_of=fallback_consensus_as_of,
+            fallback_source=fallback_consensus_source or "Illustrative consensus fixture",
+            admitted_message="Latest admitted point-in-time consensus observation.",
+        ),
+        _artifact_or_illustrative_component(
+            "News / external research",
+            external,
+            generated_at=generated_at,
+            fallback_observed_at=illustrative_at,
+            fallback_as_of=fallback_news_as_of,
+            fallback_source="Illustrative external-research fixture",
+            admitted_message="Latest admitted issuer, transcript, news, or external-research record.",
+        ),
+        _artifact_or_illustrative_component(
+            "Macro",
+            macro,
+            generated_at=generated_at,
+            fallback_observed_at=illustrative_at,
+            fallback_as_of=fallback_macro_as_of,
+            fallback_source="Illustrative macro fixture",
+            admitted_message="Latest admitted macro observation used by the research artifact.",
+        ),
+        SourceFreshnessStatus(
+            "LLM research",
+            "Frozen demo",
+            completed_at,
+            published_at,
+            llm_source,
+            "Model research and Independent QA timestamps come from the published run manifest.",
+        ),
+    ]
+    price_cutoff = str(getattr(price, "publication_date", "") or "")
+    filing_cutoff = str(getattr(filing, "publication_date", "") or "")
+    unavailable = [
+        item.component for item in components if item.status == "Unavailable"
+    ]
+    return ResearchFreshnessSummary(
+        overall_status="Frozen demo",
+        summary=(
+            f"Published frozen research completed {completed_at or 'at an unknown time'}; "
+            f"admitted price through {price_cutoff or 'unavailable'}; filings through "
+            f"{filing_cutoff or 'unavailable'}. No live refresh occurred while loading."
+        ),
+        run_generated_at=generated_at,
+        run_completed_at=completed_at,
+        result_type="frozen_demo",
+        components=components,
+        unavailable_components=unavailable,
+    )
+
+
+def _artifact_or_illustrative_component(
+    component: str,
+    record: Any | None,
+    *,
+    generated_at: str,
+    fallback_observed_at: str,
+    fallback_as_of: str,
+    fallback_source: str,
+    admitted_message: str,
+) -> SourceFreshnessStatus:
+    if record is not None:
+        observed_at = str(getattr(record, "observed_at", "") or generated_at)
+        message = admitted_message
+        if not getattr(record, "observed_at", ""):
+            message += " Source-level retrieval time was not retained; artifact generation time is shown."
+        return SourceFreshnessStatus(
+            component=component,
+            status="Frozen demo",
+            source_as_of=str(getattr(record, "publication_date", "") or ""),
+            observed_at=observed_at,
+            source=record_source_label(record, fallback_source),
+            message=message,
+        )
+    if fallback_as_of:
+        return SourceFreshnessStatus(
+            component=component,
+            status="Illustrative only",
+            source_as_of=fallback_as_of,
+            observed_at=fallback_observed_at or fallback_as_of,
+            source=fallback_source,
+            message=(
+                "Displayed as an illustrative screening input; it was not admitted "
+                "to the published Independent QA evidence graph."
+            ),
+        )
+    return SourceFreshnessStatus(
+        component=component,
+        status="Unavailable",
+        source="Not present in published artifact",
+        message="No dated admitted or illustrative source is available for this component.",
+    )
+
+
+def _record_has_date(record: Any) -> bool:
+    return bool(str(getattr(record, "publication_date", "") or "").strip())
+
+
+def _record_text(record: Any) -> str:
+    return " ".join(
+        str(getattr(record, field, "") or "").casefold()
+        for field in ("source_family", "source_type", "metric_or_claim", "section")
+    )
+
+
+def _is_consensus_record(record: Any) -> bool:
+    text = _record_text(record)
+    return _record_has_date(record) and any(
+        token in text for token in ("consensus", "estimate", "recommendation", "price target")
+    )
+
+
+def _is_macro_record(record: Any) -> bool:
+    text = _record_text(record)
+    return _record_has_date(record) and any(
+        token in text
+        for token in (
+            "macro", "fred", "alfred", "census", "world bank", "treasury",
+            "bureau of labor", "bureau of economic", "financial stress", "imf",
+        )
+    )
+
+
+def _is_external_record(record: Any) -> bool:
+    source_type = str(getattr(record, "source_type", "") or "").casefold()
+    return _record_has_date(record) and source_type in {
+        "issuer_ir",
+        "earnings_transcript",
+        "news_article",
+        "external_research",
+        "normalized_research_record",
+    }
 
 
 def _consensus_dates(consensus: Any | None) -> list[str]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 
 from .analysis import annotate_change_importance
@@ -125,6 +126,7 @@ from .wisburg_lens import enrich_source_plan_with_wisburg
 from .company_model import build_company_model_workspace
 from .causal_thesis_graph import build_causal_thesis_graphs
 from .source_planner import build_source_plan
+from .source_context import latest_admitted_market_price
 from .storytelling import build_story_presentation, demo_case_for
 
 
@@ -1647,6 +1649,29 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
             else "The 2026-07-24 observation is later than the 2026-06-22 filing and is not used to infer the event-date consensus response."
         ),
     )
+    published_hybrid_research = load_frozen_hybrid_run(ticker)
+    admitted_price = latest_admitted_market_price(
+        published_hybrid_research,
+        ticker,
+    )
+    if admitted_price is not None:
+        price = replace(
+            price,
+            latest_price=admitted_price.value,
+            source=admitted_price.source,
+            note=(
+                f"Validated adjusted close at the published research cutoff "
+                f"({admitted_price.source_as_of}); not a live quote."
+            ),
+        )
+        recent_market_context.current_price = admitted_price.value
+        recent_market_context.price_as_of = admitted_price.source_as_of
+        recent_market_context.source = admitted_price.source
+        recent_market_context.adjusted = True
+        recent_market_context.summary = (
+            f"Published research-cutoff adjusted close from {admitted_price.source}; "
+            "load live research for a newer quote."
+        )
     valuation = build_valuation(identity, metrics, consensus, price.latest_price)
     ideas = generate_trade_ideas(
         identity, events, price, _DemoConsensus(), metrics=metrics,
@@ -1855,7 +1880,13 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
     )
     company_model = build_company_model_workspace(identity, metrics, valuation)
     market_implied_expectations = build_market_implied_expectations(
-        identity, metrics, price.latest_price, valuation, company_model,
+        identity,
+        metrics,
+        price.latest_price,
+        valuation,
+        company_model,
+        price_source=recent_market_context.source,
+        price_as_of=recent_market_context.price_as_of,
     )
     causal_thesis_graphs = build_causal_thesis_graphs(
         ticker, ideas, validated_claims, company_model, valuation,
@@ -1988,7 +2019,6 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         frozen_dossiers=frozen_demo_episode_dossiers(identity),
         frozen_fixture=True,
     )
-    published_hybrid_research = load_frozen_hybrid_run(ticker)
     hybrid_research = published_hybrid_research or frozen_fixture_hybrid_run(
         ticker,
         evidence_hash=manifest.run_id,
@@ -2226,6 +2256,8 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         external_evidence=external_evidence,
         llm_run_manifest=thesis_synthesis.llm_manifest,
         dual_model_research=dual_model_research,
+        hybrid_research=hybrid_research,
+        ticker=ticker,
         demo_case=demo_case,
     )
     return ResearchResult(

@@ -49,8 +49,10 @@ class MarketImpliedAssumptionViewModel:
 class MarketExpectationsViewModel:
     status: str
     methodology: str
+    price_label: str
     current_price: str
     price_as_of: str
+    price_source: str
     operating_base_label: str
     operating_base_value: str
     valuation_anchor_label: str
@@ -118,6 +120,7 @@ class InvestigationActionViewModel:
     completion_criteria: tuple[str, ...] = ()
     source_families: tuple[str, ...] = ()
     primary_cta: str = ""
+    intent_type: str = "configure_source"
     allow_price_upload: bool = False
 
 
@@ -939,11 +942,21 @@ def _market_expectations_view_model(result: Any) -> MarketExpectationsViewModel 
             or getattr(implied, "template", "")
             or "Market-implied expectations"
         ).replace("_", " ").title(),
+        price_label=(
+            "Price at research cutoff"
+            if getattr(result, "demo_case", None)
+            else "Current price"
+        ),
         current_price=_money(current_price, currency),
         price_as_of=str(
             getattr(snapshot, "price_as_of", "")
             or getattr(implied, "price_as_of", "")
             or "Unknown"
+        ),
+        price_source=str(
+            getattr(implied, "price_source", "")
+            or getattr(getattr(result, "recent_market_context", None), "source", "")
+            or "Source not recorded"
         ),
         operating_base_label=str(getattr(snapshot, "operating_base_label", "") or "Operating base"),
         operating_base_value=str(getattr(snapshot, "operating_base_value", "") or "Not established"),
@@ -1143,12 +1156,19 @@ def _investigation_action_view_models(
             or "primary_source_validation"
         )
         auto_resolvable = bool(getattr(item, "auto_resolvable", False))
+        intent_type = (
+            "retry_attribution" if action_kind == "market_event_attribution"
+            else "configure_source"
+            if readable_status in {"Unavailable", "Needs setup"}
+            else "execute_action" if auto_resolvable
+            else "configure_source"
+        )
         primary_cta = (
             "Retry attribution" if action_kind == "market_event_attribution"
-            else "Configure source"
-            if readable_status in {"Unavailable", "Needs setup"}
+            else "Open source setup"
+            if intent_type == "configure_source"
             else "Run investigation" if auto_resolvable
-            else "Configure source"
+            else "Open source setup"
         )
         rows.append(InvestigationActionViewModel(
             rank=int(getattr(item, "rank", len(rows) + 1) or len(rows) + 1),
@@ -1181,6 +1201,7 @@ def _investigation_action_view_models(
                 if value
             ),
             primary_cta=primary_cta,
+            intent_type=intent_type,
             allow_price_upload=action_kind == "market_event_attribution",
         ))
         if limit is not None and len(rows) >= limit:

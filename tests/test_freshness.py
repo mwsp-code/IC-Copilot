@@ -114,3 +114,54 @@ def test_frozen_demo_never_presents_fixture_as_live_current_data() -> None:
         item.status in {"Frozen demo", "Unavailable"}
         for item in summary.components
     )
+
+
+def test_published_demo_uses_admitted_cutoffs_and_labels_other_inputs() -> None:
+    inputs = _base_inputs()
+    inputs["demo_case"] = SimpleNamespace(refreshed_at="2026-07-16")
+    inputs["ticker"] = "AAPL"
+    inputs["hybrid_research"] = SimpleNamespace(
+        ticker="AAPL",
+        generated_at="2026-08-10T18:39:17+00:00",
+        completed_at="2026-08-10T18:59:34+00:00",
+        published_at="2026-08-10T19:07:30+00:00",
+        execution_backend=SimpleNamespace(label="Codex local: GPT-5.6 Sol"),
+        normalized_sources=[
+            SimpleNamespace(
+                source_id="filing",
+                ticker="AAPL",
+                validation_status="validated",
+                source_type="sec_filing",
+                source_family="sec_filing",
+                metric_or_claim="Revenue",
+                publication_date="2026-07-31",
+                reporting_period="2026-06-27",
+                observed_at="2026-08-10T18:40:21+00:00",
+                origin_group="sec.gov",
+                form="10-Q",
+            ),
+            SimpleNamespace(
+                source_id="price",
+                ticker="AAPL",
+                validation_status="validated",
+                source_type="quantitative_historical_price",
+                source_family="historical_quantitative",
+                metric_or_claim="Adjusted Close",
+                publication_date="2026-08-07",
+                reporting_period="2026-08-07",
+                observed_at="2026-08-10T18:40:20+00:00",
+                origin_group="Tiingo EOD prices",
+                form="",
+            ),
+        ],
+    )
+
+    summary = build_research_freshness(**inputs)
+
+    rows = {item.component: item for item in summary.components}
+    assert rows["Research run"].source_as_of == "2026-08-10T18:59:34+00:00"
+    assert rows["Filings"].source_as_of == "2026-07-31"
+    assert rows["Market price"].source_as_of == "2026-08-07"
+    assert rows["Market price"].source == "Tiingo EOD prices"
+    assert rows["Consensus"].status == "Illustrative only"
+    assert rows["LLM research"].source == "Codex local: GPT-5.6 Sol"

@@ -1827,7 +1827,7 @@ def test_frozen_demos_include_no_network_hybrid_provenance(ticker: str) -> None:
     run = result.hybrid_research
     assert run is not None
     assert run.status == "completed"
-    assert len(run.rounds) == 5
+    assert len(run.rounds) >= 5
     assert run.final_artifact is not None
     assert run.cache_status == "frozen_fixture"
     assert run.deterministic_validation_status == "passed"

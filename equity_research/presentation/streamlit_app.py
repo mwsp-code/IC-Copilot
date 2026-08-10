@@ -60,6 +60,7 @@ from equity_research.llm_vault import (
 )
 from equity_research.hybrid_research import (
     HybridResearchJobManager,
+    load_frozen_hybrid_run,
     local_codex_readiness,
     start_local_codex_login,
 )
@@ -260,6 +261,27 @@ def _handle_decision_page_intent(
     )
     if action is None:
         st.error("This investigation action is no longer present in the run.")
+        return
+    if intent.intent_type == "configure_source":
+        source_families = tuple(
+            str(value).replace("_", " ")
+            for value in list(getattr(action, "required_source_families", ()) or ())
+            if value
+        )
+        connectors = tuple(
+            str(value).replace("_", " ")
+            for value in list(getattr(action, "preferred_connectors", ()) or ())
+            if value
+        )
+        st.session_state._investigation_source_setup = {
+            "ticker": result.identity.ticker,
+            "title": action.title,
+            "source_families": source_families,
+            "connectors": connectors,
+            "is_frozen_demo": bool(getattr(result, "demo_case", None)),
+        }
+        st.session_state._open_additional_sources = True
+        st.rerun()
         return
     qa_run = getattr(result, "independent_research_qa", None)
     parent_run_id = str(
@@ -463,13 +485,35 @@ def _handle_publication_repair_intent(
 
 def _demo_case_runtime_metadata(case) -> dict[str, object]:
     """Normalize demo metadata across Streamlit hot-reload schema versions."""
-    return {
+    metadata: dict[str, object] = {
         "content_version": getattr(case, "content_version", "") or "",
         "refreshed_at": getattr(case, "refreshed_at", "") or "",
         "research_profile": getattr(case, "research_profile", "") or "",
         "budget_mode": getattr(case, "budget_mode", "") or "",
         "enabled_layers": tuple(getattr(case, "enabled_layers", ()) or ()),
     }
+    if not hasattr(case, "content_version") and not hasattr(case, "refreshed_at"):
+        return metadata
+    published = load_frozen_hybrid_run(str(getattr(case, "ticker", "") or ""))
+    if published is None:
+        return metadata
+    published_at = str(
+        getattr(published, "published_at", "")
+        or getattr(published, "completed_at", "")
+        or ""
+    )
+    published_date = published_at[:10]
+    if published_date:
+        metadata["content_version"] = (
+            "Deep Initiation + Independent Research QA "
+            + published_date.replace("-", ".")
+        )
+        metadata["refreshed_at"] = published_date
+    metadata["enabled_layers"] = tuple(dict.fromkeys((
+        *tuple(metadata["enabled_layers"]),
+        "Published Independent Research QA",
+    )))
+    return metadata
 
 
 def _default_macro_policy() -> str:
@@ -829,6 +873,47 @@ def main() -> None:
         ).strip()
         sec_user_agent = sec_user_agent_input or config.SEC_USER_AGENT
         st.subheader("Consensus Connection")
+        source_setup_request = st.session_state.get(
+            "_investigation_source_setup"
+        )
+        if source_setup_request:
+            setup_title = str(
+                source_setup_request.get("title") or "Selected investigation"
+            )
+            setup_sources = tuple(
+                source_setup_request.get("source_families") or ()
+            )
+            setup_connectors = tuple(
+                source_setup_request.get("connectors") or ()
+            )
+            st.info(
+                f"Source setup for {setup_title}. "
+                + (
+                    "Frozen demos are read-only; connect an eligible source "
+                    "below, then use Run / Refresh Research. "
+                    if source_setup_request.get("is_frozen_demo")
+                    else "Connect an eligible source below, then rerun the action. "
+                )
+                + (
+                    "Requested source families: " + ", ".join(setup_sources) + "."
+                    if setup_sources
+                    else "The live source planner will try registered adapters."
+                )
+            )
+            if setup_connectors:
+                st.caption(
+                    "Preferred registered connectors: "
+                    + ", ".join(setup_connectors)
+                    + "."
+                )
+            if st.button(
+                "Dismiss source setup",
+                key="dismiss-investigation-source-setup",
+                use_container_width=True,
+            ):
+                st.session_state.pop("_investigation_source_setup", None)
+                st.session_state.pop("_open_additional_sources", None)
+                st.rerun()
         configured_alpha_key = config.ALPHAVANTAGE_API_KEY or _streamlit_secret("ALPHAVANTAGE_API_KEY")
         configured_finnhub_key = config.FINNHUB_API_KEY or _streamlit_secret("FINNHUB_API_KEY")
         configured_fmp_key = config.FMP_API_KEY or _streamlit_secret("FMP_API_KEY")
@@ -877,7 +962,10 @@ def main() -> None:
                 hide_index=True,
                 use_container_width=True,
             )
-        with st.expander("Additional sources"):
+        with st.expander(
+            "Additional sources",
+            expanded=bool(st.session_state.get("_open_additional_sources")),
+        ):
             fmp_session_key = st.text_input(
                 "FMP API key",
                 type="password",
@@ -2342,12 +2430,16 @@ def _localized_freshness_summary(freshness) -> str:
         f"completed {_relative_time(run_cutoff)} "
         f"({_display_timestamp(run_cutoff)})"
     )
+    consensus_label = "unavailable"
+    if consensus and consensus.source_as_of:
+        consensus_label = _display_timestamp(consensus.source_as_of)
+        if consensus.status == "Illustrative only":
+            consensus_label = f"illustrative only through {consensus_label}"
     return (
         f"{freshness.overall_status}. Research {completion_label}; "
         f"price through {_display_timestamp(price.source_as_of if price else '')}; "
         f"filings through {_display_timestamp(filing.source_as_of if filing else '')}; "
-        f"consensus "
-        f"{_display_timestamp(consensus.source_as_of) if consensus and consensus.source_as_of else 'unavailable'}."
+        f"consensus {consensus_label}."
     )
 
 
@@ -2445,19 +2537,24 @@ def render_header(result: ResearchResult) -> None:
     identity = result.identity
     profile = getattr(result, "research_profile", None)
     result_type = "Frozen demo" if getattr(result, "demo_case", None) else "Live research"
+    freshness = (
+        getattr(result, "research_freshness", None)
+        or build_research_freshness_from_result(result)
+    )
+    run_timestamp = (
+        freshness.run_completed_at
+        if getattr(result, "demo_case", None)
+        else getattr(result.run_manifest, "generated_at", "")
+    )
     st.subheader(f"{identity.name.title()} ({identity.ticker})")
     st.caption(
         " · ".join(
             value for value in (
                 result_type,
                 getattr(profile, "label", "") if profile else "",
-                f"Run {_display_timestamp(getattr(result.run_manifest, 'generated_at', ''))}",
+                f"Research completed {_display_timestamp(run_timestamp)}",
             ) if value
         )
-    )
-    freshness = (
-        getattr(result, "research_freshness", None)
-        or build_research_freshness_from_result(result)
     )
     st.caption(_localized_freshness_summary(freshness))
     displayed_setup = st.session_state.get("_displayed_research_setup")
@@ -2497,9 +2594,15 @@ def render_header(result: ResearchResult) -> None:
                 {
                     "Component": item.component,
                     "Status": item.status,
-                    "Source as of": _display_timestamp(item.source_as_of),
-                    "Retrieved / generated": _display_timestamp(item.observed_at),
-                    "Source": item.source or "Unknown",
+                    "Source as of": (
+                        _display_timestamp(item.source_as_of)
+                        if item.source_as_of else "Not available"
+                    ),
+                    "Retrieved / generated": (
+                        _display_timestamp(item.observed_at)
+                        if item.observed_at else "Not recorded"
+                    ),
+                    "Source": item.source or "Not recorded",
                     "Meaning": item.message,
                 }
                 for item in freshness.components
@@ -2512,10 +2615,12 @@ def render_header(result: ResearchResult) -> None:
 def render_story_first(result: ResearchResult) -> None:
     demo_case = getattr(result, "demo_case", None)
     if demo_case:
+        metadata = _demo_case_runtime_metadata(demo_case)
         st.info(
             f"Demo gallery: **{demo_case.title}**. {demo_case.lesson} "
             f"Runtime: {demo_case.expected_runtime}; network required: {'yes' if demo_case.network_required else 'no'}; "
-            f"version: {demo_case.content_version or 'Unversioned'}; refreshed: {demo_case.refreshed_at or 'Unknown'}."
+            f"version: {metadata['content_version'] or 'Unversioned'}; "
+            f"refreshed: {metadata['refreshed_at'] or 'Unknown'}."
         )
     one_pager = getattr(result, "ic_one_pager", None)
     decision_brief = getattr(result, "ic_decision_brief", None)
