@@ -4859,6 +4859,8 @@ class HybridJobState:
     operation_kind: str = "full_research"
     operation_label: str = ""
     investigation_action_id: str = ""
+    investigation_action_kind: str = ""
+    investigation_semantic_key: str = ""
     result_route: str = "Decision"
 
     def __post_init__(self) -> None:
@@ -4889,6 +4891,8 @@ class HybridResearchJobManager:
         operation_kind: str = "full_research",
         operation_label: str = "",
         investigation_action_id: str = "",
+        investigation_action_kind: str = "",
+        investigation_semantic_key: str = "",
         result_route: str = "Decision",
         job_id: str = "",
     ) -> HybridJobState:
@@ -4911,6 +4915,8 @@ class HybridResearchJobManager:
             operation_kind=operation_kind,
             operation_label=operation_label,
             investigation_action_id=investigation_action_id,
+            investigation_action_kind=investigation_action_kind,
+            investigation_semantic_key=investigation_semantic_key,
             result_route=result_route,
         )
         cancel_event = threading.Event()
@@ -5609,6 +5615,13 @@ def _execute_registered_requests(
     requests = artifact_payload.get("source_requests")
     if not isinstance(requests, list):
         requests = context.get("source_requests", [])
+    mandatory_requests = context.get("_mandatory_source_requests", [])
+    if not isinstance(mandatory_requests, list):
+        mandatory_requests = []
+    requests = [
+        *[item for item in mandatory_requests if isinstance(item, dict)],
+        *[item for item in requests if isinstance(item, dict)],
+    ]
     catalog = context.get(
         "searchable_evidence_catalog",
         context.get("evidence_catalog", []),

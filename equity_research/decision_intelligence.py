@@ -584,6 +584,89 @@ def build_prioritized_research_queue(
     return merged[:max(1, limit)]
 
 
+def reconcile_targeted_investigation_action(
+    actions: list[PrioritizedResearchAction],
+    *,
+    action_id: str,
+    action_kind: str = "",
+    semantic_key: str = "",
+    retrieval_lifecycles: Iterable[Any] = (),
+) -> PrioritizedResearchAction | None:
+    """Attach the targeted run's actual retrieval outcome to its open action.
+
+    A completed research workflow does not imply that the selected investigation
+    closed. If the action remains in the canonical queue, record whether a
+    registered retrieval was attempted and keep the action explicitly open.
+    """
+
+    if not action_id and not semantic_key and not action_kind:
+        return None
+    target = next(
+        (
+            item for item in actions
+            if (action_id and (
+                item.action_id == action_id
+                or action_id in item.related_research_request_ids
+                or action_id in item.related_work_order_ids
+            ))
+            or (semantic_key and item.semantic_key == semantic_key)
+        ),
+        None,
+    )
+    if target is None and action_kind:
+        same_kind = [item for item in actions if item.action_kind == action_kind]
+        target = same_kind[0] if len(same_kind) == 1 else None
+    if target is None:
+        return None
+
+    attempts = [
+        item for item in retrieval_lifecycles
+        if str(getattr(item, "request_id", "") or "") == action_id
+    ]
+    if attempts:
+        sources = list(dict.fromkeys(
+            str(
+                getattr(item, "source_type", "")
+                or getattr(item, "source_id", "")
+                or "registered connector"
+            )
+            for item in attempts
+        ))
+        statuses = list(dict.fromkeys(
+            str(getattr(item, "status", "") or "attempted")
+            .replace("_", " ")
+            for item in attempts
+        ))
+        target.status = "attempted_unresolved"
+        target.attempt_summary = (
+            "Attempted via " + ", ".join(sources)
+            + "; outcome: " + ", ".join(statuses) + "."
+        )
+        failure = next(
+            (
+                str(getattr(item, "message", "") or "")
+                for item in attempts
+                if str(getattr(item, "message", "") or "")
+            ),
+            "",
+        )
+        target.blocking_reason = failure or (
+            "The targeted retrieval completed, but the action's completion "
+            "criteria were not satisfied."
+        )
+    else:
+        target.status = "not_attempted_missing_connector"
+        target.attempt_summary = (
+            "No registered connector attempt was recorded for this action."
+        )
+        target.blocking_reason = (
+            "The research pass completed without a compatible registered "
+            "retrieval. Configure an eligible source or review Evidence for "
+            "the unavailable source family."
+        )
+    return target
+
+
 def _action_kind(channel: str, action: str, source_type: str) -> str:
     text = " ".join((channel, action, source_type)).casefold()
     if any(token in text for token in (

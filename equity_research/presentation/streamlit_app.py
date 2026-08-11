@@ -275,9 +275,17 @@ def _handle_decision_page_intent(
         )
         st.session_state._investigation_source_setup = {
             "ticker": result.identity.ticker,
+            "action_id": action.action_id,
+            "action_kind": action.action_kind,
             "title": action.title,
+            "objective": action.objective or action.title,
+            "semantic_key": action.semantic_key,
             "source_families": source_families,
             "connectors": connectors,
+            "registered_source_families": tuple(
+                action.required_source_families
+            ),
+            "registered_connectors": tuple(action.preferred_connectors),
             "is_frozen_demo": bool(getattr(result, "demo_case", None)),
         }
         st.session_state._open_additional_sources = True
@@ -294,37 +302,28 @@ def _handle_decision_page_intent(
         getattr(qa_run, "source_policy_fingerprint", "") or ""
     )
     if action.action_kind != "market_event_attribution":
-        command = InvestigationActionCommand(
-            parent_run_id=parent_run_id,
-            parent_evidence_hash=evidence_hash,
-            action_id=action.action_id,
-            ticker=result.identity.ticker,
-            action_kind=action.action_kind,
-            event_id=action.event_id,
-            registered_connector_ids=tuple(action.preferred_connectors),
-            source_policy_fingerprint=source_fingerprint,
-        )
-        queued = _investigation_action_service().execute(
-            command,
-            lambda target: InvestigationActionResult(
-                command=target,
-                status="queued",
-                summary=(
-                    "Targeted investigation queued for registered connector "
-                    "dispatch on the next live refresh."
-                ),
-                attempted_connectors=tuple(action.preferred_connectors),
-            ),
-        )
         action.attempt_summary = "Queued for the next targeted research pass."
         st.session_state._pending_research_operation = {
             "operation_kind": "targeted_investigation",
             "operation_label": action.title,
             "investigation_action_id": action.action_id,
+            "investigation_action_kind": action.action_kind,
+            "investigation_objective": action.objective or action.title,
+            "investigation_semantic_key": action.semantic_key,
+            "investigation_source_families": tuple(
+                action.required_source_families
+            ),
+            "investigation_preferred_connectors": tuple(
+                action.preferred_connectors
+            ),
             "result_route": "Evidence",
         }
         st.session_state._pending_live_refresh = result.identity.ticker
-        st.session_state._investigation_queue_notice = queued.summary
+        st.session_state._investigation_queue_notice = (
+            "Targeted investigation queued. Its result will be reported as "
+            "resolved, attempted but unresolved, or not attempted with a "
+            "specific source reason."
+        )
         st.rerun()
         return
     event = next(
@@ -705,6 +704,46 @@ def _is_displayable_research_result(value: object) -> bool:
     )
 
 
+def _remaining_targeted_action(result: object, state: object):
+    """Find the selected action when a completed pass did not close it."""
+
+    action_id = str(getattr(state, "investigation_action_id", "") or "")
+    semantic_key = str(
+        getattr(state, "investigation_semantic_key", "") or ""
+    )
+    action_kind = str(
+        getattr(state, "investigation_action_kind", "") or ""
+    )
+    queue = list(getattr(result, "prioritized_research_queue", ()) or ())
+    match = next(
+        (
+            item for item in queue
+            if (action_id and (
+                str(getattr(item, "action_id", "") or "") == action_id
+                or action_id in list(
+                    getattr(item, "related_research_request_ids", ()) or ()
+                )
+                or action_id in list(
+                    getattr(item, "related_work_order_ids", ()) or ()
+                )
+            ))
+            or (
+                semantic_key
+                and str(getattr(item, "semantic_key", "") or "")
+                == semantic_key
+            )
+        ),
+        None,
+    )
+    if match is None and action_kind:
+        same_kind = [
+            item for item in queue
+            if str(getattr(item, "action_kind", "") or "") == action_kind
+        ]
+        match = same_kind[0] if len(same_kind) == 1 else None
+    return match
+
+
 def main() -> None:
     _inject_global_styles()
     title_col, repo_col = st.columns([4, 1])
@@ -752,10 +791,34 @@ def main() -> None:
                     getattr(hybrid_job, "operation_label", "")
                     or f"Research for {hybrid_job.ticker}"
                 )
-                st.success(
-                    f"Completed: {operation_label}. The new result is loaded "
-                    f"below in {result_route}."
-                )
+                if str(getattr(hybrid_job, "operation_kind", "")) == (
+                    "targeted_investigation"
+                ):
+                    remaining_action = _remaining_targeted_action(
+                        hybrid_job.result, hybrid_job
+                    )
+                    if remaining_action is not None:
+                        attempt = str(
+                            getattr(remaining_action, "attempt_summary", "")
+                            or "The action remains open."
+                        )
+                        st.warning(
+                            f"Research pass completed: {operation_label}. "
+                            f"The investigation remains unresolved. {attempt} "
+                            f"The updated live result is loaded below in "
+                            f"{result_route}."
+                        )
+                    else:
+                        st.success(
+                            f"Investigation resolved: {operation_label}. The "
+                            f"updated live result is loaded below in "
+                            f"{result_route}."
+                        )
+                else:
+                    st.success(
+                        f"Completed: {operation_label}. The new result is loaded "
+                        f"below in {result_route}."
+                    )
             else:
                 st.warning(
                     "The background job finished, but it did not return a "
@@ -1993,6 +2056,42 @@ def main() -> None:
         "_pending_research_operation",
         None,
     ) or {}
+    if (
+        run_clicked
+        and not pending_research_operation
+        and source_setup_request
+        and str(source_setup_request.get("ticker") or "").upper() == ticker
+    ):
+        pending_research_operation = {
+            "operation_kind": "targeted_investigation",
+            "operation_label": str(
+                source_setup_request.get("title")
+                or f"Selected investigation for {ticker}"
+            ),
+            "investigation_action_id": str(
+                source_setup_request.get("action_id") or ""
+            ),
+            "investigation_action_kind": str(
+                source_setup_request.get("action_kind") or ""
+            ),
+            "investigation_objective": str(
+                source_setup_request.get("objective")
+                or source_setup_request.get("title")
+                or ""
+            ),
+            "investigation_semantic_key": str(
+                source_setup_request.get("semantic_key") or ""
+            ),
+            "investigation_source_families": tuple(
+                source_setup_request.get("registered_source_families") or ()
+            ),
+            "investigation_preferred_connectors": tuple(
+                source_setup_request.get("registered_connectors") or ()
+            ),
+            "result_route": "Evidence",
+        }
+        st.session_state.pop("_investigation_source_setup", None)
+        st.session_state.pop("_open_additional_sources", None)
 
     pending_publication_repair = st.session_state.pop(
         "_pending_publication_repair",
@@ -2010,6 +2109,25 @@ def main() -> None:
         )
         investigation_action_id = str(
             pending_research_operation.get("investigation_action_id") or ""
+        )
+        investigation_action_kind = str(
+            pending_research_operation.get("investigation_action_kind") or ""
+        )
+        investigation_objective = str(
+            pending_research_operation.get("investigation_objective") or ""
+        )
+        investigation_semantic_key = str(
+            pending_research_operation.get("investigation_semantic_key") or ""
+        )
+        investigation_source_families = tuple(
+            pending_research_operation.get(
+                "investigation_source_families"
+            ) or ()
+        )
+        investigation_preferred_connectors = tuple(
+            pending_research_operation.get(
+                "investigation_preferred_connectors"
+            ) or ()
         )
         result_route = str(
             pending_research_operation.get("result_route") or "Decision"
@@ -2075,6 +2193,13 @@ def main() -> None:
                 investigate_event_id if investigate_clicked else ""
             ) or "",
             investigation_action_id=investigation_action_id,
+            investigation_action_kind=investigation_action_kind,
+            investigation_objective=investigation_objective,
+            investigation_semantic_key=investigation_semantic_key,
+            investigation_source_families=investigation_source_families,
+            investigation_preferred_connectors=(
+                investigation_preferred_connectors
+            ),
             operation_kind=operation_kind,
             operation_label=operation_label,
             result_route=result_route,
@@ -2137,6 +2262,14 @@ def main() -> None:
                         research_profile=effective_profile,
                         investigate_event_id=investigate_event_id if investigate_clicked else None,
                         investigate_analog_id=investigate_analog_id,
+                        investigation_action_id=investigation_action_id,
+                        investigation_action_kind=investigation_action_kind,
+                        investigation_objective=investigation_objective,
+                        investigation_semantic_key=investigation_semantic_key,
+                        investigation_source_families=investigation_source_families,
+                        investigation_preferred_connectors=(
+                            investigation_preferred_connectors
+                        ),
                         enable_hybrid_research=effective_hybrid_research,
                         enable_independent_research_qa=effective_hybrid_research,
                         resume_hybrid_run_id=str(
@@ -2170,6 +2303,14 @@ def main() -> None:
                         research_profile=effective_profile,
                         investigate_event_id=investigate_event_id if investigate_clicked else None,
                         investigate_analog_id=investigate_analog_id,
+                        investigation_action_id=investigation_action_id,
+                        investigation_action_kind=investigation_action_kind,
+                        investigation_objective=investigation_objective,
+                        investigation_semantic_key=investigation_semantic_key,
+                        investigation_source_families=investigation_source_families,
+                        investigation_preferred_connectors=(
+                            investigation_preferred_connectors
+                        ),
                         enable_hybrid_research=effective_hybrid_research,
                     enable_independent_research_qa=effective_hybrid_research,
                     resume_hybrid_run_id=str(
@@ -2232,6 +2373,8 @@ def main() -> None:
                         operation_kind=operation_kind,
                         operation_label=operation_label,
                         investigation_action_id=investigation_action_id,
+                        investigation_action_kind=investigation_action_kind,
+                        investigation_semantic_key=investigation_semantic_key,
                         result_route=result_route,
                         job_id=lifecycle_run_id,
                     )

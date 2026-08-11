@@ -14,8 +14,16 @@ from equity_research.application import (
     parse_event_price_csv,
 )
 from equity_research.application.research_runs import ResearchReadiness
-from equity_research.decision_intelligence import build_prioritized_research_queue
-from equity_research.models import EvidenceWorkOrder, EvidenceWorkOrderItem
+from equity_research.decision_intelligence import (
+    build_prioritized_research_queue,
+    reconcile_targeted_investigation_action,
+)
+from equity_research.models import (
+    EvidenceWorkOrder,
+    EvidenceWorkOrderItem,
+    PrioritizedResearchAction,
+    SourceRetrievalLifecycle,
+)
 from equity_research.application.research_runs import ResearchRunService
 from equity_research.infrastructure.job_repository import SqliteResearchJobRepository
 from equity_research.presentation.view_models import (
@@ -190,20 +198,13 @@ def test_decision_uses_canonical_actions_and_research_has_lazy_route_models() ->
         }
         for action in decision.investigation_actions
     )
-    source_setup_actions = [
-        action
-        for action in decision.investigation_actions
-        if action.intent_type == "configure_source"
-    ]
-    assert source_setup_actions
-    assert all(
-        action.primary_cta == "Set up source, then rerun"
-        and action.setup_steps == (
-            "Set up an eligible source.",
-            "Run / Refresh Research to create an updated live result.",
-        )
-        for action in source_setup_actions
+    cash_action = next(
+        action for action in decision.investigation_actions
+        if action.action_kind == "cash_conversion_analysis"
     )
+    assert cash_action.intent_type == "execute_action"
+    assert cash_action.primary_cta == "Run investigation"
+    assert cash_action.setup_steps == ()
     assert decision.debate is not None
     assert decision.debate.resolution_actions == ()
     for route in ResearchSubroute:
@@ -211,6 +212,67 @@ def test_decision_uses_canonical_actions_and_research_has_lazy_route_models() ->
         assert model.route is route
         assert len(model.metrics) <= 4
         assert len(model.what_matters) <= 5
+
+
+def test_manual_action_keeps_the_two_step_source_setup_handoff() -> None:
+    result = demo_result("AAPL")
+    result.prioritized_research_queue = [PrioritizedResearchAction(
+        rank=1,
+        action_id="manual-consensus",
+        title="Capture licensed consensus history",
+        why_it_matters="Point-in-time estimates require an entitled source.",
+        source_type="licensed consensus",
+        status="licensed_or_manual_required",
+        decision_impact="Expectations remain incomplete.",
+        auto_resolvable=False,
+        action_kind="consensus_revision_capture",
+        objective="Capture licensed consensus history",
+        execution_mode="manual",
+    )]
+
+    action = build_decision_brief_view_model(result).investigation_actions[0]
+
+    assert action.intent_type == "configure_source"
+    assert action.primary_cta == "Set up source, then rerun"
+    assert action.setup_steps == (
+        "Set up an eligible source.",
+        "Run / Refresh Research to create an updated live result.",
+    )
+
+
+def test_targeted_action_records_attempt_without_claiming_resolution() -> None:
+    action = PrioritizedResearchAction(
+        rank=1,
+        action_id="cash-work-order",
+        title="Test AAPL cash conversion",
+        why_it_matters="Tests recurring cash generation.",
+        source_type="SEC filing",
+        status="unavailable",
+        decision_impact="Thesis quality",
+        auto_resolvable=True,
+        action_kind="cash_conversion_analysis",
+        semantic_key="cash_conversion_analysis:AAPL:company:sec_filing",
+        related_research_request_ids=["selected-cash-action"],
+    )
+    lifecycle = SourceRetrievalLifecycle(
+        request_id="selected-cash-action",
+        source_id="sec-filing",
+        status="unavailable",
+        source_type="sec_filing",
+        message="No additional period-aligned cash-flow evidence was returned.",
+    )
+
+    matched = reconcile_targeted_investigation_action(
+        [action],
+        action_id="selected-cash-action",
+        action_kind="cash_conversion_analysis",
+        retrieval_lifecycles=[lifecycle],
+    )
+
+    assert matched is action
+    assert action.status == "attempted_unresolved"
+    assert "Attempted via sec_filing" in action.attempt_summary
+    assert "No additional period-aligned" in action.blocking_reason
 
 
 def test_price_csv_requires_beta_history_and_supports_complete_aapl_package() -> None:

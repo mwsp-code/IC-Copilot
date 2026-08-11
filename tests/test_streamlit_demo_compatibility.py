@@ -85,6 +85,27 @@ def test_active_job_banner_names_the_investigation(monkeypatch) -> None:
     )
 
 
+def test_completed_targeted_run_finds_still_open_action() -> None:
+    action = SimpleNamespace(
+        action_id="work-order-cash",
+        action_kind="cash_conversion_analysis",
+        semantic_key="cash_conversion_analysis:AAPL:company:sec_filing",
+        related_research_request_ids=["selected-cash-action"],
+        related_work_order_ids=[],
+        attempt_summary="Attempted via sec_filing; outcome: unavailable.",
+    )
+    result = SimpleNamespace(prioritized_research_queue=[action])
+    state = SimpleNamespace(
+        investigation_action_id="selected-cash-action",
+        investigation_action_kind="cash_conversion_analysis",
+        investigation_semantic_key=(
+            "cash_conversion_analysis:AAPL:company:sec_filing"
+        ),
+    )
+
+    assert app._remaining_targeted_action(result, state) is action
+
+
 def test_local_codex_is_preselected_before_one_time_sign_in() -> None:
     assert app._preferred_auditor_backend(
         local_codex_status="not_authenticated",

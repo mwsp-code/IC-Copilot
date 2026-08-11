@@ -86,6 +86,7 @@ from .decision_intelligence import (
     build_decision_snapshot,
     build_ic_implied_expectations_snapshot,
     build_prioritized_research_queue,
+    reconcile_targeted_investigation_action,
 )
 from .earnings_surprise_proxy import build_earnings_surprise_proxy
 from .metric_intelligence import build_metric_change_assessments
@@ -445,6 +446,46 @@ class _PeerSnapshot:
     global_coverage: GlobalPeerCoverage | None = None
 
 
+def _targeted_investigation_request(
+    *,
+    action_id: str,
+    action_kind: str,
+    objective: str,
+    source_families: tuple[str, ...],
+    preferred_connectors: tuple[str, ...],
+) -> dict[str, object]:
+    """Translate a canonical Decision action into one registered request."""
+
+    source_type = {
+        "consensus_revision_capture": "consensus_manual",
+        "market_event_attribution": "macro_market",
+        "external_theme_validation": "issuer_ir",
+    }.get(action_kind, "sec_filing")
+    action_objective = (
+        objective or "Complete the selected targeted investigation"
+    )
+    return {
+        "request_id": action_id,
+        "source_type": source_type,
+        "source_types": list(source_families) or [source_type],
+        "required_source_families": list(source_families) or [source_type],
+        "preferred_connectors": list(preferred_connectors),
+        "title": action_objective,
+        "objective": action_objective,
+        "reason": (
+            "The user selected this open Decision action for a targeted, "
+            "evidence-admitted research pass."
+        ),
+        "priority": "High",
+        "materiality": "High",
+        "status": "planned",
+        "stopping_rule": (
+            "Stop when admitted evidence satisfies the action or registered "
+            "sources are exhausted."
+        ),
+    }
+
+
 def run_us_equity_research(
     ticker: str,
     sec_client: SecClient | None = None,
@@ -465,6 +506,12 @@ def run_us_equity_research(
     research_profile: str | ResearchProfile | None = None,
     investigate_event_id: str | None = None,
     investigate_analog_id: str | None = None,
+    investigation_action_id: str = "",
+    investigation_action_kind: str = "",
+    investigation_objective: str = "",
+    investigation_semantic_key: str = "",
+    investigation_source_families: tuple[str, ...] = (),
+    investigation_preferred_connectors: tuple[str, ...] = (),
     enable_hybrid_research: bool = False,
     hybrid_planner_provider: LlmProvider | None = None,
     hybrid_executor_provider: LlmProvider | None = None,
@@ -1232,6 +1279,29 @@ def run_us_equity_research(
                 "external_evidence_status": external_evidence.status,
             },
         )
+        if investigation_action_id:
+            targeted_request = _targeted_investigation_request(
+                action_id=investigation_action_id,
+                action_kind=investigation_action_kind,
+                objective=investigation_objective,
+                source_families=investigation_source_families,
+                preferred_connectors=investigation_preferred_connectors,
+            )
+            hybrid_context.setdefault("source_requests", []).insert(
+                0, targeted_request
+            )
+            hybrid_context["_mandatory_source_requests"] = [targeted_request]
+            hybrid_context.setdefault("decision_context", {})[
+                "targeted_investigation"
+            ] = {
+                "action_id": investigation_action_id,
+                "action_kind": investigation_action_kind,
+                "objective": investigation_objective,
+                "completion_rule": (
+                    "Do not report this investigation as resolved unless its "
+                    "completion criteria are supported by admitted evidence."
+                ),
+            }
         hybrid_context["_source_candidates"] = [
             asdict(item) for item in source_candidates
         ]
@@ -1357,7 +1427,11 @@ def run_us_equity_research(
             str(hybrid_context.get("evidence_hash") or ""),
         )
         cached_run = None
-        if cached_payload and not research_execution_policy.cache_bypass:
+        if (
+            cached_payload
+            and not research_execution_policy.cache_bypass
+            and not investigation_action_id
+        ):
             try:
                 candidate_cache = hybrid_run_from_payload(cached_payload)
             except (TypeError, ValueError):
@@ -1792,6 +1866,17 @@ def run_us_equity_research(
         valuation=valuation,
         limit=20,
     )
+    if investigation_action_id:
+        reconcile_targeted_investigation_action(
+            prioritized_research_queue,
+            action_id=investigation_action_id,
+            action_kind=investigation_action_kind,
+            semantic_key=investigation_semantic_key,
+            retrieval_lifecycles=(
+                hybrid_research.retrieval_lifecycles
+                if hybrid_research else ()
+            ),
+        )
     store.save_research_run(identity.ticker, run_manifest)
     store.save_evidence_ledger(run_manifest.run_id, identity.ticker, evidence_ledger)
     store.save_entity_coverage(run_manifest.run_id, entity_resolution, financial_coverage)

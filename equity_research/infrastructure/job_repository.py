@@ -235,6 +235,12 @@ class SqliteResearchJobRepository:
     def _snapshot_from_row(row: sqlite3.Row) -> ResearchRunSnapshot:
         payload = json.loads(row["command_json"])
         payload["enabled_source_families"] = tuple(payload.get("enabled_source_families", ()))
+        payload["investigation_source_families"] = tuple(
+            payload.get("investigation_source_families", ())
+        )
+        payload["investigation_preferred_connectors"] = tuple(
+            payload.get("investigation_preferred_connectors", ())
+        )
         payload["credential_lease_ids"] = tuple(
             payload.get("credential_lease_ids", ())
         )

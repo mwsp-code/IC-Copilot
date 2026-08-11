@@ -1181,8 +1181,6 @@ def _investigation_action_view_models(
         auto_resolvable = bool(getattr(item, "auto_resolvable", False))
         intent_type = (
             "retry_attribution" if action_kind == "market_event_attribution"
-            else "configure_source"
-            if readable_status in {"Unavailable", "Needs setup"}
             else "execute_action" if auto_resolvable
             else "configure_source"
         )
@@ -1255,6 +1253,8 @@ def _action_status_label(value: str) -> str:
         "licensed_or_manual_required": "Needs setup",
         "retrieval_failed": "Needs attention",
         "failed": "Needs attention",
+        "attempted_unresolved": "Attempted · unresolved",
+        "not_attempted_missing_connector": "Needs setup",
         "planned": "Open",
         "pending": "Open",
         "open": "Open",

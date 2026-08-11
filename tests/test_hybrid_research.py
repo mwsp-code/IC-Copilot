@@ -18,6 +18,7 @@ from equity_research.hybrid_research import (
     build_hybrid_execution_preflight,
     local_codex_readiness,
     _codex_wrapper_schema,
+    _execute_registered_requests,
     _provider_system_prompt,
     _round_prompt,
     _validate_round_artifact,
@@ -1766,6 +1767,10 @@ def test_background_job_tracks_progress_and_displayed_result_relationship() -> N
         operation_kind="targeted_investigation",
         operation_label="Resolve AAPL Forward EBITDA",
         investigation_action_id="action-ebitda",
+        investigation_action_kind="valuation_input_resolution",
+        investigation_semantic_key=(
+            "valuation_input_resolution:AAPL:company:sec_filings"
+        ),
         result_route="Evidence",
     )
     assert completed.wait(1)
@@ -1785,7 +1790,30 @@ def test_background_job_tracks_progress_and_displayed_result_relationship() -> N
     assert latest.operation_kind == "targeted_investigation"
     assert latest.operation_label == "Resolve AAPL Forward EBITDA"
     assert latest.investigation_action_id == "action-ebitda"
+    assert latest.investigation_action_kind == "valuation_input_resolution"
+    assert latest.investigation_semantic_key.endswith("sec_filings")
     assert latest.result_route == "Evidence"
+
+
+def test_mandatory_targeted_request_runs_when_planner_omits_it() -> None:
+    context = {
+        "searchable_evidence_catalog": [],
+        "_mandatory_source_requests": [{
+            "request_id": "selected-cash-action",
+            "source_type": "sec_filing",
+            "title": "Test AAPL cash conversion",
+            "reason": "User-selected targeted investigation.",
+        }],
+    }
+
+    outcomes = _execute_registered_requests(
+        context,
+        {"source_requests": []},
+    )
+
+    assert len(outcomes) == 1
+    assert outcomes[0]["request_id"] == "selected-cash-action"
+    assert outcomes[0]["status"] == "unavailable"
 
 
 def test_hybrid_run_round_trips_through_store(tmp_path) -> None:

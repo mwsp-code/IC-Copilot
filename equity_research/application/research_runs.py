@@ -59,6 +59,11 @@ class ResearchRunCommand:
     cache_bypass: bool = False
     investigate_event_id: str = ""
     investigation_action_id: str = ""
+    investigation_action_kind: str = ""
+    investigation_objective: str = ""
+    investigation_semantic_key: str = ""
+    investigation_source_families: tuple[str, ...] = ()
+    investigation_preferred_connectors: tuple[str, ...] = ()
     operation_kind: str = "full_research"
     operation_label: str = ""
     result_route: str = "Decision"
@@ -68,7 +73,7 @@ class ResearchRunCommand:
     repair_action_ids: tuple[str, ...] = ()
     workspace_scope: str = "local"
     credential_lease_ids: tuple[str, ...] = ()
-    command_version: str = "research-run-command-v2"
+    command_version: str = "research-run-command-v3"
 
     def __post_init__(self) -> None:
         ticker = self.ticker.strip().upper()
@@ -207,6 +212,8 @@ class ResearchRunService:
                 "operation_kind": command.operation_kind,
                 "operation_label": command.operation_label,
                 "investigation_action_id": command.investigation_action_id,
+                "investigation_action_kind": command.investigation_action_kind,
+                "investigation_semantic_key": command.investigation_semantic_key,
                 "result_route": command.result_route,
             },
         )
