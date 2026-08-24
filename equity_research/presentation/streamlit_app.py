@@ -2047,14 +2047,6 @@ def main() -> None:
     with repo_col:
         st.link_button("View on GitHub", GITHUB_REPOSITORY_URL, use_container_width=True)
         st.link_button("Give Feedback", FEEDBACK_DISCUSSION_URL, use_container_width=True)
-    demo_video = Path(__file__).resolve().parents[2] / "docs" / "assets" / "demo" / "ic-copilot-aapl-demo.mp4"
-    if demo_video.exists():
-        with st.expander("Watch the 91-second AAPL research walkthrough"):
-            st.video(str(demo_video))
-            st.caption(
-                "Source event -> causal bridge -> peer evidence -> reverse DCF -> "
-                "Bull/Bear/Judge. Frozen illustrative research; not investment advice."
-            )
     if "result" not in st.session_state:
         storage_scope, scope_id = _saved_research_scope()
         restored = (
