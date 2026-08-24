@@ -8,6 +8,8 @@ from typing import Any, Iterable
 import uuid
 
 from .domain.research_integrity import CandidateStatusEvent
+from .domain.research_intents import ResearchIntentResolver
+from .application.research_agenda import ResearchQuestionLibrary
 
 from .models import (
     AdaptiveMacroResearchPlan,
@@ -649,7 +651,11 @@ def build_independent_research_qa_run(
         item.to_evidence_request() for item in result.research_requests
     ]
     result.candidate_discovery_items = _candidate_discovery_from_run(hybrid_run)
-    result.evidence_gaps = _evidence_gaps(result.audit_findings, result.evidence_requests, hybrid_run)
+    result.evidence_gaps = _evidence_gaps(
+        result.audit_findings,
+        result.research_requests,
+        hybrid_run,
+    )
     result.audit_resolutions = _audit_resolutions(result.audit_findings, result.evidence_gaps)
     result.primary_audit_responses = _primary_audit_responses(
         result.audit_findings,
@@ -666,7 +672,7 @@ def build_independent_research_qa_run(
             required_evidence=list(item.evidence_request_ids),
             confidence_impact="Reduce confidence until the evidence gap is closed.",
         )
-        for item in result.evidence_gaps if item.status == "unresolved"
+        for item in result.evidence_gaps if item.status != "closed"
     ]
     audit_completed = any(
         item.role == "independent_research_auditor" and item.status == "completed"
@@ -777,6 +783,14 @@ def _candidate_discovery_from_run(
             connector_id=item.discovery_method,
             admission_decision_id=decision_id,
             admitted_evidence_ids=evidence_ids,
+            related_request_ids=(item.research_request_id,) if item.research_request_id else (),
+            relationship_to_subject=str(
+                getattr(item, "relationship_to_subject", "primary") or "primary"
+            ),
+            scope_status=str(getattr(item, "scope_status", "unverified") or "unverified"),
+            referenced_entities=tuple(
+                getattr(item, "referenced_entities", ()) or ()
+            ),
         ))
     return result
 
@@ -944,7 +958,7 @@ def _stopping_reason(
         for item in run.evidence_gaps
     ):
         return "no_new_admitted_evidence"
-    if any(item.status == "unresolved" for item in run.evidence_gaps):
+    if any(item.status != "closed" for item in run.evidence_gaps):
         return "configured_depth_or_evidence_limit"
     return "all_material_findings_resolved"
 
@@ -1004,7 +1018,11 @@ def _qa_report(
     total = round(sum(item.score * item.weight for item in dimensions))
     scorecard = ResearchQaScore(
         total_score=total,
-        status="Complete" if audit_completed and unresolved == 0 else "Partial",
+        status=(
+            "Complete"
+            if audit_completed and unresolved == 0 and partial == 0
+            else "Partial"
+        ),
         dimensions=dimensions,
         deductions=deductions,
     )
@@ -1029,7 +1047,11 @@ def _qa_report(
         additional_validated_sources=closed + partial,
         market_capture_challenged=market_challenged,
         confidence_before="Medium" if run.final_artifact else "Low",
-        confidence_after="Medium-High" if total >= 85 and unresolved == 0 else "Medium" if total >= 65 else "Low",
+        confidence_after=(
+            "Medium-High"
+            if total >= 85 and unresolved == 0 and partial == 0
+            else "Medium" if total >= 65 else "Low"
+        ),
         summary=(
             "Research-process quality score; it does not assert that the investment conclusion is objectively correct."
         ),
@@ -1104,9 +1126,194 @@ def _research_requests_from_run(run: HybridResearchRun) -> list[ResearchRequest]
     audit = next((item.artifact for item in run.rounds if item.role == "independent_research_auditor" and item.artifact), None)
     raw = list((audit.payload if audit else {}).get("source_requests") or [])
     result: list[ResearchRequest] = []
+    seen_objectives: set[str] = set()
+    sessions = list(getattr(run, "agent_research_sessions", []) or [])
+    if not sessions and getattr(run, "agent_research_session", None) is not None:
+        sessions = [run.agent_research_session]
+    agenda_by_reference = {
+        reference: agenda_item
+        for session in sessions
+        for agenda_item in session.agenda.items
+        for reference in (
+            agenda_item.question_id,
+            agenda_item.question_key,
+            agenda_item.intent_id,
+        )
+        if reference
+    }
+    agenda_security_key = next(
+        (
+            str(getattr(session.agenda, "security_key", "") or "")
+            for session in sessions
+            if str(getattr(session.agenda, "security_key", "") or "")
+        ),
+        "",
+    )
+    intent_resolver = ResearchIntentResolver()
+    question_library = ResearchQuestionLibrary()
+    for session in sessions:
+        observations_by_question: dict[str, list[Any]] = {}
+        for observation in session.observations:
+            observations_by_question.setdefault(
+                observation.question_id, []
+            ).append(observation)
+        ordered_items = sorted(
+            session.agenda.items,
+            key=lambda value: (
+                value.question_id != session.agenda.selected_question_id,
+                -value.priority,
+                value.question_id,
+            ),
+        )
+        for agenda_item in ordered_items:
+            objective_key = " ".join(
+                agenda_item.objective.casefold().split()
+            )
+            if objective_key in seen_objectives:
+                continue
+            seen_objectives.add(objective_key)
+            answer = agenda_item.answer
+            observations = observations_by_question.get(
+                agenda_item.question_id, []
+            )
+            attempted = list(dict.fromkeys(
+                source.strip()
+                for value in observations
+                for source in (
+                    str(value.source_family).split(",")
+                    if value.source_family else [value.tool_name]
+                )
+                if source.strip()
+            ))
+            evidence_ids = list(dict.fromkeys(
+                evidence_id
+                for value in observations
+                for evidence_id in value.evidence_ids
+            ))
+            if answer is not None:
+                evidence_ids = list(dict.fromkeys([
+                    *evidence_ids,
+                    *answer.evidence_ids,
+                    *answer.contrary_evidence_ids,
+                ]))
+            status = (
+                answer.status if answer is not None
+                else agenda_item.status
+            )
+            search_count = sum(
+                value.tool_name in {
+                    "search_sources", "query_sec_facts", "query_market_data",
+                    "query_consensus_history", "query_macro_series",
+                }
+                for value in observations
+            )
+            calculation_count = sum(
+                value.tool_name.startswith("compute_")
+                or value.tool_name == "compare_periods"
+                for value in observations
+            )
+            result.append(ResearchRequest(
+                request_id=agenda_item.question_id,
+                objective=agenda_item.objective,
+                requested_by_role=session.role,
+                required_source_families=list(agenda_item.source_families),
+                desired_confirming_evidence=list(
+                    agenda_item.confirming_evidence
+                ),
+                desired_contradicting_evidence=list(
+                    agenda_item.contradicting_evidence
+                ),
+                scope={
+                    "domain": agenda_item.domain,
+                    "decision_relevance": agenda_item.decision_relevance,
+                    "dependency_question_ids": list(
+                        agenda_item.dependency_question_ids
+                    ),
+                },
+                priority=(
+                    "Critical" if agenda_item.priority >= 90
+                    else "High" if agenda_item.priority >= 70
+                    else "Medium"
+                ),
+                materiality=agenda_item.materiality,
+                stopping_rule=(
+                    "Stop when the question has a direct calibrated answer with admitted "
+                    "confirming and contrary coverage, or a named source blocker."
+                ),
+                attempted_connector_ids=attempted,
+                admitted_evidence_ids=evidence_ids,
+                status=status,
+                resolution_summary=(
+                    answer.answer if answer is not None
+                    else "This agenda question was retained but not researched in the bounded run."
+                ),
+                session_id=session.session_id,
+                agenda_item_id=agenda_item.question_id,
+                evidence_coverage=asdict(agenda_item.coverage),
+                research_budget=asdict(session.budget),
+                answer_status=status,
+                answer=answer.answer if answer is not None else "",
+                confidence=answer.confidence if answer is not None else "Unknown",
+                confidence_reason=(
+                    answer.confidence_reason if answer is not None else ""
+                ),
+                key_findings=(
+                    list(answer.key_findings) if answer is not None else []
+                ),
+                strongest_limitation=(
+                    answer.strongest_limitation if answer is not None else ""
+                ),
+                remaining_work=(
+                    list(answer.remaining_work) if answer is not None else []
+                ),
+                changed_conclusions=(
+                    list(answer.changed_conclusions) if answer is not None else []
+                ),
+                blocking_reason=(
+                    answer.strongest_limitation
+                    if answer is not None and status.startswith("blocked_")
+                    else ""
+                ),
+                intent_id=agenda_item.intent_id,
+                question_key=agenda_item.question_key,
+                mechanism_key=agenda_item.mechanism_key,
+                target_type=agenda_item.target_type,
+                target_id=agenda_item.target_id,
+                period_scope=agenda_item.period_scope,
+                event_id=agenda_item.event_id,
+                decision_dependency=agenda_item.decision_dependency,
+                evidence_hash=(
+                    answer.evidence_hash if answer is not None else ""
+                ),
+                search_summary=(
+                    f"{search_count} source-search or structured-data action(s) completed "
+                    f"across {len(attempted)} tool/source route(s)."
+                    if search_count else "No source search was run for this agenda item."
+                ),
+                reading_summary=(
+                    f"{sum(value.tool_name in {'open_source', 'find_in_source'} for value in observations)} "
+                    "source reading action(s) completed."
+                ),
+                extraction_summary=(
+                    f"{sum(value.tool_name in {'extract_table', 'query_sec_facts'} for value in observations)} "
+                    "structured extraction action(s) completed."
+                ),
+                calculation_summary=(
+                    f"{calculation_count} reproducible calculation action(s) completed."
+                ),
+            ))
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             continue
+        objective = str(item.get("objective") or item.get("question") or item.get("title") or item.get("reason") or "Targeted evidence request")
+        library_matches = question_library.matching(objective)
+        inferred_question_key = (
+            library_matches[0].question_key if library_matches else ""
+        )
+        objective_key = " ".join(objective.casefold().split())
+        if objective_key in seen_objectives:
+            continue
+        seen_objectives.add(objective_key)
         request_id = str(item.get("request_id") or _stable_hash((run.run_id, "request", index, item))[:20])
         source_types = item.get("required_source_families") or item.get("source_types") or [item.get("source_type")]
         attempts = [
@@ -1124,13 +1331,51 @@ def _research_requests_from_run(run: HybridResearchRun) -> list[ResearchRequest]
             and value.evidence_id
         ]
         request_status = (
-            "resolved" if admitted_ids
+            "evidence_admitted" if admitted_ids
             else "attempted" if attempts
             else "planned"
         )
+        agenda_reference = str(
+            item.get("agenda_item_id")
+            or item.get("question_id")
+            or item.get("question_key")
+            or inferred_question_key
+            or ""
+        )
+        agenda_item = agenda_by_reference.get(agenda_reference)
+        mapped_intent = None
+        if agenda_item is None:
+            mapped = intent_resolver.resolve_legacy(
+                ticker=run.ticker,
+                cik=(
+                    agenda_security_key.split(":", 1)[1]
+                    if agenda_security_key.startswith("cik:") else ""
+                ),
+                exchange=(
+                    agenda_security_key.split(":", 2)[1]
+                    if agenda_security_key.startswith("listing:") else ""
+                ),
+                question_key=str(
+                    item.get("question_key") or inferred_question_key
+                ),
+                mechanism_key=str(item.get("mechanism_key") or ""),
+                target_type=str(item.get("target_type") or ""),
+                target_id=str(item.get("target_id") or ""),
+                period_scope=str(item.get("period_scope") or ""),
+                event_id=str(item.get("event_id") or ""),
+                decision_dependency=str(item.get("decision_dependency") or ""),
+                title=str(item.get("title") or objective),
+                objective=objective,
+                question_status="researching",
+                answer_status="researching",
+                origin_refs=(request_id,),
+                materiality=str(item.get("materiality") or "High"),
+            )
+            if mapped.intent is not None:
+                mapped_intent = intent_resolver.upsert(mapped.intent).intent
         result.append(ResearchRequest(
             request_id=request_id,
-            objective=str(item.get("objective") or item.get("question") or item.get("title") or item.get("reason") or "Targeted evidence request"),
+            objective=objective,
             requested_by_role="independent_research_auditor",
             required_source_families=[str(value) for value in source_types if value],
             desired_confirming_evidence=[
@@ -1160,10 +1405,51 @@ def _research_requests_from_run(run: HybridResearchRun) -> list[ResearchRequest]
             admitted_evidence_ids=admitted_ids,
             status=request_status,
             resolution_summary=(
-                f"{len(admitted_ids)} candidate evidence item(s) admitted."
+                f"{len(admitted_ids)} candidate evidence item(s) admitted; "
+                "downstream analysis must still satisfy the request stopping rule."
                 if admitted_ids else
                 "Registered connector attempts completed without candidate evidence admission."
                 if attempts else "Awaiting registered retrieval."
+            ),
+            intent_id=(
+                agenda_item.intent_id if agenda_item is not None
+                else mapped_intent.intent_id if mapped_intent is not None
+                else ""
+            ),
+            question_key=(
+                agenda_item.question_key if agenda_item is not None
+                else mapped_intent.question_key if mapped_intent is not None
+                else ""
+            ),
+            mechanism_key=(
+                agenda_item.mechanism_key if agenda_item is not None
+                else mapped_intent.mechanism_key if mapped_intent is not None
+                else ""
+            ),
+            target_type=(
+                agenda_item.target_type if agenda_item is not None
+                else mapped_intent.target_type if mapped_intent is not None
+                else "issuer"
+            ),
+            target_id=(
+                agenda_item.target_id if agenda_item is not None
+                else mapped_intent.target_id if mapped_intent is not None
+                else run.ticker
+            ),
+            period_scope=(
+                agenda_item.period_scope if agenda_item is not None
+                else mapped_intent.period_scope if mapped_intent is not None
+                else "current_research_cutoff"
+            ),
+            event_id=(
+                agenda_item.event_id if agenda_item is not None
+                else mapped_intent.event_id if mapped_intent is not None
+                else ""
+            ),
+            decision_dependency=(
+                agenda_item.decision_dependency if agenda_item is not None
+                else mapped_intent.decision_dependency if mapped_intent is not None
+                else "decision_quality"
             ),
         ))
     return result
@@ -1171,7 +1457,7 @@ def _research_requests_from_run(run: HybridResearchRun) -> list[ResearchRequest]
 
 def _evidence_gaps(
     findings: list[AuditFinding],
-    requests: list[EvidenceRequest],
+    requests: list[ResearchRequest],
     run: HybridResearchRun,
 ) -> list[EvidenceGap]:
     outcomes = {
@@ -1180,26 +1466,45 @@ def _evidence_gaps(
     result: list[EvidenceGap] = []
     for index, request in enumerate(requests):
         outcome = outcomes.get(request.request_id)
-        lifecycle_status = str(getattr(outcome, "status", "") or "").casefold()
-        if lifecycle_status in {"completed", "validated", "available", "success"}:
+        admitted_ids = list(
+            getattr(request, "admitted_evidence_ids", []) or []
+        )
+        request_status = str(
+            getattr(request, "status", "") or ""
+        ).casefold()
+        if (
+            request_status in {"resolved", "closed", "answered"}
+            and admitted_ids
+        ):
             status = "closed"
-        elif lifecycle_status in {"partial", "metadata_only"}:
+        elif admitted_ids:
             status = "partially_resolved"
         else:
+            # A source record reaching `validated` says the retrieval pipeline
+            # worked. It does not say the Research Request was answered.
             status = "unresolved"
+        source_types = list(
+            getattr(request, "required_source_families", [])
+            or getattr(request, "source_types", [])
+            or []
+        )
         related = [
             item for item in findings
             if request.request_id in item.evidence_request_ids
-            or set(request.source_types) & set(item.evidence_request_ids)
+            or set(source_types) & set(item.evidence_request_ids)
         ]
         result.append(EvidenceGap(
             gap_id=_stable_hash((run.run_id, "gap", index, request.request_id))[:20],
-            summary=request.question,
+            summary=str(
+                getattr(request, "objective", "")
+                or getattr(request, "question", "")
+                or "Targeted evidence gap"
+            ),
             severity=related[0].severity if related else request.priority,
             status=status,
             evidence_request_ids=[request.request_id],
             affected_claim_ids=list(request.affected_claim_ids),
-            resolution_evidence_ids=[],
+            resolution_evidence_ids=admitted_ids,
         ))
     for item in findings:
         if any(item.finding_id in gap.affected_claim_ids for gap in result):
@@ -1219,18 +1524,38 @@ def _audit_resolutions(
     findings: list[AuditFinding],
     gaps: list[EvidenceGap],
 ) -> list[AuditResolution]:
-    unresolved = any(item.status == "unresolved" for item in gaps)
-    return [AuditResolution(
-        finding_id=item.finding_id,
-        status="unresolved" if unresolved and item.status != "resolved" else "resolved",
-        resolution=(
-            "Targeted retrieval remains incomplete; the finding is retained as an open risk."
-            if unresolved and item.status != "resolved" else
-            "The finding was addressed using admitted evidence."
-        ),
-        evidence_ids=list(item.evidence_ids),
-        conclusion_changed=item.status == "resolved",
-    ) for item in findings]
+    resolutions: list[AuditResolution] = []
+    for item in findings:
+        related = [
+            gap for gap in gaps
+            if set(gap.evidence_request_ids).intersection(
+                item.evidence_request_ids
+            )
+        ]
+        open_gap = (
+            item.status != "resolved"
+            and (not related or any(gap.status != "closed" for gap in related))
+        )
+        evidence_ids = list(dict.fromkeys([
+            *list(item.evidence_ids),
+            *[
+                evidence_id
+                for gap in related
+                for evidence_id in gap.resolution_evidence_ids
+            ],
+        ]))
+        resolutions.append(AuditResolution(
+            finding_id=item.finding_id,
+            status="unresolved" if open_gap else "resolved",
+            resolution=(
+                "Targeted retrieval or analysis remains incomplete; the finding is retained as an open risk."
+                if open_gap else
+                "The finding was addressed using admitted evidence and a completed response."
+            ),
+            evidence_ids=evidence_ids,
+            conclusion_changed=item.status == "resolved",
+        ))
+    return resolutions
 
 
 def _conclusion_revisions(

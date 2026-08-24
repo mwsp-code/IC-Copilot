@@ -1,0 +1,31 @@
+{
+  "ticker": "NVDA",
+  "status": "published",
+  "policy_version": "demo-quality-policy-v3",
+  "candidate_count": 1,
+  "selection_policy": "newest_completed_closed_and_gate_passing",
+  "sanitization_status": "passed_decision_metadata_only",
+  "candidates": [
+    {
+      "source_run_id": "44f8b78e-8499-45e5-ae18-61f7ec3e1a42",
+      "source_run_completed_at": "2026-08-21T03:14:53.261641+00:00",
+      "status": "pass_with_residual_diligence",
+      "allowed": true,
+      "publication_label": "Research completed with residual diligence",
+      "canonical_revision_id": "",
+      "validation_status": "passed",
+      "qa_closure_state": "closed_with_residual_risk",
+      "evidence_hash": "4d82ab8e92ecb3a21f708a43a4df27ad3ea0f3b99b6817adc13f8ad77fdee4a5",
+      "policy_version": "demo-quality-policy-v3",
+      "failure_codes": [],
+      "qualification_codes": [
+        "closure_with_residual_risk"
+      ],
+      "repair_kinds": [],
+      "blockers": [],
+      "next_actions": []
+    }
+  ],
+  "published_artifact_preserved": true,
+  "built_in_fallback_available": true
+}

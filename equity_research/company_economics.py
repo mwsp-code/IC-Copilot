@@ -21,6 +21,12 @@ from .models import (
 )
 from .driver_templates import TEMPLATES
 from .domain.mapping_escalation import resolve_observation_mapping
+from .domain.research_ontology import (
+    BusinessArchetype,
+    SecurityResearchProfile,
+    SecurityResearchProfileResolver,
+    resolve_metric_mechanism,
+)
 from .valuation import classify_template
 
 
@@ -56,6 +62,28 @@ PLAYBOOKS: dict[str, dict[str, object]] = {
         "valuation_methods": ["P/FFO", "P/AFFO", "NAV premium/discount", "dividend yield"],
         "macro_sensitivities": ["Rates", "cap rates", "property demand", "credit availability"],
         "normal_catalysts": ["Leasing update", "asset sale", "financing", "dividend", "guidance"],
+    },
+    "Asset manager": {
+        "industry_label": "Asset manager / investment platform",
+        "key_kpis": [
+            "Assets under management", "net flows", "organic base-fee growth",
+            "fee realization", "adjusted operating margin", "diluted shares",
+        ],
+        "leading_indicators": [
+            "market and FX effects", "ETF and index flows", "active flows",
+            "fee mix", "acquisition integration", "client mandate pipeline",
+        ],
+        "valuation_methods": [
+            "Forward P/E", "FCF yield", "fee-growth and normalized-margin DCF",
+            "market-implied AUM and fee-growth expectations",
+        ],
+        "macro_sensitivities": [
+            "equity and bond markets", "rates", "FX", "risk appetite", "fund flows",
+        ],
+        "normal_catalysts": [
+            "Earnings", "monthly or quarterly flows", "acquisition integration",
+            "capital return", "fee-rate or product-mix update",
+        ],
     },
 }
 
@@ -164,6 +192,18 @@ SECTOR_PLAYBOOKS: tuple[dict[str, object], ...] = (
 
 
 TICKER_OVERRIDES: dict[str, dict[str, object]] = {
+    "BLK": {
+        "industry_label": "Asset manager / investment platform",
+        "business_model": (
+            "Global investment-management platform earning fees on assets under management, "
+            "with economics driven by net flows, market and FX effects, product mix, fee "
+            "realization, operating leverage, technology services, and per-share capital allocation."
+        ),
+        "key_kpis": [
+            "Assets under management", "net flows", "organic base-fee growth",
+            "fee realization", "adjusted operating margin", "diluted shares",
+        ],
+    },
     "AAPL": {
         "industry_label": "Large-cap consumer technology / devices and services",
         "business_model": "Integrated device, software, services, and ecosystem monetization business.",
@@ -200,10 +240,16 @@ def build_company_economics(
     events: list[ChangeEvent],
     peer_universe: PeerUniverse | None,
     manual_data: BringYourOwnDataStatus | None = None,
+    security_profile: SecurityResearchProfile | None = None,
 ) -> CompanyEconomics:
-    template = classify_template(identity)
+    profile = security_profile or SecurityResearchProfileResolver().resolve(identity)
+    template = (
+        "Asset manager"
+        if profile.business_archetype == BusinessArchetype.ASSET_MANAGER
+        else classify_template(identity)
+    )
     adr_profile = adr_profile_for(identity.ticker)
-    playbook = _playbook_for(identity, template, peer_universe)
+    playbook = _playbook_for(identity, template, peer_universe, profile)
     drivers = _drivers_from_metrics(metrics, events, playbook)
     if adr_profile and adr_profile.segment_drivers:
         drivers.extend(_drivers_from_adr_profile(adr_profile, playbook, {driver.name for driver in drivers}))
@@ -241,8 +287,35 @@ def build_company_economics(
     )
 
 
-def attach_economic_context(events: list[ChangeEvent], economics: CompanyEconomics) -> None:
+def attach_economic_context(
+    events: list[ChangeEvent],
+    economics: CompanyEconomics,
+    security_profile: SecurityResearchProfile | None = None,
+) -> None:
+    profile = security_profile or SecurityResearchProfileResolver().resolve(
+        CompanyIdentity(economics.ticker, "", economics.ticker)
+    )
     for event in events:
+        mechanism = resolve_metric_mechanism(
+            profile,
+            metric_name=str(event.metrics.get("metric_name") or ""),
+            title=event.title,
+            category=event.category,
+            economic_driver=str(event.metrics.get("economic_driver") or ""),
+            explicit_family=str(event.metrics.get("driver_family") or ""),
+        )
+        if mechanism is not None:
+            event.metrics["research_mechanism_id"] = mechanism.mechanism_id
+            event.metrics["driver_family"] = mechanism.driver_family
+            event.metrics["economic_driver"] = mechanism.metric_key
+            event.metrics["driver_materiality"] = "High"
+            event.metrics["metric_mapping_error"] = False
+            event.metrics["mapping_escalation_status"] = "resolved_by_security_profile"
+            event.metrics["mapping_escalation_label"] = mechanism.interpretation
+            event.metrics["industry_playbook"] = economics.industry_playbook.industry_label
+            if not event.why_this_matters:
+                event.why_this_matters = mechanism.interpretation
+            continue
         mapping = resolve_observation_mapping(
             ticker=economics.ticker,
             metric_name=str(event.metrics.get("metric_name") or ""),
@@ -298,10 +371,16 @@ def _playbook_for(
     identity: CompanyIdentity,
     template: str,
     peer_universe: PeerUniverse | None,
+    security_profile: SecurityResearchProfile | None = None,
 ) -> IndustryPlaybook:
     base = dict(PLAYBOOKS.get(template, PLAYBOOKS["Non-financial"]))
     playbook_source = f"built_in:{template}"
-    sector_overlay = _sector_playbook_for(identity)
+    sector_overlay = (
+        {}
+        if security_profile
+        and security_profile.business_archetype == BusinessArchetype.ASSET_MANAGER
+        else _sector_playbook_for(identity)
+    )
     if sector_overlay:
         base.update(sector_overlay)
         playbook_source = f"sector:{sector_overlay.get('industry_label', template)}"
@@ -310,6 +389,8 @@ def _playbook_for(
     base.update({key: value for key, value in override.items() if key != "business_model"})
     if override:
         playbook_source = f"ticker:{identity.ticker.upper()}"
+    if security_profile and security_profile.business_archetype == BusinessArchetype.ASSET_MANAGER:
+        playbook_source = f"profile:{security_profile.profile_id}"
     if adr_profile and adr_profile.segment_drivers:
         base["key_kpis"] = list(dict.fromkeys(list(base.get("key_kpis", [])) + list(adr_profile.segment_drivers)))
         base["leading_indicators"] = list(dict.fromkeys(list(base.get("leading_indicators", [])) + [
@@ -588,7 +669,7 @@ def _playbook_quality_checks(
 
 def _business_model_quality(identity: CompanyIdentity, playbook: IndustryPlaybook) -> PlaybookQualityCheck:
     source = playbook.playbook_source or "built_in"
-    is_specific = source.startswith(("ticker:", "csv:")) or "+adr_profile" in source
+    is_specific = source.startswith(("ticker:", "csv:", "profile:")) or "+adr_profile" in source
     is_sector = source.startswith("sector:")
     if is_specific:
         status, score = "Specific", 100

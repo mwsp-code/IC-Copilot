@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from types import SimpleNamespace
 
+from equity_research.domain.research_integrity import AuditFinding, ResearchRequest
+from equity_research.models import SourceRetrievalLifecycle
 from equity_research.research_qa import (
+    _audit_resolutions,
+    _evidence_gaps,
     apply_source_policy_to_context,
     build_adaptive_macro_plan,
     build_data_access_policy,
@@ -106,3 +111,62 @@ def test_adaptive_macro_selects_only_material_company_exposures() -> None:
     assert "Liquidity and financial conditions" in factors
     assert "Commodity prices" not in factors
     assert "cannot independently create or promote a thesis" in plan.selection_policy
+
+
+def test_validated_retrieval_without_admission_does_not_close_request_gap() -> None:
+    request = ResearchRequest(
+        request_id="audit_cash_conversion",
+        objective="Build a same-duration cash-conversion bridge.",
+        required_source_families=["sec_filing"],
+        status="attempted",
+        attempted_connector_ids=["sec_filing"],
+    )
+    finding = AuditFinding(
+        finding_id="cash-finding",
+        category="financial_bridge",
+        severity="High",
+        summary="Cash-conversion recurrence is not established.",
+        evidence_request_ids=["audit_cash_conversion"],
+    )
+    run = SimpleNamespace(
+        run_id="run-1",
+        retrieval_lifecycles=[SourceRetrievalLifecycle(
+            request_id="audit_cash_conversion",
+            source_id="sec-filing",
+            status="validated",
+            source_type="sec_filing",
+            message="12 source records reached validated.",
+        )],
+    )
+
+    gaps = _evidence_gaps([finding], [request], run)
+    resolutions = _audit_resolutions([finding], gaps)
+
+    assert gaps[0].status == "unresolved"
+    assert gaps[0].resolution_evidence_ids == []
+    assert resolutions[0].status == "unresolved"
+
+
+def test_admitted_candidate_is_partial_until_request_answer_is_completed() -> None:
+    request = ResearchRequest(
+        request_id="audit_cash_conversion",
+        objective="Build a same-duration cash-conversion bridge.",
+        required_source_families=["sec_filing"],
+        status="evidence_admitted",
+        admitted_evidence_ids=["evidence-1"],
+    )
+    finding = AuditFinding(
+        finding_id="cash-finding",
+        category="financial_bridge",
+        severity="High",
+        summary="Cash-conversion recurrence is not established.",
+        evidence_request_ids=["audit_cash_conversion"],
+    )
+    run = SimpleNamespace(run_id="run-2", retrieval_lifecycles=[])
+
+    gaps = _evidence_gaps([finding], [request], run)
+    resolutions = _audit_resolutions([finding], gaps)
+
+    assert gaps[0].status == "partially_resolved"
+    assert gaps[0].resolution_evidence_ids == ["evidence-1"]
+    assert resolutions[0].status == "unresolved"

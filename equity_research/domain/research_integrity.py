@@ -99,6 +99,11 @@ class CandidateDiscoveryItem:
     connector_id: str = ""
     admission_decision_id: str = ""
     admitted_evidence_ids: tuple[str, ...] = ()
+    target_security_key: str = ""
+    related_request_ids: tuple[str, ...] = ()
+    relationship_to_subject: str = "primary"
+    scope_status: str = "unverified"
+    referenced_entities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         CandidateType(self.candidate_type)
@@ -132,6 +137,35 @@ class ResearchRequest:
     candidate_ids: list[str] = field(default_factory=list)
     admitted_evidence_ids: list[str] = field(default_factory=list)
     resolution_summary: str = ""
+    session_id: str = ""
+    agenda_item_id: str = ""
+    parent_request_id: str = ""
+    subquestions: list[str] = field(default_factory=list)
+    hypotheses: list[str] = field(default_factory=list)
+    evidence_coverage: dict[str, Any] = field(default_factory=dict)
+    research_budget: dict[str, Any] = field(default_factory=dict)
+    answer_status: str = "planned"
+    answer: str = ""
+    confidence: str = "Unknown"
+    confidence_reason: str = ""
+    key_findings: list[str] = field(default_factory=list)
+    strongest_limitation: str = ""
+    remaining_work: list[str] = field(default_factory=list)
+    changed_conclusions: list[str] = field(default_factory=list)
+    blocking_reason: str = ""
+    search_summary: str = ""
+    reading_summary: str = ""
+    extraction_summary: str = ""
+    calculation_summary: str = ""
+    intent_id: str = ""
+    question_key: str = ""
+    mechanism_key: str = ""
+    target_type: str = "issuer"
+    target_id: str = ""
+    period_scope: str = ""
+    event_id: str = ""
+    decision_dependency: str = ""
+    evidence_hash: str = ""
 
     @classmethod
     def from_evidence_request(cls, request: "EvidenceRequest") -> "ResearchRequest":
@@ -297,6 +331,9 @@ class EvidenceAdmissionPolicy:
     allowed_licensing_policies: tuple[str, ...] = ()
     data_cutoff: str = ""
     minimum_content_length: int = 20
+    target_ticker: str = ""
+    target_security_key: str = ""
+    permitted_related_entities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -348,6 +385,47 @@ class EvidenceAdmissionGateway:
         entitlement_status = "entitled" if document.entitled else "not_entitled"
         provenance_status = "verified" if document.provenance.strip() else "missing"
         injection = any(pattern.search(document.content or "") for pattern in self._injection_patterns)
+
+        target_ticker = str(policy.target_ticker or "").upper()
+        candidate_ticker = str(candidate.ticker or "").upper()
+        related_relationships = {
+            "peer", "analog", "benchmark", "expert", "contradiction", "market_context",
+        }
+        permitted_entities = {
+            str(value or "").strip().casefold()
+            for value in policy.permitted_related_entities
+            if value
+        }
+        referenced_entities = {
+            str(value or "").strip().casefold()
+            for value in candidate.referenced_entities
+            if value
+        }
+        explicit_related_scope = (
+            str(candidate.relationship_to_subject or "").casefold()
+            in related_relationships
+            and bool(referenced_entities & permitted_entities)
+        )
+        target_entities = {
+            target_ticker.casefold(),
+            str(policy.target_security_key or "").strip().casefold(),
+        } - {""}
+        unscoped_referenced_entities = (
+            referenced_entities - permitted_entities - target_entities
+        )
+        if str(candidate.scope_status or "").casefold() == "scope_mismatch":
+            reasons.append("Candidate is outside the security and Research Request scope.")
+        elif target_ticker and candidate_ticker and candidate_ticker != target_ticker:
+            if not explicit_related_scope:
+                reasons.append(
+                    "Candidate targets another security without an explicitly permitted "
+                    "peer, analog, benchmark, expert, or contradiction relationship."
+                )
+        elif unscoped_referenced_entities and not explicit_related_scope:
+            reasons.append(
+                "Candidate references an entity outside the target security without an "
+                "explicitly permitted related-entity relationship."
+            )
 
         if scheme not in {"http", "https"}:
             reasons.append("A canonical HTTP(S) source URL is required.")
@@ -463,6 +541,11 @@ def new_candidate(
     proposed_mapping: str = "",
     company_or_expert: str = "",
     materiality: str = "Medium",
+    target_security_key: str = "",
+    related_request_ids: tuple[str, ...] = (),
+    relationship_to_subject: str = "primary",
+    scope_status: str = "unverified",
+    referenced_entities: tuple[str, ...] = (),
 ) -> CandidateDiscoveryItem:
     candidate_type = CandidateType(candidate_type)
     discovered_at = _utc_now()
@@ -491,6 +574,11 @@ def new_candidate(
         proposed_mapping=proposed_mapping,
         company_or_expert=company_or_expert,
         materiality=materiality,
+        target_security_key=target_security_key,
+        related_request_ids=related_request_ids,
+        relationship_to_subject=relationship_to_subject,
+        scope_status=scope_status,
+        referenced_entities=referenced_entities,
         discovered_at=discovered_at,
         status_history=(CandidateStatusEvent(CandidateStatus.DISCOVERED.value, discovered_at),),
     )

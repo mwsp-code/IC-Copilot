@@ -89,12 +89,59 @@ REQUEST_TIMEOUT_SECONDS = int(os.getenv("EQUITY_RESEARCH_TIMEOUT", "25"))
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", str(max(120, REQUEST_TIMEOUT_SECONDS))))
 LLM_SECONDARY_TIMEOUT_SECONDS = int(os.getenv("LLM_SECONDARY_TIMEOUT_SECONDS", str(max(90, REQUEST_TIMEOUT_SECONDS))))
 HYBRID_RESEARCH_TIMEOUT_SECONDS = int(os.getenv("HYBRID_RESEARCH_TIMEOUT_SECONDS", "900"))
+CODEX_EVENT_STREAM_EXECUTION = env_flag(
+    "CODEX_EVENT_STREAM_EXECUTION", "true"
+)
+CODEX_STARTUP_TIMEOUT_SECONDS = max(
+    10, int(os.getenv("CODEX_STARTUP_TIMEOUT_SECONDS", "60"))
+)
+CODEX_QUIET_AFTER_SECONDS = max(
+    30, int(os.getenv("CODEX_QUIET_AFTER_SECONDS", "180"))
+)
+HYBRID_CODEX_CLOSURE_REASONING_EFFORT = os.getenv(
+    "HYBRID_CODEX_CLOSURE_REASONING_EFFORT", "medium"
+)
+REPAIR_REVISION_TIMEOUT_SECONDS = int(
+    os.getenv("REPAIR_REVISION_TIMEOUT_SECONDS", "300")
+)
+REPAIR_CLOSURE_TIMEOUT_SECONDS = int(
+    os.getenv("REPAIR_CLOSURE_TIMEOUT_SECONDS", "480")
+)
+REPAIR_CLOSURE_RETRY_TIMEOUT_SECONDS = int(
+    os.getenv("REPAIR_CLOSURE_RETRY_TIMEOUT_SECONDS", "1200")
+)
+REPAIR_TOTAL_TIMEOUT_SECONDS = int(
+    os.getenv("REPAIR_TOTAL_TIMEOUT_SECONDS", "900")
+)
+REPAIR_TOTAL_RETRY_TIMEOUT_SECONDS = int(
+    os.getenv("REPAIR_TOTAL_RETRY_TIMEOUT_SECONDS", "1500")
+)
+REPAIR_MAX_TRANSIENT_RETRIES = max(
+    0,
+    int(os.getenv("REPAIR_MAX_TRANSIENT_RETRIES", "1")),
+)
 ENABLE_RESEARCH_PROFILING = env_flag("ENABLE_RESEARCH_PROFILING", "true")
 RESEARCH_IO_WORKERS = max(1, int(os.getenv("RESEARCH_IO_WORKERS", "4")))
 EXTERNAL_EVIDENCE_WORKERS = max(1, int(os.getenv("EXTERNAL_EVIDENCE_WORKERS", "6")))
 CACHE_DIR = Path(os.getenv("EQUITY_RESEARCH_CACHE", ".cache/equity_research"))
 IDEA_MEMORY_PATH = Path(os.getenv("IDEA_MEMORY_PATH", "data/idea_memory.json"))
 RESEARCH_DB_PATH = Path(os.getenv("RESEARCH_DB_PATH", "data/research.db"))
+_DEFAULT_SAVED_RESEARCH_ROOT = (
+    Path(os.environ["LOCALAPPDATA"]) / "IC Copilot" / "saved_research"
+    if os.environ.get("LOCALAPPDATA")
+    else Path(
+        os.environ.get(
+            "XDG_DATA_HOME",
+            str(Path.home() / ".local" / "share"),
+        )
+    )
+    / "ic_copilot"
+    / "saved_research"
+)
+SAVED_RESEARCH_ROOT = Path(
+    os.getenv("IC_COPILOT_SAVED_RESEARCH_DIR", str(_DEFAULT_SAVED_RESEARCH_ROOT))
+)
+SAVED_RESEARCH_DB_PATH = SAVED_RESEARCH_ROOT / "saved_research.db"
 BUDGET_MODE = os.getenv("BUDGET_MODE", "Lean")
 BUDGET_POLICY_PATH = Path(os.getenv("BUDGET_POLICY_PATH", "data/budget_modes.json"))
 BYOD_DATA_DIR = Path(os.getenv("BYOD_DATA_DIR", "data/manual_import"))

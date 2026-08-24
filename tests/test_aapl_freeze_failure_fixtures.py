@@ -49,6 +49,12 @@ def _dossiers(payload: dict) -> list[SimpleNamespace]:
 
 
 def _failure_codes(decision) -> set[str]:
+    evaluation = getattr(decision, "publication_gate_evaluation", None)
+    typed_codes = {
+        str(getattr(item, "code", "") or "")
+        for item in getattr(evaluation, "failures", ()) or ()
+        if str(getattr(item, "code", "") or "")
+    }
     codes: set[str] = set()
     blockers = "\n".join(decision.blockers).casefold()
     if "run is not completed" in blockers:
@@ -57,7 +63,10 @@ def _failure_codes(decision) -> set[str]:
         codes.add("deterministic_validation_not_run")
     elif decision.validation_status != "passed":
         codes.add("deterministic_validation_partial")
-    if "did not pass the final" in blockers:
+    if (
+        "did not pass the final" in blockers
+        or "final_closure_not_passed" in typed_codes
+    ):
         codes.add("final_closure_not_passed")
     if "85/100 semantic quality gate" in blockers:
         codes.add("semantic_quality_below_threshold")

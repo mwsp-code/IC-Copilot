@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import app
+from equity_research.sample_data import demo_result
 
 
 def test_provider_vault_key_reader_is_not_shadowed_by_form_input() -> None:
@@ -21,6 +22,23 @@ def test_hot_reload_compatible_research_result_is_displayable() -> None:
     assert not app._is_displayable_research_result(SimpleNamespace())
 
 
+def test_published_aapl_demo_exposes_answer_without_false_qa_closure() -> None:
+    result = demo_result("AAPL")
+    bridge = result.cash_conversion_recurrence
+    cash_actions = [
+        item for item in result.prioritized_research_queue
+        if item.action_kind == "cash_conversion_analysis"
+    ]
+
+    assert bridge is not None
+    assert bridge.assessment.direct_answer.startswith(
+        "Cash conversion appears recurring"
+    )
+    assert bridge.qa_freshness == "not_reviewed"
+    assert len(cash_actions) == 1
+    assert cash_actions[0].status == "qa_pending"
+
+
 def test_active_job_banner_names_the_investigation(monkeypatch) -> None:
     class FakeColumn:
         def button(self, *args, **kwargs):
@@ -30,11 +48,15 @@ def test_active_job_banner_names_the_investigation(monkeypatch) -> None:
         def __init__(self):
             self.session_state = {}
             self.warnings = []
+            self.infos = []
             self.captions = []
             self.markdowns = []
 
         def warning(self, value):
             self.warnings.append(value)
+
+        def info(self, value):
+            self.infos.append(value)
 
         def caption(self, value):
             self.captions.append(value)
@@ -44,6 +66,15 @@ def test_active_job_banner_names_the_investigation(monkeypatch) -> None:
 
         def columns(self, count):
             return [FakeColumn() for _ in range(count)]
+
+        def expander(self, *args, **kwargs):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
 
     state = SimpleNamespace(
         status="running",
@@ -63,6 +94,9 @@ def test_active_job_banner_names_the_investigation(monkeypatch) -> None:
             message="Resolving missing valuation inputs.",
             failure_class="",
             retry_count=0,
+            execution_state="quiet_but_running",
+            execution_last_activity_at="2026-08-10T12:00:00+00:00",
+            execution_hard_deadline_at="2026-08-10T12:18:30+00:00",
         ),
     )
     fake_st = FakeStreamlit()
@@ -76,12 +110,16 @@ def test_active_job_banner_names_the_investigation(monkeypatch) -> None:
     app.render_active_hybrid_job_banner("job-1")
 
     assert any(
-        "Investigating: Resolve AAPL Forward EBITDA" in item
-        for item in fake_st.warnings
+        "Investigating Resolve AAPL Forward EBITDA" in item
+        for item in fake_st.captions
     )
     assert any(
-        "does not yet contain output" in item
-        for item in fake_st.warnings
+        "remains visible" in item
+        for item in fake_st.captions
+    )
+    assert any(
+        "Local Codex: Quiet But Running" in item
+        for item in fake_st.captions
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import TYPE_CHECKING
 
 from .adr_profiles import adr_profile_for
 from .models import (
@@ -16,6 +17,9 @@ from .models import (
     ValuationResult,
 )
 
+if TYPE_CHECKING:
+    from .domain.research_ontology import SecurityResearchProfile
+
 
 TEMPLATE_OVERRIDES = {
     "JPM": "Bank", "BAC": "Bank", "WFC": "Bank", "C": "Bank", "GS": "Bank", "MS": "Bank",
@@ -28,8 +32,14 @@ def build_valuation(
     metrics: list[FinancialMetric],
     consensus: ConsensusPackage,
     current_price: float | None,
+    security_profile: "SecurityResearchProfile | None" = None,
 ) -> ValuationResult:
-    template = classify_template(identity)
+    template = (
+        "Asset manager"
+        if str(getattr(getattr(security_profile, "business_archetype", None), "value", ""))
+        == "asset_manager"
+        else classify_template(identity)
+    )
     currency = consensus.target.currency if consensus.target else "USD"
     if not current_price or current_price <= 0:
         return _insufficient(template, "Current share price is unavailable.", currency)
@@ -44,7 +54,11 @@ def build_valuation(
         home = f" on {adr_profile.home_exchange}" if adr_profile and adr_profile.home_exchange != "Unknown" else ""
         normalization.append(f"ADR ratio normalized at {adr_ratio:g} ordinary shares per ADR{home}.")
 
-    if template == "Non-financial":
+    if template == "Asset manager":
+        result = _asset_manager_valuation(
+            estimates, by_name, current_price, currency, consensus.observations,
+        )
+    elif template == "Non-financial":
         result = _non_financial_valuation(
             estimates, by_name, current_price, currency, adr_ratio,
             consensus.observations,
@@ -71,6 +85,89 @@ def build_valuation(
     if result.probability_weighted_value is not None and target not in (None, 0):
         result.disagreement_pct = (result.probability_weighted_value / target - 1) * 100
     return result
+
+
+def _asset_manager_valuation(
+    estimates: list[EstimatePoint],
+    metrics: dict[str, FinancialMetric],
+    current_price: float,
+    currency: str,
+    observations: list[ProviderObservation],
+) -> ValuationResult:
+    """Value a fee-earnings business without manufacturing-style EV fallbacks."""
+
+    values: list[list[float]] = [[], [], []]
+    methods: list[str] = []
+    assumptions: list[str] = []
+    gaps: list[str] = []
+    bridge: list[ValuationBridgeStep] = []
+    references: list[str] = []
+    input_resolutions: list[ValuationInputResolution] = []
+    eps = _estimate(estimates, "EPS")
+    input_resolutions.append(_estimate_resolution("Forward EPS", eps, currency))
+    if _usable_per_share_estimate(eps, currency):
+        observed_pe = _observation_value(observations, "forward_pe")
+        base_pe = observed_pe if observed_pe and observed_pe > 0 else current_price / eps.average
+        for index, (earnings_factor, multiple_factor) in enumerate(
+            zip((0.85, 1.0, 1.15), (0.85, 1.0, 1.15))
+        ):
+            scenario_eps = eps.average * earnings_factor
+            multiple = base_pe * multiple_factor
+            values[index].append(scenario_eps * multiple)
+            bridge.append(ValuationBridgeStep(
+                ("Bear", "Base", "Bull")[index],
+                "Fee earnings per share",
+                scenario_eps,
+                currency,
+                f"Forward EPS x {multiple:.1f}x fee-earnings P/E",
+                eps.source,
+            ))
+        methods.append("fee-earnings P/E")
+        assumptions.append(
+            f"Forward P/E is anchored at {base_pe:.1f}x. Earnings and the multiple each "
+            "flex -15% / base / +15% around the researched AUM, flow, fee-rate, and margin case."
+        )
+        references.append(
+            "Provider forward P/E" if observed_pe else "Current price divided by forward EPS"
+        )
+    else:
+        gaps.append("Forward EPS in the listed-security currency is unavailable.")
+
+    aum = metrics.get("Assets Under Management")
+    flows = metrics.get("Last-Twelve-Month Net Inflows") or metrics.get("Quarterly Net Inflows")
+    fee_growth = metrics.get("Organic Base Fee Growth")
+    margin = metrics.get("Adjusted Operating Margin") or metrics.get("Operating Margin")
+    if aum:
+        assumptions.append(f"Ending AUM reference: {aum.value:,.0f} {aum.unit}.")
+    else:
+        gaps.append("Ending and fee-earning AUM are unavailable.")
+    if flows:
+        assumptions.append(f"Reported flow reference: {flows.value:,.0f} {flows.unit}.")
+    else:
+        gaps.append("Organic flows are unavailable or not separated from market/FX effects.")
+    if fee_growth:
+        assumptions.append(f"Organic base-fee growth reference: {fee_growth.value:.1f}%.")
+    else:
+        gaps.append("Organic base-fee growth or effective fee-rate evidence is unavailable.")
+    if margin:
+        assumptions.append(f"Operating-margin reference: {margin.value:.1f}%.")
+    else:
+        gaps.append("A normalized asset-manager operating margin is unavailable.")
+    gaps.append(
+        "AUM market/FX effects, acquisition effects, fee-earning mix, and normalized FCF "
+        "must be reconciled before assigning high valuation confidence."
+    )
+    if not any(values):
+        return _insufficient(
+            "Asset manager",
+            "No asset-manager valuation method has sufficient normalized data.",
+            currency,
+            gaps,
+        )
+    return _result_from_values(
+        "Asset manager", values, current_price, methods, assumptions, currency, gaps,
+        bridge, references, input_resolutions,
+    )
 
 
 def classify_template(identity: CompanyIdentity) -> str:

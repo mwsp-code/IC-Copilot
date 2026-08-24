@@ -32,6 +32,7 @@ from .models import (
     TradeIdea,
     ValuationResult,
 )
+from .domain.research_ontology import CausalBridgeAssessment, LensAssessment
 
 
 DEMO_CASES: tuple[DemoCase, ...] = (
@@ -41,11 +42,17 @@ DEMO_CASES: tuple[DemoCase, ...] = (
         title="AAPL: Source-backed thesis",
         lesson="Follow a filing-backed margin and cash-flow signal through claim validation, a causal bridge, market-implied expectations, and monitor rules.",
         screenshot_focus="Story-first IC verdict, formula traces, and evidence drawers.",
-        content_version="Deep Initiation Premium 2026.07.16",
-        refreshed_at="2026-07-16",
+        content_version="Deep Initiation + Independent Research QA 2026.08.11",
+        refreshed_at="2026-08-11",
         research_profile="Deep Initiation (20 quarters / 5 annual reports / 20 calls)",
         budget_mode="Premium",
-        enabled_layers=("Official macro", "Wisburg research lens", "Premium consensus fixture", "Guardrailed LLM"),
+        enabled_layers=(
+            "Official macro",
+            "Wisburg research lens",
+            "Premium consensus fixture",
+            "Agent-led primary research",
+            "Independent Research QA",
+        ),
     ),
     DemoCase(
         demo_id="nvda-neutral-first-investment-cycle",
@@ -94,6 +101,31 @@ DEMO_CASES: tuple[DemoCase, ...] = (
         enabled_layers=("Global official macro", "Wisburg bilingual research lens", "Premium consensus fixture", "Guardrailed LLM"),
     ),
     DemoCase(
+        demo_id="blk-organic-flows-fee-growth",
+        ticker="BLK",
+        title="BLK: Organic flows and acquisition-adjusted fee growth",
+        lesson=(
+            "Separate market-driven AUM growth from organic flows, fee realization, "
+            "normalized margins, acquisition integration, and per-share value creation."
+        ),
+        screenshot_focus=(
+            "Asset-manager operating bridge, market-implied expectations, dilution-aware "
+            "capital allocation, and audited historical playbooks."
+        ),
+        content_version="Deep Initiation + Independent Research QA 2026.08.21",
+        refreshed_at="2026-08-21",
+        research_profile="Deep Initiation (20 quarters / 5 annual reports / 20 calls)",
+        budget_mode="Premium",
+        enabled_layers=(
+            "Official filings and issuer results",
+            "Official macro",
+            "Wisburg research lens",
+            "Premium consensus fixture",
+            "Agent-led primary research",
+            "Independent Research QA",
+        ),
+    ),
+    DemoCase(
         demo_id="tsla-peer-metric-readthrough",
         ticker="TSLA",
         title="TSLA: Peer metric read-through",
@@ -132,8 +164,20 @@ DEMO_CASES: tuple[DemoCase, ...] = (
 )
 
 
+# Public examples are deliberately a small, understandable set.  Additional
+# deterministic cases remain available to maintainers and regression tests but
+# are not promoted as current public research showcases.
+PUBLIC_DEMO_TICKERS = frozenset({"AAPL", "NVDA", "BABA", "BLK"})
+
+
 def demo_cases() -> list[DemoCase]:
     return list(DEMO_CASES)
+
+
+def public_demo_cases() -> list[DemoCase]:
+    """Return the intentionally curated public demo gallery."""
+
+    return [case for case in DEMO_CASES if case.ticker in PUBLIC_DEMO_TICKERS]
 
 
 def demo_case_for(ticker: str) -> DemoCase | None:
@@ -166,6 +210,9 @@ def build_story_presentation(
     recent_market_context: RecentMarketContext | None = None,
     decision_delta: DecisionDelta | None = None,
     catalyst_clock: CatalystClock | None = None,
+    causal_bridge_assessment: CausalBridgeAssessment | None = None,
+    equity_lens_assessment: LensAssessment | None = None,
+    credit_lens_assessment: LensAssessment | None = None,
 ) -> dict:
     top_idea = ideas[0] if ideas else None
     story_cards = build_story_cards(
@@ -175,6 +222,9 @@ def build_story_presentation(
         validation,
         work_order,
         metric_audit,
+        causal_bridge_assessment,
+        equity_lens_assessment,
+        credit_lens_assessment,
     )
     market_cards = _market_expectation_story_cards(
         market_implied,
@@ -632,6 +682,9 @@ def build_story_cards(
     validation: ThesisValidationReport,
     work_order: EvidenceWorkOrder,
     metric_audit: MetricResolutionAudit,
+    causal_bridge_assessment: CausalBridgeAssessment | None = None,
+    equity_lens_assessment: LensAssessment | None = None,
+    credit_lens_assessment: LensAssessment | None = None,
 ) -> list[StoryCard]:
     event = top_idea.source_events[0] if top_idea and top_idea.source_events else None
     primary_drawers = _event_drawers(event, metric_audit)
@@ -662,9 +715,9 @@ def build_story_cards(
             next_action=top_idea.next_source_to_check if top_idea else next_action,
             evidence=primary_drawers,
         ),
-        StoryCard("causal_bridge", "Causal Bridge", "Available", one_pager.causal_bridge, one_pager.causal_bridge, evidence=primary_drawers),
-        StoryCard("equity_lens", "Equity Lens", "Available", "Equity implication", one_pager.equity_lens, evidence=primary_drawers),
-        StoryCard("credit_lens", "Credit Lens", "Available", "Credit implication", one_pager.credit_lens, evidence=primary_drawers),
+        _causal_story_card(causal_bridge_assessment, one_pager, primary_drawers),
+        _lens_story_card("equity_lens", "Equity Lens", equity_lens_assessment, one_pager.equity_lens, primary_drawers),
+        _lens_story_card("credit_lens", "Credit Lens", credit_lens_assessment, one_pager.credit_lens, primary_drawers),
         StoryCard("price_market", "Price / Market Context", "Available", one_pager.price_move, one_pager.market_capture),
         StoryCard(
             "counter_thesis",
@@ -683,6 +736,61 @@ def build_story_cards(
             next_action=next_action,
         ),
     ]
+
+
+def _causal_story_card(
+    assessment: CausalBridgeAssessment | None,
+    one_pager: ICOnePager,
+    evidence: list[EvidenceDrawer],
+) -> StoryCard:
+    if assessment is None:
+        body = str(one_pager.causal_bridge or "")
+        return StoryCard(
+            "causal_bridge", "Causal Bridge",
+            "Partial" if body else "Unavailable",
+            body or "No causal mechanism has been mapped.",
+            body or "Map the core signal before directional interpretation.",
+            evidence=evidence if body else [],
+            evidence_count=len(evidence) if body else 0,
+        )
+    body = assessment.direct_conclusion
+    if assessment.strongest_limitation:
+        body += f" Limitation: {assessment.strongest_limitation}"
+    return StoryCard(
+        "causal_bridge", "Causal Bridge", assessment.status.value,
+        assessment.direct_conclusion, body,
+        next_action=assessment.next_action,
+        evidence=evidence if assessment.evidence_ids else [],
+        evidence_count=len(assessment.evidence_ids),
+    )
+
+
+def _lens_story_card(
+    card_id: str,
+    title: str,
+    assessment: LensAssessment | None,
+    legacy_body: str,
+    evidence: list[EvidenceDrawer],
+) -> StoryCard:
+    if assessment is None:
+        return StoryCard(
+            card_id, title,
+            "Partial" if legacy_body else "Unavailable",
+            legacy_body or f"{title} is not established.",
+            legacy_body or "The current evidence snapshot does not support this lens.",
+            evidence=evidence if legacy_body else [],
+            evidence_count=len(evidence) if legacy_body else 0,
+        )
+    body = assessment.direct_conclusion
+    if assessment.strongest_limitation:
+        body += f" Limitation: {assessment.strongest_limitation}"
+    return StoryCard(
+        card_id, title, assessment.status.value,
+        assessment.direct_conclusion, body,
+        next_action=assessment.next_action,
+        evidence=evidence if assessment.evidence_ids else [],
+        evidence_count=len(assessment.evidence_ids),
+    )
 
 
 def build_bull_bear_judge(

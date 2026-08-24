@@ -12,6 +12,14 @@ from ..application.research_runs import (
 )
 
 
+class _ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class SqliteResearchJobRepository:
     """Durable, local-first run metadata and append-only event storage."""
 
@@ -21,7 +29,11 @@ class SqliteResearchJobRepository:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=15)
+        connection = sqlite3.connect(
+            self.path,
+            timeout=15,
+            factory=_ClosingConnection,
+        )
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -33,6 +45,9 @@ class SqliteResearchJobRepository:
                 CREATE TABLE IF NOT EXISTS research_job_snapshots (
                     run_id TEXT PRIMARY KEY,
                     command_json TEXT NOT NULL,
+                    operation_fingerprint TEXT NOT NULL DEFAULT '',
+                    launch_attempt_id TEXT NOT NULL DEFAULT '',
+                    workspace_scope TEXT NOT NULL DEFAULT 'local',
                     status TEXT NOT NULL,
                     current_stage TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -89,29 +104,69 @@ class SqliteResearchJobRepository:
                 "published_at TEXT NOT NULL DEFAULT ''",
                 "terminal_at TEXT NOT NULL DEFAULT ''",
                 "completed_at TEXT NOT NULL DEFAULT ''",
+                "operation_fingerprint TEXT NOT NULL DEFAULT ''",
+                "launch_attempt_id TEXT NOT NULL DEFAULT ''",
+                "workspace_scope TEXT NOT NULL DEFAULT 'local'",
             ):
                 name = column.split()[0]
                 if name not in existing:
                     db.execute(
                         f"ALTER TABLE research_job_snapshots ADD COLUMN {column}"
                     )
+            db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_research_operation_latest
+                ON research_job_snapshots(
+                    workspace_scope, operation_fingerprint, created_at DESC
+                )
+                """
+            )
+            db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_research_launch_attempt
+                ON research_job_snapshots(
+                    workspace_scope, operation_fingerprint, launch_attempt_id
+                )
+                WHERE operation_fingerprint <> '' AND launch_attempt_id <> ''
+                """
+            )
 
     def create(self, snapshot: ResearchRunSnapshot) -> None:
         with self._connect() as db:
             db.execute(
                 """
                 INSERT INTO research_job_snapshots (
-                    run_id, command_json, status, current_stage, created_at,
+                    run_id, command_json, operation_fingerprint,
+                    launch_attempt_id, workspace_scope, status, current_stage, created_at,
                     updated_at, event_count, evidence_hash, result_reference,
                     stopping_reason, errors_json, lifecycle_state,
                     research_attempt_finished_at, validation_completed_at,
                     audit_completed_at, revision_completed_at,
                     closure_completed_at, publishable_at, published_at,
                     terminal_at, completed_at, snapshot_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 self._snapshot_values(snapshot),
             )
+
+    def create_if_absent(
+        self,
+        snapshot: ResearchRunSnapshot,
+    ) -> tuple[ResearchRunSnapshot, bool]:
+        try:
+            self.create(snapshot)
+            return snapshot, True
+        except sqlite3.IntegrityError:
+            existing = self.get(snapshot.run_id)
+            if existing is None and snapshot.command.operation_fingerprint:
+                existing = self._find_attempt(
+                    snapshot.command.operation_fingerprint,
+                    snapshot.command.launch_attempt_id,
+                    workspace_scope=snapshot.command.workspace_scope,
+                )
+            if existing is None:
+                raise
+            return existing, False
 
     def get(self, run_id: str) -> ResearchRunSnapshot | None:
         with self._connect() as db:
@@ -126,7 +181,9 @@ class SqliteResearchJobRepository:
             cursor = db.execute(
                 """
                 UPDATE research_job_snapshots SET
-                    command_json = ?, status = ?, current_stage = ?,
+                    command_json = ?, operation_fingerprint = ?,
+                    launch_attempt_id = ?, workspace_scope = ?,
+                    status = ?, current_stage = ?,
                     created_at = ?, updated_at = ?, event_count = ?,
                     evidence_hash = ?, result_reference = ?, stopping_reason = ?,
                     errors_json = ?, lifecycle_state = ?,
@@ -203,12 +260,56 @@ class SqliteResearchJobRepository:
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
+    def find_latest_by_operation_fingerprint(
+        self,
+        operation_fingerprint: str,
+        *,
+        workspace_scope: str,
+    ) -> ResearchRunSnapshot | None:
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT * FROM research_job_snapshots
+                WHERE workspace_scope = ? AND operation_fingerprint = ?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (workspace_scope, operation_fingerprint),
+            ).fetchone()
+        return self._snapshot_from_row(row) if row else None
+
+    def _find_attempt(
+        self,
+        operation_fingerprint: str,
+        launch_attempt_id: str,
+        *,
+        workspace_scope: str,
+    ) -> ResearchRunSnapshot | None:
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT * FROM research_job_snapshots
+                WHERE workspace_scope = ? AND operation_fingerprint = ?
+                  AND launch_attempt_id = ?
+                LIMIT 1
+                """,
+                (
+                    workspace_scope,
+                    operation_fingerprint,
+                    launch_attempt_id,
+                ),
+            ).fetchone()
+        return self._snapshot_from_row(row) if row else None
+
     @staticmethod
     def _snapshot_values(snapshot: ResearchRunSnapshot) -> tuple:
         command = asdict(snapshot.command)
         return (
             snapshot.run_id,
             json.dumps(command, sort_keys=True, default=str),
+            snapshot.command.operation_fingerprint,
+            snapshot.command.launch_attempt_id,
+            snapshot.command.workspace_scope,
             snapshot.status,
             snapshot.current_stage,
             snapshot.created_at,
@@ -246,6 +347,9 @@ class SqliteResearchJobRepository:
         )
         payload["repair_action_ids"] = tuple(
             payload.get("repair_action_ids", ())
+        )
+        payload["repair_retry_stages"] = tuple(
+            payload.get("repair_retry_stages", ())
         )
         return ResearchRunSnapshot(
             run_id=row["run_id"],

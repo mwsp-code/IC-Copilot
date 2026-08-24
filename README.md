@@ -7,7 +7,7 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-15803d.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-2563eb.svg)](https://www.python.org/)
 
-[Try the live demo](https://ic-copilot.streamlit.app/) | **[Give Feedback](https://github.com/mwsp-code/IC-Copilot/discussions/3)** | [Quickstart](docs/quickstart.md) | [Methodology](docs/methodology.md) | [Roadmap](ROADMAP.md) | [Contribute](CONTRIBUTING.md)
+[Try the live demo](https://ic-copilot.streamlit.app/) | **[Give Feedback](https://github.com/mwsp-code/IC-Copilot/discussions/3)** | [Quickstart](docs/quickstart.md) | [Agent-led research](docs/agent-led-research.md) | [Methodology](docs/methodology.md) | [Roadmap](ROADMAP.md) | [Contribute](CONTRIBUTING.md)
 
 [![IC Copilot AAPL research walkthrough](docs/assets/demo/ic-copilot-aapl-demo.gif)](docs/assets/demo/ic-copilot-aapl-demo.mp4)
 
@@ -95,7 +95,7 @@ licensed/manual, or executable through another registered retrieval task.
 Windows users can run the preflighted launcher instead:
 
 ```powershell
-.\scripts\run_streamlit.ps1
+.\scripts\start_ic_copilot.cmd
 ```
 
 ### No-dependency local UI
@@ -106,12 +106,46 @@ python server.py --port 8501
 
 The lightweight server automatically tries ports through `8510` when `8501` is occupied.
 
+### Reopen research without another provider run
+
+Completed and partial live results are saved automatically by local and
+self-hosted Streamlit installations. Use **Saved research** in the sidebar to
+load the latest completed result or an earlier investigation. Loading reads a
+versioned local artifact only: it does not call an LLM, connector, or retrieval
+adapter. Frozen demos, saved live research, and drafts have distinct labels.
+
+Saved-result metadata and content-addressed compressed JSON payloads live outside
+the repository in the operating system's per-user application-data directory.
+Set `IC_COPILOT_SAVED_RESEARCH_DIR` to choose another location. Results remain
+local until explicitly deleted. The public hosted app instead uses private,
+expiring session storage and does not expose one visitor's research to another
+visitor.
+
+### Know exactly what will run
+
+Investigation buttons select a typed research task; they do not call a provider.
+The sidebar's **Next research task** card shows whether the selection is full
+research, an event, a canonical action, an analog, or repair work, along with its
+ticker, objective, sources, QA setting, and destination. Launch it once with the
+task-specific confirmation button. An identical active task is reused, while an
+identical completed task defaults to loading its saved result and requires an
+additional confirmation before it can run again.
+
 ### Editable install for contributors
 
 ```bash
 python -m pip install -e ".[dev]"
-pytest -q
+python -m pytest -q
 ```
+
+Windows contributors can bootstrap and run the complete release gate with:
+
+```powershell
+.\scripts\quality.cmd -Bootstrap
+```
+
+See the [development guide](docs/development.md) for explicit-interpreter and
+network-restricted environment guidance.
 
 ### Docker
 
@@ -156,8 +190,11 @@ graph. Models have distinct jobs instead of duplicating the entire research
 pipeline:
 
 1. Deterministic adapters bootstrap, parse, validate, and admit the initial
-   shared evidence graph.
-2. The configured primary model plans and performs the primary analysis.
+   shared evidence graph, then publish a secret-free source-capability catalog.
+2. The configured primary model builds a dynamic agenda and iteratively
+   searches, reads, extracts, calculates, and replans through app-owned tools.
+   A failed connector does not end a question; the model must change query,
+   source family, document, or structured-data route before naming a blocker.
 3. A distinct secondary model or authenticated local Codex independently audits
    the frozen artifact before it can see later discovery.
 4. The secondary then acts as an adversarial scout and expresses gaps as
@@ -202,7 +239,15 @@ research run, filings, market price, consensus, news/external research, macro,
 and LLM output. Audit records remain in UTC; the UI can display timestamps in a
 user-selected timezone.
 
-The models do not browse arbitrary URLs. They request registered source families; deterministic adapters and the normalized evidence cache perform the two shared retrieval passes. Historical candidates are scored by mechanism, operating economics, financing, valuation, competitive structure, macro regime, and source quality. Numeric similarity is withheld until a two-origin dossier passes Sol and deterministic audits.
+Models never receive unrestricted network access or provider credentials. They
+request capabilities through an iterative application-owned tool gateway;
+registered connectors perform retrieval, entitlement checks, normalization,
+and admission. Search metadata and snippets remain in the exploration notebook
+until permitted full content is retrieved and admitted. Historical candidates
+are scored by mechanism, operating economics, financing, valuation,
+competitive structure, macro regime, and source quality. Numeric similarity is
+withheld until an independently sourced dossier passes deterministic and model
+audits.
 
 Stage-level comparisons classify recurring gaps as evidence, retrieval,
 normalization, playbook, prompt, reasoning, schema, or presentation issues.

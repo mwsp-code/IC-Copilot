@@ -20,12 +20,15 @@ from equity_research.hybrid_research import (
     _codex_wrapper_schema,
     _execute_registered_requests,
     _provider_system_prompt,
+    _prompt_metadata_index,
     _round_prompt,
     _validate_round_artifact,
     _admit_artifact_source_candidates,
     _admit_retrieved_candidate_records,
     _unwrap_codex_payload,
     _is_packaged_codex_path,
+    _normalize_replayed_audit_findings,
+    _normalize_primary_response_contract,
     _resolve_codex_executable,
     _windows_codex_desktop_candidates,
     frozen_fixture_hybrid_run,
@@ -35,6 +38,7 @@ from equity_research.hybrid_research import (
 )
 from equity_research.research_store import ResearchStore
 from equity_research.sample_data import demo_result
+from equity_research.secret_safety import contains_credential_like_token
 from equity_research.models import (
     DisplayedResultContext,
     NormalizedSourceRecord,
@@ -425,6 +429,162 @@ def test_round_prompt_bounds_large_search_catalog_without_losing_core() -> None:
         prompt["evidence_pack_audit"]
         ["full_exclusion_audit_retained_outside_prompt"]
         is True
+    )
+
+
+def test_prompt_metadata_index_never_readds_permitted_items_past_cap() -> None:
+    metadata = [
+        {
+            "evidence_id": f"permitted-{index:04d}",
+            "citation_id": f"citation-{index:04d}",
+            "kind": "financial_metric",
+            "source_type": "sec_filing",
+            "source_tier": 1,
+            "period": "2026-06-30",
+            "metric": f"Decision metric {index}",
+            "selection_score": 100 - (index % 100),
+            "provenance": "must remain outside prompt " + ("x" * 4_000),
+        }
+        for index in range(2_000)
+    ]
+    permitted = [
+        {"evidence_id": item["evidence_id"]} for item in metadata
+    ]
+
+    prompt_index, status = _prompt_metadata_index(
+        {"evidence_metadata_catalog": metadata},
+        permitted,
+        max_chars=25_000,
+    )
+
+    assert len(json.dumps(prompt_index, ensure_ascii=True)) <= 25_000
+    assert status["permitted_omitted_from_prompt_index"] > 0
+    assert status["projection_chars"] <= status["projection_limit_chars"]
+    assert status["complete_catalog_searchable_between_rounds"] is True
+    assert all("provenance" not in item for item in prompt_index)
+
+
+def test_primary_revision_normalizes_audit_responses_for_closure() -> None:
+    payload = _normalize_primary_response_contract(
+        {
+            "audit_responses": [{
+                "finding_id": "mc2",
+                "status": "accepted",
+                "reason": "The conversion claim was narrowed and retained as a limitation.",
+            }]
+        },
+        role="primary_revision",
+    )
+
+    assert payload["primary_responses"] == [{
+        "finding_id": "mc2",
+        "status": "accepted",
+        "reason": "The conversion claim was narrowed and retained as a limitation.",
+        "state": "accepted",
+        "explanation": "The conversion claim was narrowed and retained as a limitation.",
+        "change_summary": "The conversion claim was narrowed and retained as a limitation.",
+    }]
+    assert payload["primary_response_contract_migration"].startswith(
+        "audit_responses-v1"
+    )
+
+    existing = _normalize_primary_response_contract(
+        {
+            "primary_responses": [{
+                "finding_id": "mc2",
+                "response": "accepted",
+                "rationale": "The conclusion was removed.",
+                "state": "",
+            }]
+        },
+        role="primary_revision",
+    )
+    assert existing["primary_responses"][0]["state"] == "accepted"
+    assert existing["primary_responses"][0]["change_summary"] == (
+        "The conclusion was removed."
+    )
+
+
+def test_primary_revision_recovers_legacy_responses_when_canonical_list_empty() -> None:
+    finding_text = "Cash conversion requires an exact comparable-period bridge."
+    payload = _normalize_primary_response_contract(
+        {
+            "primary_responses": [],
+            "audit_responses": [{
+                "audit_finding": finding_text,
+                "status": "accepted",
+                "response": "Accepted: the directional conclusion was removed.",
+                "evidence_ids": ["evidence-1"],
+            }],
+        },
+        role="primary_revision",
+        audit_findings=[{
+            "finding_id": "cash-conversion-bridge",
+            "summary": finding_text,
+        }],
+    )
+
+    assert payload["primary_responses"] == [{
+        "audit_finding": finding_text,
+        "status": "accepted",
+        "response": "Accepted: the directional conclusion was removed.",
+        "evidence_ids": ["evidence-1"],
+        "finding_id": "cash-conversion-bridge",
+        "state": "accepted",
+        "explanation": "Accepted: the directional conclusion was removed.",
+        "change_summary": "Accepted: the directional conclusion was removed.",
+    }]
+
+
+def test_auditor_findings_receive_stable_ids_and_materiality_defaults() -> None:
+    context = _context()
+    artifact, findings = _validate_round_artifact(
+        3,
+        "independent_research_auditor",
+        {
+            "summary": "Independent audit found one material gap.",
+            "findings": [{
+                "finding": "AUM growth is not reconciled to flows and markets.",
+                "evidence_ids": [],
+            }],
+        },
+        context,
+    )
+
+    persisted = artifact.payload["findings"][0]
+    assert persisted["finding_id"]
+    assert persisted["summary"] == (
+        "AUM growth is not reconciled to flows and markets."
+    )
+    assert persisted["severity"] == "High"
+    assert findings[0].finding_id == persisted["finding_id"]
+    assert findings[0].summary == persisted["summary"]
+
+
+def test_replayed_audit_findings_replace_blank_ids_without_collapsing_evidence() -> None:
+    findings = _normalize_replayed_audit_findings(
+        [
+            {
+                "finding_id": "",
+                "severity": "High",
+                "summary": "A material legacy finding requires a response.",
+                "evidence_ids": ["evidence-a"],
+            },
+            {
+                "finding_id": "",
+                "severity": "High",
+                "summary": "A material legacy finding requires a response.",
+                "evidence_ids": ["evidence-b"],
+            },
+        ],
+        ticker="BLK",
+    )
+
+    assert all(item["finding_id"] for item in findings)
+    assert findings[0]["finding_id"] != findings[1]["finding_id"]
+    assert findings == _normalize_replayed_audit_findings(
+        findings,
+        ticker="BLK",
     )
 
 
@@ -1556,6 +1716,30 @@ def test_codex_local_provider_is_locked_down_and_structured(tmp_path) -> None:
     assert "session-key" not in captured["kwargs"]["input"]
 
 
+def test_codex_local_uses_role_scoped_closure_reasoning(tmp_path) -> None:
+    commands = []
+
+    def runner(command, **kwargs):
+        commands.append(command)
+        output_path = command[command.index("-o") + 1]
+        with open(output_path, "w", encoding="utf-8") as handle:
+            json.dump({"summary": "Closed"}, handle)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    provider = CodexLocalProvider(
+        enabled=True,
+        runner=runner,
+        reasoning_effort="max",
+        closure_reasoning_effort="medium",
+    )
+    provider.complete_json({"role": "independent_research_auditor"})
+    provider.complete_json({"role": "closure_checker"})
+
+    assert 'model_reasoning_effort="max"' in commands[0]
+    assert 'model_reasoning_effort="medium"' in commands[1]
+    assert provider.last_reasoning_effort == "medium"
+
+
 def test_codex_local_requires_explicit_enablement() -> None:
     with pytest.raises(RuntimeError, match="disabled"):
         CodexLocalProvider(enabled=False).complete_json({"task": "test"})
@@ -1795,6 +1979,57 @@ def test_background_job_tracks_progress_and_displayed_result_relationship() -> N
     assert latest.result_route == "Evidence"
 
 
+def test_background_progress_is_monotonic_and_persists_only_coarse_changes() -> None:
+    class Lifecycle:
+        def __init__(self) -> None:
+            self.events = []
+
+        def mark_running(self, *args, **kwargs) -> None:
+            return None
+
+        def record_event(self, run_id, **kwargs) -> None:
+            self.events.append((run_id, kwargs))
+
+        def finish(self, *args, **kwargs) -> None:
+            return None
+
+    lifecycle = Lifecycle()
+    manager = HybridResearchJobManager(lifecycle)
+    progress_sent = threading.Event()
+    release = threading.Event()
+
+    def worker(_cancel_event, progress_callback):
+        for _ in range(12):
+            progress_callback({
+                "status": "running",
+                "current_stage": "Searching SEC evidence",
+                "current_round": 1,
+                "message": "Reading the same source batch.",
+            })
+        progress_callback({
+            "status": "running",
+            "current_stage": "DeepSeek research planner",
+            "current_role": "research_planner",
+            "current_round": 2,
+            "message": "Building the research plan.",
+        })
+        progress_sent.set()
+        release.wait(1)
+        return type("Result", (), {"status": "completed"})()
+
+    state = manager.start("AAPL", worker)
+    assert progress_sent.wait(1)
+    active = manager.get(state.job_id)
+    assert active is not None
+    assert active.progress.journey_stage == "primary_analysis"
+    assert len(lifecycle.events) == 2
+    assert [item[1]["stage"] for item in lifecycle.events] == [
+        "evidence_retrieval_and_admission",
+        "primary_analysis",
+    ]
+    release.set()
+
+
 def test_mandatory_targeted_request_runs_when_planner_omits_it() -> None:
     context = {
         "searchable_evidence_catalog": [],
@@ -1857,7 +2092,9 @@ def test_sol_audit_health_warns_after_three_failures_and_resets(tmp_path) -> Non
     assert reset["last_success_at"]
 
 
-@pytest.mark.parametrize("ticker", ["AAPL", "BABA", "NVDA", "ORCL", "TSLA", "GS"])
+@pytest.mark.parametrize(
+    "ticker", ["AAPL", "BABA", "BLK", "NVDA", "ORCL", "TSLA", "GS"]
+)
 def test_frozen_demos_include_no_network_hybrid_provenance(ticker: str) -> None:
     result = demo_result(ticker)
     run = result.hybrid_research
@@ -1872,4 +2109,4 @@ def test_frozen_demos_include_no_network_hybrid_provenance(ticker: str) -> None:
         result.dual_model_research.provenance_message
     )
     serialized = json.dumps(asdict(run))
-    assert "sk-" not in serialized
+    assert not contains_credential_like_token(serialized)

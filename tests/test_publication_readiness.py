@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+
+from equity_research.presentation.view_models import _repair_actions_in_dependency_order
 import json
 from pathlib import Path
 
 from equity_research.application.publication_readiness import (
+    DETERMINISTIC_SAFE_REVISION_VERSION,
+    build_deterministic_safe_primary_revision,
     build_source_lineage_graph,
     canonicalize_artifact_for_publication,
     record_analog_candidate_revision,
     invalidate_derived_artifacts,
     PublicationGateEvaluator,
+    SemanticQualityScorer,
     RepairExecutionResult,
     RepairStrategyRegistry,
     ResearchRepairController,
@@ -37,6 +42,119 @@ from equity_research.models import (
 from equity_research.presentation.view_models import (
     build_publication_readiness_view_model,
 )
+
+
+def test_deterministic_safe_revision_removes_direction_and_answers_audit() -> None:
+    payload = build_deterministic_safe_primary_revision({
+        "ticker": "BABA",
+        "investigation_artifact": {
+            "leading_thesis": "Spending will create a high-return recovery.",
+            "findings": [{
+                "claim": "Revenue increased while operating cash flow declined.",
+                "evidence_ids": ["evidence-1", "evidence-2"],
+            }],
+        },
+        "audit_artifact": {
+            "findings": [{
+                "finding_id": "causality-not-established",
+                "classification": "validated_inference",
+                "finding": "The direction is supported but its cause is unresolved.",
+                "evidence_ids": ["evidence-1"],
+            }],
+            "unsupported_claims": [{
+                "claim": "Spending will create a high-return recovery.",
+                "reason": "No realized return was supplied.",
+                "evidence_needed": "Segment profitability and utilization.",
+            }],
+        },
+    })
+
+    assert payload["verdict"] == "No validated trade conclusion established."
+    assert payload["publication_scope"]["valuation_or_trade_direction_supported"] is False
+    assert payload["primary_responses"] == [{
+        "finding_id": "causality-not-established",
+        "state": "accepted",
+        "conclusion_changed": True,
+        "change_summary": (
+            "Accepted through deterministic narrowing: the disputed conclusion "
+            "was removed and retained only as an open research lead. It cannot "
+            "support the thesis, valuation, confidence, or trade direction."
+        ),
+        "evidence_ids": [],
+    }]
+    assert payload["established_observations"] == []
+    assert payload["findings"] == []
+    assert payload["claims"] == []
+    assert payload["research_leads"][0]["cannot_support_conclusions"] is True
+    assert payload["historical_analog_dossiers"] == []
+    assert payload["deterministic_safe_revision"]["strategy_version"] == (
+        DETERMINISTIC_SAFE_REVISION_VERSION
+    )
+
+
+def test_safe_revision_does_not_promote_audit_observations_to_claims() -> None:
+    payload = build_deterministic_safe_primary_revision({
+        "ticker": "BABA",
+        "investigation_artifact": {"findings": []},
+        "audit_artifact": {
+            "findings": [
+                {
+                    "finding_id": "cash-conversion",
+                    "classification": "validated_inference",
+                    "finding": "Cash conversion deteriorated on matching annual facts.",
+                    "evidence_ids": ["cash-1", "income-1"],
+                    "audit_implication": "Net income alone is not adequate.",
+                },
+                {
+                    "finding_id": "profit-bridge",
+                    "classification": "validated_inference",
+                    "finding": "Operating and net income diverged.",
+                    "evidence_ids": ["income-1", "income-2"],
+                    "audit_implication": "The primary report does not provide this bridge.",
+                },
+                {
+                    "finding_id": "share-basis",
+                    "classification": "fact",
+                    "finding": "The share basis is unresolved.",
+                    "evidence_ids": ["shares-1"],
+                    "audit_implication": "Per-share conclusions are premature.",
+                },
+            ]
+        },
+    })
+
+    assert payload["claims"] == []
+    assert payload["publication_scope"]["conclusion_eligible_claim_count"] == 0
+    assert payload["findings"] == []
+    assert len(payload["addressed_audit_findings"]) == 3
+
+
+def test_safe_revision_preserves_only_explicitly_validated_observations() -> None:
+    payload = build_deterministic_safe_primary_revision({
+        "ticker": "BLK",
+        "investigation_artifact": {
+            "validated_observations": [
+                {
+                    "claim": "Ending AUM was reported in the filing period.",
+                    "classification": "fact",
+                    "validation_status": "passed",
+                    "admission_status": "admitted",
+                    "evidence_ids": ["aum-1"],
+                },
+                {
+                    "claim": "Fee conversion improved.",
+                    "classification": "validated_inference",
+                    "validation_status": "passed",
+                    "evidence_ids": ["aum-1"],
+                },
+            ]
+        },
+        "audit_artifact": {},
+    })
+
+    assert [item["claim"] for item in payload["established_observations"]] == [
+        "Ending AUM was reported in the filing period."
+    ]
 
 
 def _failure(code: PublicationFailureCode, kind: RepairKind) -> PublicationGateFailure:
@@ -431,6 +549,135 @@ def test_single_version_score_outcomes_and_critical_failure_policy() -> None:
     assert critical.decision == "repair_required"
 
 
+def test_current_ontology_requires_truthful_typed_lens_statuses() -> None:
+    run = _single_version_policy_run()
+    run.research_ontology_version = "research-ontology-v1"
+    run.security_profile_id = "asset-manager-v1"
+    run.core_mechanism_ids = ["aum_fee_earnings_conversion"]
+    run.lens_assessment_statuses = {
+        "causal_bridge": "Available",
+        "equity": "Available",
+        "credit": "Available",
+    }
+    policy = DemoQualityPolicy(
+        require_audited_analog=False,
+        ticker_required_paths={},
+        enforce_coverage_profile_paths=False,
+    )
+
+    evaluation = PublicationGateEvaluator(_FixedScore(90)).evaluate(
+        "BLK", run=run, audited_dossiers=[], policy=policy
+    )
+
+    assert PublicationFailureCode.LENS_STATUS_MISLEADING.value in {
+        item.code for item in evaluation.failures
+    }
+
+
+def test_cross_ticker_analog_scope_violation_blocks_publication() -> None:
+    run = _single_version_policy_run()
+    dossier = SimpleNamespace(
+        analog_id="blackrock-for-baba",
+        status="Audited Research Analog",
+        scope_status="issuer_scope_violation",
+        eligibility_code="issuer_scope_violation",
+        source_ids=("source-1", "source-2"),
+        operating_outcome="Fee earnings changed.",
+        financing_outcome="Corporate liquidity remained available.",
+        valuation_outcome="The multiple changed.",
+        price_outcome="The security price changed.",
+    )
+    policy = DemoQualityPolicy(
+        require_audited_analog=False,
+        ticker_required_paths={},
+        enforce_coverage_profile_paths=False,
+    )
+
+    evaluation = PublicationGateEvaluator(_FixedScore(90)).evaluate(
+        "BABA", run=run, audited_dossiers=[dossier], policy=policy
+    )
+
+    assert PublicationFailureCode.HISTORICAL_ANALOG_SCOPE_INTEGRITY.value in {
+        item.code for item in evaluation.failures
+    }
+
+
+def test_safe_revision_requires_a_validated_conclusion_eligible_mechanism() -> None:
+    policy = DemoQualityPolicy(
+        require_audited_analog=False,
+        ticker_required_paths={},
+        enforce_coverage_profile_paths=False,
+    )
+    run = _single_version_policy_run()
+    run.final_artifact.payload.update({
+        "publication_scope": {
+            "revision_mode": "deterministic_safe_narrowing",
+            "conclusion_eligible_claim_count": 0,
+        },
+        "deterministic_safe_revision": {
+            "strategy_version": DETERMINISTIC_SAFE_REVISION_VERSION,
+        },
+    })
+
+    evaluation = PublicationGateEvaluator(_FixedScore(90)).evaluate(
+        "BABA", run=run, audited_dossiers=[], policy=policy
+    )
+
+    assert evaluation.decision == "repair_required"
+    failure = next(
+        item for item in evaluation.failures
+        if item.code == PublicationFailureCode.SEMANTIC_CRITICAL_FAILURE.value
+    )
+    assert "no validated research mechanism" in failure.summary.casefold()
+    assert failure.recommended_repair_kind == (
+        RepairKind.RETRIEVE_MISSING_PRIMARY_EVIDENCE.value
+    )
+
+
+def test_closure_only_blocker_is_compiled_into_revision_before_recheck() -> None:
+    run = _single_version_policy_run("failed_material_findings_unaddressed")
+    run.final_artifact.payload["closure_audit"] = {
+        "closure_state": "failed_material_findings_unaddressed",
+        "audit_decision": {
+            "status": "failed",
+            "unresolved_findings": ["MC6"],
+        },
+    }
+    run.audit_findings = []
+    policy = DemoQualityPolicy(
+        require_audited_analog=False,
+        ticker_required_paths={},
+        enforce_coverage_profile_paths=False,
+    )
+
+    evaluation = PublicationGateEvaluator(_FixedScore(85)).evaluate(
+        "NVDA", run=run, audited_dossiers=[], policy=policy
+    )
+
+    failures = {item.code: item for item in evaluation.failures}
+    assert PublicationFailureCode.MATERIAL_AUDIT_FINDING_UNADDRESSED.value in failures
+    assert failures[
+        PublicationFailureCode.MATERIAL_AUDIT_FINDING_UNADDRESSED.value
+    ].related_finding_ids == ("MC6",)
+    actions = {item.repair_kind: item for item in evaluation.repair_actions}
+    response = actions[RepairKind.RESPOND_TO_AUDIT_FINDING.value]
+    closure = actions[RepairKind.RERUN_CLOSURE.value]
+    assert response.action_id in closure.dependency_action_ids
+
+
+def test_repair_ui_orders_primary_response_before_dependent_closure() -> None:
+    response = SimpleNamespace(action_id="respond", dependency_action_ids=())
+    closure = SimpleNamespace(
+        action_id="closure",
+        dependency_action_ids=("respond",),
+    )
+
+    assert _repair_actions_in_dependency_order([closure, response]) == [
+        response,
+        closure,
+    ]
+
+
 def test_missing_financial_path_blocks_when_a_displayed_valuation_depends_on_it() -> None:
     run = _single_version_policy_run()
     run.derived_artifact_dependencies = [DerivedArtifactDependency(
@@ -491,6 +738,32 @@ def test_missing_provenance_analog_is_downgraded_and_excluded_from_scoring() -> 
     assert revision.downgraded_analog_ids == ("analog-1",)
 
 
+def test_real_semantic_scorer_does_not_penalize_excluded_analog_candidates() -> None:
+    run = _single_version_policy_run()
+    run.final_artifact.summary = (
+        "Cash mechanism with counter risk, falsification monitor, and valuation driver."
+    )
+    run.historical_valuation_observations = [SimpleNamespace(
+        fcf_ttm=100.0,
+        enterprise_value=2_000.0,
+    )]
+    record_analog_candidate_revision(run, ("analog-candidate",))
+
+    quality = SemanticQualityScorer().score(
+        run,
+        audited_dossiers=[],
+        threshold=75,
+        triggered_by="analog-candidate-regression",
+    )
+    dimensions = {item.name: item for item in quality.dimensions}
+
+    assert dimensions["analog_usefulness"].status == "not_applicable"
+    assert dimensions["analog_usefulness"].score == 10
+    assert dimensions["provenance_independence"].status == "not_applicable"
+    assert dimensions["provenance_independence"].score == 10
+    assert quality.total_score >= 75
+
+
 def test_residual_closure_is_eligible_and_missing_closure_is_not() -> None:
     policy = DemoQualityPolicy(
         require_audited_analog=False,
@@ -515,6 +788,70 @@ def test_residual_closure_is_eligible_and_missing_closure_is_not() -> None:
         item.code for item in residual.qualifications
     }
     assert missing.decision == "repair_required"
+
+
+def test_residual_diligence_sentences_are_qualifications_not_finding_ids() -> None:
+    run = _single_version_policy_run("closed_with_residual_risk")
+    run.final_artifact.payload["closure_audit"] = {
+        "closure_state": "closed_with_residual_risk",
+        "audit_decision": {
+            "status": "passed",
+            "unresolved_findings": [
+                "Point-in-time consensus remains unavailable.",
+                "Purchase-accounting and impairment sensitivity remain open.",
+            ],
+        },
+    }
+    run.audit_findings = [SimpleNamespace(
+        finding_id="MC6",
+        severity="High",
+        resolved=True,
+        primary_response_state="accepted",
+    )]
+    policy = DemoQualityPolicy(
+        require_audited_analog=False,
+        ticker_required_paths={},
+        enforce_coverage_profile_paths=False,
+    )
+
+    evaluation = PublicationGateEvaluator(_FixedScore(85)).evaluate(
+        "NVDA", run=run, audited_dossiers=[], policy=policy
+    )
+
+    assert evaluation.decision == "publishable_with_residual_diligence"
+    assert PublicationFailureCode.MATERIAL_AUDIT_FINDING_UNADDRESSED.value not in {
+        item.code for item in evaluation.failures
+    }
+
+
+def test_structured_or_legacy_closure_finding_references_remain_blocking() -> None:
+    policy = DemoQualityPolicy(
+        require_audited_analog=False,
+        ticker_required_paths={},
+        enforce_coverage_profile_paths=False,
+    )
+    for unresolved in ([{"finding_id": "audit-new"}], ["MC6"]):
+        run = _single_version_policy_run("closed_with_residual_risk")
+        run.final_artifact.payload["closure_audit"] = {
+            "closure_state": "closed_with_residual_risk",
+            "audit_decision": {
+                "status": "passed",
+                "unresolved_findings": unresolved,
+            },
+        }
+
+        evaluation = PublicationGateEvaluator(_FixedScore(85)).evaluate(
+            "NVDA", run=run, audited_dossiers=[], policy=policy
+        )
+
+        failure = next(
+            item for item in evaluation.failures
+            if item.code
+            == PublicationFailureCode.MATERIAL_AUDIT_FINDING_UNADDRESSED.value
+        )
+        assert failure.related_finding_ids == (
+            "audit-new" if isinstance(unresolved[0], dict) else "MC6",
+        )
 
 
 def test_canonical_revision_removes_failed_claim_and_creates_investigation() -> None:

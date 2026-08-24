@@ -33,6 +33,14 @@ from .models import (
     ResearchProfile,
     TradeIdea,
 )
+from .domain.research_ontology import (
+    ANALOG_SCOPE_POLICY_VERSION,
+    AnalogResearchState,
+    AnalogScopePolicy,
+    SecurityResearchProfile,
+    SecurityResearchProfileResolver,
+    phrase_matches_field,
+)
 
 
 ANALOG_PROMPT_VERSION = "historical-episode-intelligence-v3"
@@ -71,6 +79,12 @@ SIMILARITY_WEIGHTS = {
 _MECHANISM_EPISODES = (
     {
         "mechanisms": {"product cycle", "capital allocation", "buyback", "hardware", "services", "cash generation"},
+        "industry_terms": {"consumer technology", "devices", "smartphone", "ecosystem"},
+        "applicability_terms": {"product cycle", "repurchase", "buyback", "debt-funded", "smartphone"},
+        "transfer_role": "same_issuer_cycle",
+        "mechanism_ids": {"per_share_capital_allocation"},
+        "archetypes": {"operating_company"},
+        "transfer_dimension": "issuer product-cycle and capital-allocation history",
         "analog_class": "Same economic or financial mechanism",
         "episode": "Apple iPhone normalization and debt-funded capital return, FY2013-FY2016",
         "companies": ["Apple Inc."],
@@ -87,6 +101,12 @@ _MECHANISM_EPISODES = (
     },
     {
         "mechanisms": {"services", "mix", "cash generation", "capital return", "wearables", "margin"},
+        "industry_terms": {"consumer technology", "devices", "wearables", "ecosystem"},
+        "applicability_terms": {"services mix", "wearables", "installed base", "ecosystem"},
+        "transfer_role": "same_issuer_cycle",
+        "mechanism_ids": {"per_share_capital_allocation"},
+        "archetypes": {"operating_company"},
+        "transfer_dimension": "issuer mix and cash-generation history",
         "analog_class": "Same economic or financial mechanism",
         "episode": "Apple Services and wearables mix transition, FY2018-FY2020",
         "companies": ["Apple Inc."],
@@ -102,7 +122,79 @@ _MECHANISM_EPISODES = (
         "outcomes": ["operating", "valuation", "price"],
     },
     {
+        "mechanisms": {
+            "assets under management", "net flows", "base fee", "index", "etf",
+            "acquisition integration", "operating leverage",
+        },
+        "industry_terms": {
+            "asset management", "investment management", "etf", "index", "financial services",
+        },
+        "applicability_terms": {
+            "aum", "net inflows", "organic base fee growth", "fee realization",
+            "acquisition integration", "operating margin",
+        },
+        "transfer_role": "same_issuer_cycle",
+        "mechanism_ids": {"aum_fee_earnings_conversion"},
+        "archetypes": {"asset_manager"},
+        "transfer_dimension": "AUM, flow, fee-rate, and integration conversion",
+        "analog_class": "Same economic or financial mechanism",
+        "episode": "BlackRock BGI and iShares integration cycle, 2009-2012",
+        "companies": ["BlackRock, Inc."],
+        "tickers": ["BLK"],
+        "period_start": "2009",
+        "period_end": "2012",
+        "period_precision": "year",
+        "rationale": (
+            "Tests how a large platform acquisition, index and ETF scale, client flows, "
+            "integration costs, and the share base translated into fee earnings and per-share value."
+        ),
+        "terms": [
+            "BlackRock", "BGI", "iShares", "2009", "2012", "AUM", "net flows",
+            "base fees", "integration", "shares",
+        ],
+        "outcomes": ["operating", "financing", "valuation", "price"],
+    },
+    {
+        "mechanisms": {
+            "assets under management", "market beta", "net flows", "fee rate",
+            "operating leverage", "capital return",
+        },
+        "industry_terms": {
+            "asset management", "investment management", "financial services", "public markets",
+        },
+        "applicability_terms": {
+            "aum", "market depreciation", "organic flows", "fee rate", "margin",
+            "repurchases", "dilution",
+        },
+        "transfer_role": "same_issuer_stress_cycle",
+        "mechanism_ids": {"aum_fee_earnings_conversion"},
+        "archetypes": {"asset_manager"},
+        "transfer_dimension": "market-beta, organic-flow, and fee-rate resilience",
+        "analog_class": "Same economic or financial mechanism",
+        "episode": "BlackRock market drawdown and flow-resilience test, 2021-2023",
+        "companies": ["BlackRock, Inc."],
+        "tickers": ["BLK"],
+        "period_start": "2021",
+        "period_end": "2023",
+        "period_precision": "year",
+        "rationale": (
+            "Separates market-driven AUM changes from organic flows and tests fee-rate, "
+            "expense flexibility, margin, and capital return across a market drawdown and recovery."
+        ),
+        "terms": [
+            "BlackRock", "2021", "2022", "2023", "AUM", "net flows", "market decline",
+            "base fees", "margin", "repurchases",
+        ],
+        "outcomes": ["operating", "capital allocation", "valuation", "price"],
+    },
+    {
         "mechanisms": {"supplier commitment", "inventory", "hardware", "purchase obligation", "capacity"},
+        "industry_terms": {"semiconductor", "accelerated computing", "networking", "hardware", "devices"},
+        "applicability_terms": {"supplier commitment", "inventory", "purchase obligation", "capacity", "write-down"},
+        "transfer_role": "industry_boundary_case",
+        "mechanism_ids": {"cloud_ai_investment_cycle", "accelerated_compute_capacity_cycle"},
+        "archetypes": {"operating_company"},
+        "transfer_dimension": "commitment and demand-conversion risk",
         "analog_class": "Same economic or financial mechanism",
         "episode": "Cisco supplier commitments and inventory correction, 2000-2001",
         "companies": ["Cisco Systems"],
@@ -119,6 +211,12 @@ _MECHANISM_EPISODES = (
     },
     {
         "mechanisms": {"owned capacity", "capex", "semiconductor", "manufacturing", "financing"},
+        "industry_terms": {"semiconductor", "accelerated computing", "hardware"},
+        "applicability_terms": {"owned capacity", "capex", "fab", "manufacturing", "utilization", "depreciation", "asset-light"},
+        "transfer_role": "business_model_counterexample",
+        "mechanism_ids": {"cloud_ai_investment_cycle", "accelerated_compute_capacity_cycle"},
+        "archetypes": {"operating_company"},
+        "transfer_dimension": "owned-capacity utilization and depreciation",
         "analog_class": "Same economic or financial mechanism",
         "episode": "Intel owned-fab investment cycle, 2021-2024",
         "companies": ["Intel Corporation"],
@@ -135,6 +233,12 @@ _MECHANISM_EPISODES = (
     },
     {
         "mechanisms": {"wearables", "smart glasses", "product adoption", "ecosystem"},
+        "industry_terms": {"consumer technology", "devices", "wearables", "ecosystem"},
+        "applicability_terms": {"smart glasses", "wearables", "product adoption", "form factor", "ecosystem"},
+        "transfer_role": "adjacent_product_cycle",
+        "mechanism_ids": {"product_adoption_cycle"},
+        "archetypes": {"operating_company"},
+        "transfer_dimension": "product adoption and ecosystem formation",
         "analog_class": "Current-industry peer cycle",
         "episode": "Meta and Google smart-glasses adoption experiments, 2013-2025",
         "companies": ["Meta Platforms", "Alphabet"],
@@ -151,6 +255,12 @@ _MECHANISM_EPISODES = (
     },
     {
         "mechanisms": {"capacity", "overbuild", "leverage", "infrastructure", "utilization"},
+        "industry_terms": {"networking", "data-center", "infrastructure", "cloud"},
+        "applicability_terms": {"capacity", "overbuild", "utilization", "leverage", "demand"},
+        "transfer_role": "cross_industry_boundary_case",
+        "mechanism_ids": {"cloud_ai_investment_cycle", "accelerated_compute_capacity_cycle"},
+        "archetypes": {"operating_company", "china_internet_platform"},
+        "transfer_dimension": "capacity utilization and financing",
         "analog_class": "Broad historical case study",
         "episode": "Telecom and fiber capacity overbuild, 1998-2002",
         "companies": ["Global Crossing", "WorldCom", "telecom carriers"],
@@ -167,6 +277,12 @@ _MECHANISM_EPISODES = (
     },
     {
         "mechanisms": {"cloud", "capacity", "utilization", "infrastructure", "cash conversion"},
+        "industry_terms": {"cloud", "data-center", "software", "internet commerce"},
+        "applicability_terms": {"cloud", "capacity", "utilization", "operating leverage", "cash conversion"},
+        "transfer_role": "adjacent_demand_capacity_cycle",
+        "mechanism_ids": {"cloud_ai_investment_cycle", "accelerated_compute_capacity_cycle"},
+        "archetypes": {"operating_company", "china_internet_platform"},
+        "transfer_dimension": "cloud capacity utilization and monetization",
         "analog_class": "Same economic or financial mechanism",
         "episode": "AWS capacity conversion and operating leverage, 2017-2019",
         "companies": ["Amazon Web Services"],
@@ -203,17 +319,43 @@ def build_historical_analog_intelligence(
     frozen_fixture: bool = False,
     sec_client: Any | None = None,
     price_client: Any | None = None,
+    security_profile: SecurityResearchProfile | None = None,
 ) -> HistoricalAnalogIntelligence:
+    resolved_security_profile = (
+        security_profile or SecurityResearchProfileResolver().resolve(identity)
+    )
     signature = build_analog_signature(identity, ideas, metrics, economics, external_evidence)
-    candidates = _deterministic_candidates(identity, signature, economics)
+    current_mechanism_id = _current_mechanism_id(ideas)
+    candidates = _deterministic_candidates(
+        identity,
+        signature,
+        economics,
+        resolved_security_profile,
+        current_mechanism_id,
+    )
     gaps: list[str] = []
     profile_id = research_profile.profile_id if research_profile else "adaptive_ic"
     investigation_limit = _investigation_limit(profile_id, investigate_analog_id)
     planning_message = ""
     if use_llm and llm_provider is not None and investigation_limit:
-        proposed, message = _llm_candidates(identity, signature, candidates, llm_provider)
+        proposed, message = _llm_candidates(
+            identity,
+            signature,
+            candidates,
+            llm_provider,
+            security_profile=resolved_security_profile,
+            current_mechanism_id=current_mechanism_id,
+        )
         if proposed:
-            candidates = _merge_candidates(candidates, proposed)[:8]
+            candidates = _merge_candidates(candidates, proposed)
+            candidates.sort(
+                key=lambda item: (
+                    item.applicability_score,
+                    _transfer_role_priority(item.transfer_role),
+                ),
+                reverse=True,
+            )
+            candidates = candidates[:32]
         planning_message = message
         if message:
             gaps.append(message)
@@ -241,6 +383,7 @@ def build_historical_analog_intelligence(
             item.status == "Investigated Draft",
             item.source_relevance_score,
             item.similarity_score or 0,
+            item.applicability_score,
             len(item.sources),
         ),
         reverse=True,
@@ -484,6 +627,16 @@ def build_analog_signature(
         evidence_ids=_dedupe(evidence_ids),
         current_baseline=baseline,
     )
+
+
+def _current_mechanism_id(ideas: list[TradeIdea]) -> str:
+    for idea in ideas:
+        for event in list(getattr(idea, "source_events", []) or []):
+            payload = getattr(event, "metrics", {}) or {}
+            mechanism = str(payload.get("research_mechanism_id") or "")
+            if mechanism:
+                return mechanism
+    return ""
 
 
 def _build_historical_work_orders(
@@ -947,13 +1100,16 @@ def _deterministic_candidates(
     identity: CompanyIdentity,
     signature: HistoricalAnalogSignature,
     economics: CompanyEconomics,
+    security_profile: SecurityResearchProfile | None = None,
+    current_mechanism_id: str = "",
 ) -> list[HistoricalAnalogCandidate]:
+    security_profile = security_profile or SecurityResearchProfileResolver().resolve(identity)
     company = identity.name
     industry = signature.industry or identity.sic_description or "industry"
     structured_driver_context = " ".join(driver.name for driver in economics.drivers)
     playbook_kpis = " ".join(economics.industry_playbook.key_kpis)
     context = (
-        f"{signature.driver} {industry} {economics.business_model} "
+        f"{identity.ticker} {identity.name} {signature.driver} {industry} {economics.business_model} "
         f"{structured_driver_context} {playbook_kpis} "
         f"owned capacity {signature.current_baseline.owned_capacity} "
         f"contracted capacity {signature.current_baseline.contracted_capacity} "
@@ -963,13 +1119,18 @@ def _deterministic_candidates(
     context_tokens = set(_tokens(context))
     candidates: list[HistoricalAnalogCandidate] = []
     for episode in _MECHANISM_EPISODES:
-        mechanisms = set(episode["mechanisms"])
-        overlap = mechanisms & context_tokens
-        phrase_match = any(
-            mechanism in context for mechanism in mechanisms
+        score, reasons, scope_status = _episode_applicability(
+            identity,
+            context,
+            context_tokens,
+            episode,
+            security_profile,
+            current_mechanism_id,
         )
-        if len(overlap) < 1 and not phrase_match:
-            continue
+        # Retain rejected candidates for Evidence/Audit explainability.  Their
+        # scope status prevents retrieval and Decision-page presentation.
+        # Catalog order therefore cannot turn them into a playbook.
+        mechanisms = set(episode["mechanisms"])
         candidates.append(_candidate(
             identity.ticker,
             str(episode["analog_class"]),
@@ -988,8 +1149,24 @@ def _deterministic_candidates(
                 "quantitative_market_data",
             ],
             reference_tickers=list(episode.get("tickers") or []),
+            applicability_score=score,
+            applicability_reasons=reasons,
+            transfer_role=str(episode.get("transfer_role") or "mechanism_candidate"),
+            scope_status=scope_status,
+            current_mechanism_id=current_mechanism_id,
+            discovery_relevance_score=score,
+            eligibility_code=(
+                "eligible" if scope_status == "in_scope" else scope_status
+            ),
+            eligibility_summary=" ".join(reasons),
+            transfer_dimension=str(episode.get("transfer_dimension") or ""),
+            research_state=(
+                AnalogResearchState.DISCOVERED_CANDIDATE.value
+                if scope_status == "in_scope" else AnalogResearchState.SCOPE_REJECTED.value
+            ),
+            analog_policy_version=ANALOG_SCOPE_POLICY_VERSION,
         ))
-    if not candidates:
+    if not any(item.applicability_score >= 60 for item in candidates):
         candidates.append(_candidate(
             identity.ticker,
             "Same-company prior cycle",
@@ -1004,8 +1181,129 @@ def _deterministic_candidates(
             period_precision="unknown",
             expected_outcomes=["operating", "financing", "valuation", "price"],
             required_source_types=["historical_filing"],
+            applicability_score=90,
+            applicability_reasons=["Same issuer; exact prior episode still requires discovery."],
+            transfer_role="same_issuer_discovery",
+            current_mechanism_id=current_mechanism_id,
+            discovery_relevance_score=90,
+            eligibility_code="same_issuer",
+            eligibility_summary="Same issuer; exact prior episode still requires discovery.",
+            transfer_dimension="issuer history",
+            research_state=AnalogResearchState.DISCOVERED_CANDIDATE.value,
+            analog_policy_version=ANALOG_SCOPE_POLICY_VERSION,
         ))
-    return candidates[:8]
+    candidates.sort(
+        key=lambda item: (
+            item.applicability_score,
+            _transfer_role_priority(item.transfer_role),
+        ),
+        reverse=True,
+    )
+    # Keep the bounded catalog's rejected rows for Evidence/Audit.  Decision
+    # view models still render only the top eligible candidates.
+    return candidates[:32]
+
+
+def _transfer_role_priority(role: str) -> int:
+    return {
+        "same_issuer_cycle": 6,
+        "same_issuer_stress_cycle": 6,
+        "same_issuer_discovery": 5,
+        "industry_boundary_case": 4,
+        "business_model_counterexample": 3,
+        "adjacent_demand_capacity_cycle": 2,
+        "adjacent_product_cycle": 2,
+        "cross_industry_boundary_case": 1,
+    }.get(str(role or ""), 0)
+
+
+def _episode_applicability(
+    identity: CompanyIdentity,
+    context: str,
+    context_tokens: set[str],
+    episode: dict[str, Any],
+    security_profile: SecurityResearchProfile | None = None,
+    current_mechanism_id: str = "",
+) -> tuple[int, list[str], str]:
+    """Score research applicability without treating it as evidence quality.
+
+    The old implementation admitted an episode after one generic token match.
+    That made global catalog order an accidental issuer-selection rule.  This
+    score instead gives separate weight to issuer identity, industry/business
+    model, and a specific transferable mechanism.
+    """
+
+    ticker = identity.ticker.upper()
+    reference_tickers = {
+        str(item).upper() for item in episode.get("tickers", []) if item
+    }
+    same_issuer = ticker in reference_tickers
+    profile = security_profile or SecurityResearchProfileResolver().resolve(identity)
+    eligibility = AnalogScopePolicy().evaluate(
+        current_profile=profile,
+        current_mechanism_id=current_mechanism_id,
+        current_ticker=ticker,
+        reference_tickers=reference_tickers,
+        transfer_role=str(episode.get("transfer_role") or "mechanism_candidate"),
+        allowed_archetypes=episode.get("archetypes", ()),
+        episode_mechanisms=episode.get("mechanism_ids", ()),
+        transfer_dimension=str(episode.get("transfer_dimension") or ""),
+    )
+    if not eligibility.eligible:
+        return 0, [eligibility.summary], eligibility.code
+    industry_matches = _matched_applicability_terms(
+        episode.get("industry_terms", []), context, context_tokens
+    )
+    mechanism_matches = _matched_applicability_terms(
+        episode.get("applicability_terms", []), context, context_tokens
+    )
+
+    if same_issuer:
+        score = 100
+    else:
+        industry_score = min(50, 30 + max(0, len(industry_matches) - 1) * 10) if industry_matches else 0
+        mechanism_score = min(45, len(mechanism_matches) * 15)
+        role = str(episode.get("transfer_role") or "")
+        # Business-model proximity is a separate discovery dimension.  It may
+        # rank already-eligible candidates, but can never create eligibility.
+        role_adjustment = {
+            "industry_boundary_case": 20,
+            "business_model_counterexample": 10,
+            "adjacent_demand_capacity_cycle": 10,
+            "adjacent_product_cycle": 5,
+            "cross_industry_boundary_case": -15,
+        }.get(role, 0)
+        score = min(95, max(0, industry_score + mechanism_score + role_adjustment))
+
+    reasons: list[str] = []
+    if same_issuer:
+        reasons.append("Same-issuer historical episode.")
+    if industry_matches:
+        reasons.append(
+            "Industry/business-model match: " + ", ".join(industry_matches[:3]) + "."
+        )
+    if mechanism_matches:
+        reasons.append(
+            "Transferable mechanism: " + ", ".join(mechanism_matches[:3]) + "."
+        )
+    if not reasons:
+        reasons.append("No issuer, industry, or specific mechanism match was established.")
+    return score, reasons, "in_scope" if score >= 60 else "weak_match"
+
+
+def _matched_applicability_terms(
+    terms: Any,
+    context: str,
+    context_tokens: set[str],
+) -> list[str]:
+    matches: list[str] = []
+    for raw in terms or []:
+        term = str(raw).strip().lower()
+        if not term:
+            continue
+        if phrase_matches_field(context, term):
+            matches.append(term)
+    return sorted(set(matches))
 
 
 def _candidate(
@@ -1024,6 +1322,17 @@ def _candidate(
     expected_outcomes: list[str] | None = None,
     required_source_types: list[str] | None = None,
     reference_tickers: list[str] | None = None,
+    applicability_score: int = 0,
+    applicability_reasons: list[str] | None = None,
+    transfer_role: str = "mechanism_candidate",
+    scope_status: str = "in_scope",
+    current_mechanism_id: str = "",
+    discovery_relevance_score: int = 0,
+    eligibility_code: str = "legacy_unchecked",
+    eligibility_summary: str = "",
+    transfer_dimension: str = "",
+    research_state: str = AnalogResearchState.DISCOVERED_CANDIDATE.value,
+    analog_policy_version: str = "legacy",
 ) -> HistoricalAnalogCandidate:
     return HistoricalAnalogCandidate(
         analog_id=_stable_id("historical-analog", ticker, analog_class, episode),
@@ -1040,6 +1349,17 @@ def _candidate(
         expected_outcomes=list(expected_outcomes or []),
         required_source_types=list(required_source_types or []),
         reference_tickers=list(reference_tickers or []),
+        applicability_score=max(0, min(100, int(applicability_score or 0))),
+        applicability_reasons=list(applicability_reasons or []),
+        transfer_role=transfer_role,
+        scope_status=scope_status,
+        current_mechanism_id=current_mechanism_id,
+        discovery_relevance_score=max(0, min(100, int(discovery_relevance_score or applicability_score or 0))),
+        eligibility_code=eligibility_code,
+        eligibility_summary=eligibility_summary,
+        transfer_dimension=transfer_dimension,
+        research_state=research_state,
+        analog_policy_version=analog_policy_version,
     )
 
 
@@ -1048,6 +1368,9 @@ def _llm_candidates(
     signature: HistoricalAnalogSignature,
     existing: list[HistoricalAnalogCandidate],
     provider: Any,
+    *,
+    security_profile: SecurityResearchProfile | None = None,
+    current_mechanism_id: str = "",
 ) -> tuple[list[HistoricalAnalogCandidate], str]:
     prompt = {
         "prompt_version": ANALOG_PROMPT_VERSION,
@@ -1120,11 +1443,17 @@ def _llm_candidates(
         period_end = str(raw.get("period_end") or "").strip()
         if not mechanism:
             continue
+        companies = _string_list(raw.get("companies")) or [identity.name]
+        same_company = (
+            analog_class == "Same-company prior cycle"
+            and any(_same_company_name(identity.name, company) for company in companies)
+        )
+        scope_status = "in_scope" if same_company else "policy_unverified"
         result.append(_candidate(
             identity.ticker,
             analog_class,
             episode,
-            _string_list(raw.get("companies")) or [identity.name],
+            companies,
             rationale,
             _string_list(raw.get("search_terms")),
             proposed_by=getattr(provider, "provider_name", "llm"),
@@ -1138,8 +1467,35 @@ def _llm_candidates(
                 "institutional_history",
                 "quantitative_market_data",
             ],
+            reference_tickers=[identity.ticker] if same_company else [],
+            applicability_score=90 if same_company else 0,
+            applicability_reasons=(
+                ["Same issuer proposed; exact episode evidence still requires registered retrieval."]
+                if same_company else []
+            ),
+            transfer_role="same_issuer_cycle" if same_company else "mechanism_candidate",
+            scope_status=scope_status,
+            current_mechanism_id=current_mechanism_id,
+            discovery_relevance_score=90 if same_company else 0,
+            eligibility_code="same_issuer" if same_company else "scope_not_evaluated",
+            eligibility_summary=(
+                "Same issuer; registered evidence must still establish the named episode."
+                if same_company else
+                "Model-proposed candidate requires canonical issuer, archetype, mechanism, "
+                "and transfer-dimension evaluation before research or display."
+            ),
+            transfer_dimension=mechanism if same_company else "",
+            research_state=AnalogResearchState.DISCOVERED_CANDIDATE.value,
+            analog_policy_version=ANALOG_SCOPE_POLICY_VERSION,
         ))
     return result, "" if result else "LLM analog planner returned no valid registered candidates."
+
+
+def _same_company_name(current_name: str, candidate_name: str) -> bool:
+    suffixes = {"inc", "incorporated", "corp", "corporation", "company", "limited", "ltd", "plc"}
+    current = [token for token in _tokens(current_name) if token not in suffixes]
+    candidate = [token for token in _tokens(candidate_name) if token not in suffixes]
+    return bool(current and candidate and current == candidate)
 
 
 def _llm_episode_dossiers(
@@ -1399,6 +1755,12 @@ def _validated_llm_dossier(
             "secondary_audit": "not_run",
             "prompt_version": ANALOG_PROMPT_VERSION,
         },
+        current_mechanism_id=assessment.current_mechanism_id,
+        eligibility_code=assessment.eligibility_code,
+        scope_status=assessment.scope_status,
+        transfer_dimension=assessment.transfer_dimension,
+        research_state=AnalogResearchState.INVESTIGATED_DRAFT.value,
+        analog_policy_version=assessment.analog_policy_version,
     ), ""
 
 
@@ -1867,6 +2229,33 @@ def _assess_candidate(
     signature: HistoricalAnalogSignature,
     sources: list[AnalogSourceObservation],
 ) -> HistoricalAnalogAssessment:
+    if candidate.scope_status not in {"", "in_scope"}:
+        return HistoricalAnalogAssessment(
+            analog_id=candidate.analog_id,
+            analog_class=candidate.analog_class,
+            # Keep the legacy high-level status readable while the typed
+            # research_state and eligibility_code carry the hard rejection.
+            status="Exploratory Candidate",
+            classification="Out-of-scope research lead",
+            episode=candidate.episode,
+            companies=list(candidate.companies),
+            selection_rationale=candidate.selection_rationale,
+            similarity_score=None,
+            material_differences=[candidate.eligibility_summary or "Analog scope policy rejected this episode."],
+            what_it_suggests="Nothing for the current decision; the episode is outside the permitted scope.",
+            what_it_cannot_establish="An out-of-scope episode cannot affect the thesis, valuation, confidence, or direction.",
+            applicability_score=candidate.applicability_score,
+            applicability_reasons=list(candidate.applicability_reasons),
+            transfer_role=candidate.transfer_role,
+            scope_status=candidate.scope_status,
+            current_mechanism_id=candidate.current_mechanism_id,
+            discovery_relevance_score=candidate.discovery_relevance_score,
+            eligibility_code=candidate.eligibility_code,
+            eligibility_summary=candidate.eligibility_summary,
+            transfer_dimension=candidate.transfer_dimension,
+            research_state=AnalogResearchState.SCOPE_REJECTED.value,
+            analog_policy_version=candidate.analog_policy_version,
+        )
     links = [
         _link_source_to_candidate(candidate, source)
         for source in sources
@@ -1964,6 +2353,21 @@ def _assess_candidate(
             else "Exploratory; episode-specific evidence incomplete"
         ),
         confidence="Medium" if status == "Investigated Draft" and len(origins) >= 2 and qualifying else "Low",
+        applicability_score=candidate.applicability_score,
+        applicability_reasons=list(candidate.applicability_reasons),
+        transfer_role=candidate.transfer_role,
+        scope_status=candidate.scope_status,
+        current_mechanism_id=candidate.current_mechanism_id,
+        discovery_relevance_score=candidate.discovery_relevance_score,
+        eligibility_code=candidate.eligibility_code,
+        eligibility_summary=candidate.eligibility_summary,
+        transfer_dimension=candidate.transfer_dimension,
+        research_state=(
+            AnalogResearchState.INVESTIGATED_DRAFT.value
+            if status == "Investigated Draft"
+            else AnalogResearchState.DISCOVERED_CANDIDATE.value
+        ),
+        analog_policy_version=candidate.analog_policy_version,
     )
 
 
@@ -1977,8 +2381,17 @@ def _link_source_to_candidate(
         token
         for company in candidate.companies
         for token in _tokens(company)
-        if token not in {"inc", "corp", "corporation", "company", "limited", "systems"}
+        if token not in {
+            "inc", "corp", "corporation", "company", "limited", "systems",
+            "services", "platform", "holdings", "group", "web", "technology",
+            "technologies",
+        }
     }
+    entity_tokens.update(
+        str(ticker).lower()
+        for ticker in candidate.reference_tickers
+        if str(ticker).strip()
+    )
     mechanism_tokens = {
         token for token in _tokens(
             f"{candidate.mechanism} {' '.join(candidate.search_terms)}"
@@ -2012,7 +2425,12 @@ def _link_source_to_candidate(
         and period_status == "outside_or_unstated"
         and not _contains_episode_year(text, candidate)
     )
-    if not matched_entities and len(matched_mechanisms) < 2:
+    entity_required = bool(entity_tokens) and (
+        candidate.analog_class != "Broad historical case study"
+    )
+    if entity_required and not matched_entities:
+        reasons.append("reference_entity_mismatch")
+    elif not matched_entities and len(matched_mechanisms) < 2:
         reasons.append("entity_or_mechanism_mismatch")
     if current_feed_without_history:
         reasons.append("current_feed_does_not_analyze_historical_episode")

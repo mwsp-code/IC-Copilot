@@ -9,17 +9,142 @@ from .models import (
     CatalystClock,
     CatalystClockItem,
     CompanyModelWorkspace,
+    DataQualityReport,
     DecisionDelta,
+    DecisionRecommendation,
     EvidenceWorkOrder,
     EventWorkflow,
+    ICDecisionBrief,
     IcImpliedExpectationsSnapshot,
     MarketImpliedExpectation,
     MarketImpliedExpectations,
     PrioritizedResearchAction,
+    ThesisValidationReport,
     TradeIdea,
     ValuationResult,
 )
 from .research_profiles import event_identifier
+from .domain.research_intents import ResearchIntentResolver
+
+
+DEFAULT_MINIMUM_EXPECTED_RETURN_PCT = 10.0
+DEFAULT_ACTIONABLE_EVIDENCE_SCORE = 60
+
+
+def build_decision_recommendation(
+    brief: ICDecisionBrief | None,
+    top_idea: TradeIdea | None,
+    valuation: ValuationResult | None,
+    data_quality: DataQualityReport | None,
+    thesis_validation: ThesisValidationReport | None,
+    hybrid_research: Any | None = None,
+    *,
+    minimum_expected_return_pct: float = DEFAULT_MINIMUM_EXPECTED_RETURN_PCT,
+    minimum_evidence_score: int = DEFAULT_ACTIONABLE_EVIDENCE_SCORE,
+) -> DecisionRecommendation:
+    """Resolve the public action independently of a candidate trade direction.
+
+    A directional hypothesis is useful research context, but it is not an
+    instruction to take risk.  This resolver is deliberately deterministic so
+    legacy saved results cannot promote a stale Long/Short label merely because
+    an older top idea carried one.
+    """
+
+    candidate = _candidate_direction(brief, top_idea)
+    reasons: list[str] = []
+    verdict = str(getattr(brief, "verdict", "") or "").casefold()
+    if "no convincing thesis" in verdict:
+        reasons.append("No validated directional thesis has been established.")
+
+    evidence_score = getattr(data_quality, "score", None)
+    if isinstance(evidence_score, (int, float)) and evidence_score < minimum_evidence_score:
+        reasons.append(
+            f"Evidence quality is {int(evidence_score)}/100, below the {minimum_evidence_score}/100 actionability threshold."
+        )
+
+    validation_status = str(getattr(thesis_validation, "status", "") or "").casefold()
+    if validation_status and validation_status != "validated":
+        reasons.append(
+            "The directional thesis has not completed cross-channel validation."
+        )
+
+    deterministic_status = str(
+        getattr(hybrid_research, "deterministic_validation_status", "") or ""
+    ).casefold()
+    if hybrid_research is not None and deterministic_status != "passed":
+        reasons.append("Deterministic claim validation is incomplete.")
+
+    if candidate not in {"Long", "Short", "Relative Value"}:
+        reasons.append("No validated Long, Short, or relative-value mechanism is available.")
+    elif _candidate_requires_more_validation(top_idea):
+        reasons.append("The candidate mechanism is still provisional, contradicted, or a disclosure research lead.")
+
+    expected_return = getattr(valuation, "expected_return_pct", None)
+    if candidate == "Long":
+        if not isinstance(expected_return, (int, float)) or expected_return < minimum_expected_return_pct:
+            reasons.append(
+                "Valuation does not show the minimum material upside required for a Long recommendation."
+            )
+    elif candidate == "Short":
+        if not isinstance(expected_return, (int, float)) or expected_return > -minimum_expected_return_pct:
+            reasons.append(
+                "Valuation does not show the minimum material downside required for a Short recommendation."
+            )
+
+    if reasons:
+        return DecisionRecommendation(
+            recommendation="No position / Watch",
+            candidate_direction=candidate,
+            actionable=False,
+            reasons=tuple(dict.fromkeys(reasons)),
+            minimum_expected_return_pct=minimum_expected_return_pct,
+        )
+    return DecisionRecommendation(
+        recommendation=candidate,
+        candidate_direction=candidate,
+        actionable=True,
+        reasons=(
+            "The directional mechanism, validation, and valuation meet the current actionability policy.",
+        ),
+        minimum_expected_return_pct=minimum_expected_return_pct,
+    )
+
+
+def _candidate_direction(
+    brief: ICDecisionBrief | None,
+    top_idea: TradeIdea | None,
+) -> str:
+    raw = str(
+        getattr(brief, "direction", "")
+        or getattr(top_idea, "direction", "")
+        or "Watch"
+    ).casefold().replace("-", " ")
+    mapping = {
+        "long": "Long",
+        "short": "Short",
+        "relative value": "Relative Value",
+        "relativevalue": "Relative Value",
+    }
+    return mapping.get(raw, "Watch")
+
+
+def _candidate_requires_more_validation(top_idea: TradeIdea | None) -> bool:
+    if top_idea is None:
+        return True
+    gate = getattr(top_idea, "gate_result", None)
+    if gate is not None and not bool(getattr(gate, "eligible", False)):
+        return True
+    events = list(getattr(top_idea, "source_events", ()) or ())
+    if not events:
+        return True
+    for event in events:
+        metrics = getattr(event, "metrics", {}) or {}
+        grade = str(metrics.get("thesis_grade_status") or "").casefold()
+        if grade in {"watch item", "not thesis-grade", "unmapped"}:
+            return True
+        if metrics.get("normalization_required") or metrics.get("direction_validation_required"):
+            return True
+    return False
 
 
 def build_ic_implied_expectations_snapshot(
@@ -336,6 +461,8 @@ def build_prioritized_research_queue(
     work_order: EvidenceWorkOrder,
     *,
     ticker: str = "",
+    cik: str = "",
+    exchange: str = "",
     research_requests: Iterable[Any] = (),
     research_questions: Iterable[Any] = (),
     qa_findings: Iterable[Any] = (),
@@ -347,6 +474,7 @@ def build_prioritized_research_queue(
     normalized_ticker = str(ticker or "").upper()
     event_id, event_date = _priority_action_event(events)
     candidates: list[PrioritizedResearchAction] = []
+    intent_resolver = ResearchIntentResolver()
     for item in work_order.items:
         if str(item.status).casefold() in {"resolved", "closed"}:
             continue
@@ -405,13 +533,18 @@ def build_prioritized_research_queue(
                 action_kind,
                 event_id if action_kind == "market_event_attribution" else "",
                 source_families,
+                objective=item.action,
             ),
         ))
 
     for request in research_requests:
         objective = str(getattr(request, "objective", "") or "").strip()
-        if not objective or str(getattr(request, "status", "")).casefold() in {
-            "resolved", "closed"
+        request_status = str(
+            getattr(request, "answer_status", "")
+            or getattr(request, "status", "")
+        ).casefold()
+        if not objective or request_status in {
+            "answered", "resolved", "closed", "completed", "not_needed"
         }:
             continue
         source_families = [
@@ -454,18 +587,36 @@ def build_prioritized_research_queue(
             attempt_summary=_attempt_summary(request),
             resolution_summary=str(getattr(request, "resolution_summary", "") or ""),
             origin_labels=["Independent Research QA"],
+            intent_id=str(getattr(request, "intent_id", "") or ""),
+            mechanism_key=str(getattr(request, "mechanism_key", "") or ""),
+            target_type=str(getattr(request, "target_type", "") or "issuer"),
+            target_id=str(getattr(request, "target_id", "") or normalized_ticker),
+            period_scope=str(getattr(request, "period_scope", "") or "current_research_cutoff"),
+            decision_dependency=str(getattr(request, "decision_dependency", "") or "decision_quality"),
+            answer_status=request_status,
             semantic_key=_semantic_action_key(
                 normalized_ticker,
                 action_kind,
                 event_id if action_kind == "market_event_attribution" else "",
                 source_families,
+                objective=objective,
+                related_claim_ids=list(
+                    getattr(request, "affected_claim_ids", []) or []
+                ),
+                related_finding_ids=list(
+                    getattr(request, "affected_finding_ids", []) or []
+                ),
             ),
         ))
 
     for question in research_questions:
         title = str(getattr(question, "title", "") or "").strip()
-        if not title or str(getattr(question, "status", "")).casefold() in {
-            "resolved", "closed"
+        question_status = str(
+            getattr(question, "answer_status", "")
+            or getattr(question, "status", "")
+        ).casefold()
+        if not title or question_status in {
+            "answered", "resolved", "closed", "completed", "not_needed"
         }:
             continue
         sources = list(getattr(question, "primary_source_types", []) or [])
@@ -496,8 +647,19 @@ def build_prioritized_research_queue(
             required_source_families=[str(value) for value in sources],
             completion_criteria=list(getattr(question, "acceptance_criteria", []) or []),
             origin_labels=["Research question"],
+            intent_id=str(getattr(question, "intent_id", "") or ""),
+            mechanism_key=str(getattr(question, "mechanism_key", "") or ""),
+            target_type=str(getattr(question, "target_type", "") or "issuer"),
+            target_id=str(getattr(question, "target_id", "") or normalized_ticker),
+            period_scope=str(getattr(question, "period_scope", "") or "current_research_cutoff"),
+            decision_dependency=str(getattr(question, "decision_dependency", "") or "decision_quality"),
+            answer_status=question_status,
             semantic_key=_semantic_action_key(
-                normalized_ticker, action_kind, "", [str(value) for value in sources]
+                normalized_ticker,
+                action_kind,
+                "",
+                [str(value) for value in sources],
+                objective=title,
             ),
         ))
 
@@ -564,6 +726,49 @@ def build_prioritized_research_queue(
         for request_id in list(getattr(finding, "evidence_request_ids", []) or [])
     }
     for candidate in candidates:
+        if not candidate.intent_id:
+            answer_state = str(candidate.answer_status or "").casefold()
+            if answer_state not in {
+                "planned", "researching", "answered", "partially_answered",
+                "blocked_by_source_access", "blocked_by_provider_failure",
+                "cancelled",
+            }:
+                answer_state = (
+                    "partially_answered"
+                    if "attempt" in answer_state else "researching"
+                )
+            mapped = intent_resolver.resolve_legacy(
+                ticker=normalized_ticker,
+                cik=cik,
+                exchange=exchange,
+                action_kind=candidate.action_kind,
+                mechanism_key=candidate.mechanism_key,
+                target_type=candidate.target_type,
+                target_id=candidate.target_id,
+                period_scope=candidate.period_scope,
+                event_id=candidate.event_id,
+                decision_dependency=candidate.decision_dependency,
+                title=candidate.title,
+                objective=candidate.objective,
+                question_status="researching",
+                answer_status=answer_state,
+                remaining_work=(candidate.objective,),
+                origin_refs=tuple(
+                    [candidate.action_id]
+                    + candidate.related_work_order_ids
+                    + candidate.related_research_request_ids
+                ),
+                materiality=candidate.materiality,
+            )
+            if mapped.intent is not None:
+                research_intent = intent_resolver.upsert(mapped.intent).intent
+                candidate.intent_id = research_intent.intent_id
+                candidate.mechanism_key = research_intent.mechanism_key
+                candidate.target_type = research_intent.target_type
+                candidate.target_id = research_intent.target_id
+                candidate.period_scope = research_intent.period_scope
+                candidate.decision_dependency = research_intent.decision_dependency
+                candidate.remaining_work = list(research_intent.remaining_work)
         related_findings = list(candidate.related_finding_ids)
         for request_id in candidate.related_research_request_ids:
             finding_id = finding_by_request.get(request_id, "")
@@ -606,10 +811,14 @@ def reconcile_targeted_investigation_action(
             item for item in actions
             if (action_id and (
                 item.action_id == action_id
+                or action_id in item.alias_action_ids
                 or action_id in item.related_research_request_ids
                 or action_id in item.related_work_order_ids
             ))
-            or (semantic_key and item.semantic_key == semantic_key)
+            or (semantic_key and (
+                item.semantic_key == semantic_key
+                or semantic_key in item.alias_semantic_keys
+            ))
         ),
         None,
     )
@@ -639,20 +848,23 @@ def reconcile_targeted_investigation_action(
         ))
         target.status = "attempted_unresolved"
         target.attempt_summary = (
-            "Attempted via " + ", ".join(sources)
-            + "; outcome: " + ", ".join(statuses) + "."
+            "Source retrieval attempted via " + ", ".join(sources)
+            + "; retrieval status: " + ", ".join(statuses) + "."
         )
         failure = next(
             (
                 str(getattr(item, "message", "") or "")
                 for item in attempts
-                if str(getattr(item, "message", "") or "")
+                if str(getattr(item, "status", "") or "").casefold()
+                in {"failed", "unavailable", "retrieval_failed", "rejected"}
+                and str(getattr(item, "message", "") or "")
             ),
             "",
         )
         target.blocking_reason = failure or (
-            "The targeted retrieval completed, but the action's completion "
-            "criteria were not satisfied."
+            "Source records were retrieved or validated, but they were not "
+            "assembled into a period-aligned answer that satisfied this "
+            "investigation's completion criteria."
         )
     else:
         target.status = "not_attempted_missing_connector"
@@ -665,6 +877,69 @@ def reconcile_targeted_investigation_action(
             "the unavailable source family."
         )
     return target
+
+
+def reconcile_investigation_actions_with_answers(
+    actions: list[PrioritizedResearchAction],
+    *,
+    cash_conversion_recurrence: Any | None = None,
+) -> list[PrioritizedResearchAction]:
+    """Project validated intent answers onto their one canonical action.
+
+    This keeps Decision, Evidence, and saved/demo results consistent without
+    inferring completion from display wording or from a generic completed run.
+    """
+
+    bridge = cash_conversion_recurrence
+    if bridge is None:
+        return actions
+    assessment = getattr(bridge, "assessment", None)
+    if assessment is None:
+        return actions
+    action = next((
+        item for item in actions
+        if str(getattr(item, "action_kind", "") or "")
+        == "cash_conversion_analysis"
+    ), None)
+    if action is None:
+        return actions
+    qa_freshness = str(getattr(bridge, "qa_freshness", "") or "not_reviewed")
+    material_gaps = tuple(getattr(assessment, "material_gaps", ()) or ())
+    deterministic_answered = (
+        str(getattr(bridge, "status", "") or "") == "answered"
+        and not material_gaps
+    )
+    qa_closed = qa_freshness in {"closed", "closed_with_residual_risk"}
+    action.attempt_summary = (
+        f"Compared {getattr(assessment, 'comparison_periods', 0)} duration-aligned "
+        "TTM periods using admitted financial facts."
+    )
+    action.resolution_summary = str(
+        getattr(assessment, "direct_answer", "") or ""
+    )
+    action.intent_id = str(getattr(bridge, "intent_id", "") or action.intent_id)
+    if deterministic_answered and qa_closed:
+        action.status = "resolved"
+        action.answer_status = "answered"
+        action.remaining_work = []
+        action.blocking_reason = ""
+    elif deterministic_answered:
+        action.status = "qa_pending"
+        # The deterministic research question is answered; QA freshness is a
+        # separate lifecycle dimension and must not downgrade answer coverage.
+        action.answer_status = "answered"
+        action.remaining_work = [
+            "Run Independent Research QA against the current bridge and closure snapshot."
+        ]
+        action.blocking_reason = "Independent QA has not closed this answer."
+    else:
+        action.status = "partially_answered"
+        action.answer_status = "partially_answered"
+        action.remaining_work = list(material_gaps)
+        action.blocking_reason = str(
+            getattr(assessment, "strongest_limitation", "") or ""
+        )
+    return actions
 
 
 def _action_kind(channel: str, action: str, source_type: str) -> str:
@@ -680,7 +955,11 @@ def _action_kind(channel: str, action: str, source_type: str) -> str:
         return "market_event_attribution"
     if any(token in text for token in ("bull/base/bear", "valuation", "scenario payoff", "reverse dcf")):
         return "valuation_scenarios"
-    if any(token in text for token in ("cash generation", "liquidity", "cash conversion", "free cash flow")):
+    if any(token in text for token in (
+        "cash generation", "liquidity", "cash conversion", "free cash flow",
+        "cash-flow", "cash flow", "operating cash", "working capital",
+        "capital returns",
+    )):
         return "cash_conversion_analysis"
     if any(token in text for token in ("gross margin", "pricing", "volume", "mix", "cost mechanism")):
         return "operating_driver_analysis"
@@ -750,10 +1029,72 @@ def _semantic_action_key(
     action_kind: str,
     event_id: str,
     source_families: list[str],
+    *,
+    objective: str = "",
+    related_claim_ids: Iterable[str] = (),
+    related_finding_ids: Iterable[str] = (),
 ) -> str:
-    family = sorted(source_families)[0] if source_families else "any"
-    target = event_id if action_kind == "market_event_attribution" else "company"
+    family = _semantic_source_family(action_kind, source_families)
+    if action_kind == "market_event_attribution":
+        target = event_id or _semantic_objective_target(objective)
+    elif action_kind in {
+        "cash_conversion_analysis",
+        "consensus_revision_capture",
+        "operating_driver_analysis",
+        "valuation_scenarios",
+        "external_theme_validation",
+    }:
+        # These controlled action kinds already describe the company-level
+        # decision target. Treat wording variants from work orders, QA requests,
+        # and research questions as one investigation.
+        target = "company"
+    else:
+        scoped_ids = sorted({
+            str(value) for value in (*related_claim_ids, *related_finding_ids)
+            if value
+        })
+        target = (
+            "scope-" + hashlib.sha256("|".join(scoped_ids).encode("utf-8")).hexdigest()[:12]
+            if scoped_ids
+            else _semantic_objective_target(objective)
+        )
     return f"{action_kind}:{ticker or 'unknown'}:{target}:{family}"
+
+
+def _semantic_source_family(
+    action_kind: str,
+    source_families: Iterable[str],
+) -> str:
+    """Collapse compatible source labels without merging unrelated topics."""
+
+    controlled = {
+        "cash_conversion_analysis": "financial_primary",
+        "operating_driver_analysis": "operating_primary",
+        "valuation_scenarios": "valuation_inputs",
+        "consensus_revision_capture": "point_in_time_expectations",
+        "external_theme_validation": "external_theme",
+    }
+    if action_kind in controlled:
+        return controlled[action_kind]
+    normalized = sorted({
+        re.sub(r"[^a-z0-9]+", "_", str(value).casefold()).strip("_")
+        for value in source_families
+        if value
+    })
+    return normalized[0] if normalized else "any"
+
+
+def _semantic_objective_target(objective: str) -> str:
+    normalized = re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        str(objective or "").casefold(),
+    ).strip()
+    if not normalized:
+        return "unspecified"
+    # A hash keeps internal keys bounded and prevents long model-generated
+    # objectives from leaking into manifests or routine diagnostics.
+    return "topic-" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
 
 
 def _priority_action_event(events: Iterable[Any]) -> tuple[str, str]:

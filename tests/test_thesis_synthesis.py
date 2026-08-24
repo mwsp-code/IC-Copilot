@@ -640,6 +640,41 @@ class ThesisSynthesisTests(unittest.TestCase):
         self.assertEqual(provider.complete_json({})["verdict"], "ok")
         self.assertEqual(provider.provider_name, "qwen")
 
+    def test_openai_compatible_provider_repairs_malformed_json_once(self) -> None:
+        responses = iter([
+            {
+                "choices": [{"message": {"content": '{"summary":"cut'}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 3},
+            },
+            {
+                "choices": [{"message": {"content": '{"summary":"repaired"}'}}],
+                "usage": {"prompt_tokens": 14, "completion_tokens": 4},
+            },
+        ])
+        calls = []
+
+        def fetch(url, payload, headers, timeout):
+            calls.append(payload)
+            return next(responses)
+
+        provider = OpenAICompatibleProvider(
+            api_key="secret",
+            model="model",
+            base_url="https://example.test/v1",
+            provider_name="deepseek",
+            fetch_json=fetch,
+        )
+
+        self.assertEqual(provider.complete_json({"role": "primary_revision"}), {
+            "summary": "repaired"
+        })
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(provider.last_usage["total_tokens"], 31)
+        self.assertIn(
+            "malformed or truncated JSON",
+            calls[1]["messages"][-1]["content"],
+        )
+
     def test_anthropic_provider_parses_mocked_response(self) -> None:
         provider = AnthropicProvider(
             api_key="secret",

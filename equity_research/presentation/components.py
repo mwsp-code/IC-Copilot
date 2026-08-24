@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 from typing import Any, Callable, Iterable
 
 from equity_research.application import price_csv_template
@@ -12,11 +13,13 @@ from .view_models import (
     EvidenceReferenceViewModel,
     IntegrityTimelineViewModel,
     InvestigationActionViewModel,
+    InvestigationJourneyViewModel,
     ModelValuationViewModel,
     PublicationReadinessViewModel,
     PublicationRepairIntent,
     ResearchRouteViewModel,
     ResearchRequestCardViewModel,
+    ResearchSessionViewModel,
 )
 
 
@@ -147,6 +150,55 @@ def render_research_route_header(
         st.caption("Relevant next actions: " + ", ".join(model.action_references))
 
 
+def render_research_session_workbench(
+    st: Any,
+    model: ResearchSessionViewModel | None,
+) -> None:
+    if model is None:
+        return
+    with st.expander("Agent research answers", expanded=True):
+        st.caption(
+            f"{model.provider_label or 'Configured primary researcher'} · "
+            f"{model.budget_label} · {model.answered_count} answered · "
+            f"{model.partial_count} partial · {model.total_count} shown"
+        )
+        for question in model.questions[:6]:
+            with st.container(border=True):
+                render_status_badge(
+                    st,
+                    question.domain,
+                    question.status.replace("_", " ").title(),
+                )
+                st.markdown(f"**{question.title}**")
+                if question.answer:
+                    st.write(question.answer)
+                    st.caption(
+                        f"Confidence: {question.confidence} · "
+                        f"{question.evidence_count} admitted evidence reference(s)"
+                    )
+                else:
+                    st.caption(
+                        "Not researched in this bounded run; retained in the agenda."
+                    )
+                if question.strongest_limitation:
+                    st.warning(question.strongest_limitation)
+                if question.remaining_work:
+                    with st.expander("What remains", expanded=False):
+                        for item in question.remaining_work:
+                            st.markdown(f"- {item}")
+        if len(model.questions) > 6:
+            st.caption(
+                f"Showing 6 of {len(model.questions)} route-relevant questions. "
+                "The complete agenda and provenance remain under Evidence and Audit."
+            )
+        if model.stopping_reason:
+            st.caption(
+                "Research stopped because: "
+                + model.stopping_reason.replace("_", " ").rstrip(".")
+                + "."
+            )
+
+
 def render_investigation_action_register(
     st: Any,
     actions: Iterable[InvestigationActionViewModel],
@@ -193,12 +245,35 @@ def render_research_request_card(
         render_status_badge(
             st,
             f"{request.priority} priority request",
-            request.status.replace("_", " ").title(),
+            request.answer_status.replace("_", " ").title(),
         )
-        st.write(request.objective)
+        st.markdown(f"**{request.objective}**")
+        if request.answer:
+            st.write(request.answer)
+        if request.confidence and request.confidence != "Unknown":
+            st.caption(
+                "Answer confidence: " + request.confidence
+                + (f" · {request.confidence_reason}" if request.confidence_reason else "")
+            )
+        if request.blocking_reason:
+            st.warning(request.blocking_reason)
+        st.caption(
+            "Request workflow: " + request.status.replace("_", " ").title()
+        )
         if request.source_families:
             st.caption("Source families: " + ", ".join(request.source_families))
-        with st.expander("Request details", expanded=False):
+        with st.expander("Evidence found and remaining work", expanded=False):
+            if request.evidence_found:
+                st.markdown("**What the attempt established**")
+                for item in request.evidence_found:
+                    st.markdown(f"- {item}")
+            if request.evidence_missing:
+                st.markdown("**What is still missing**")
+                for item in request.evidence_missing:
+                    st.markdown(f"- {item}")
+            if request.next_step:
+                st.markdown("**Next step**")
+                st.write(request.next_step)
             if request.confirming_evidence:
                 st.write("Confirming evidence sought: " + "; ".join(request.confirming_evidence))
             if request.contradicting_evidence:
@@ -207,6 +282,20 @@ def render_research_request_card(
                 st.write("Connectors attempted: " + ", ".join(request.attempted_connectors))
             if request.stopping_rule:
                 st.write("Stopping rule: " + request.stopping_rule)
+            if request.resolution_summary:
+                st.write("Resolution: " + request.resolution_summary)
+            flow = [
+                value for value in (
+                    request.search_summary,
+                    request.reading_summary,
+                    request.extraction_summary,
+                    request.calculation_summary,
+                ) if value
+            ]
+            if flow:
+                st.markdown("**How the app researched this question**")
+                for item in flow:
+                    st.markdown(f"- {item}")
 
 
 def render_candidate_status_row(
@@ -267,7 +356,83 @@ def render_bounded_data_table(
         st.caption(f"Showing {max_rows} of {len(values)} rows.")
 
 
-def render_evidence_page_overview(st: Any, model: EvidencePageViewModel) -> None:
+def render_evidence_page_overview(st: Any, model: EvidencePageViewModel) -> str:
+    requested_intent = ""
+    if model.investigation_trail is not None:
+        trail = model.investigation_trail
+        render_section_header(
+            st,
+            "Investigation evidence trail",
+            "Follow the selected question from Research Request through evidence admission and conclusion change.",
+        )
+        with st.container(border=True):
+            render_status_badge(
+                st,
+                "Answer so far",
+                trail.answer_status.replace("_", " ").title(),
+            )
+            _render_plain_text(st, trail.question, strong=True)
+            if trail.answer:
+                _render_plain_text(st, trail.answer)
+            answer_metrics = [
+                ("Confidence", trail.confidence),
+                ("Coverage", trail.coverage),
+                ("Comparison", (
+                    f"{len(trail.period_comparison)} comparable TTM periods"
+                    if trail.period_comparison else "No period bridge"
+                )),
+                ("Independent QA", trail.qa_freshness.replace("_", " ").title()),
+            ]
+            render_metric_cards(st, answer_metrics)
+            if trail.period_comparison:
+                st.markdown("**Comparable cash-conversion periods**")
+                render_bounded_data_table(
+                    st,
+                    trail.period_comparison,
+                    max_rows=2,
+                    empty_title="No comparable periods",
+                    empty_reason="A duration-aligned comparison was not available.",
+                )
+            if trail.evidence_found:
+                st.markdown("**Strongest supporting result**")
+                for item in trail.evidence_found[:2]:
+                    _render_plain_text(st, item, list_item=True)
+            for heading, rows in trail.component_sections:
+                with st.expander(heading, expanded=False):
+                    render_bounded_data_table(
+                        st,
+                        rows,
+                        max_rows=10,
+                        empty_title="No component detail",
+                        empty_reason="This component was not separately disclosed.",
+                    )
+            if trail.evidence_missing:
+                st.markdown("**Remaining material action**")
+                _render_plain_text(st, trail.evidence_missing[0], list_item=True)
+            if trail.next_step:
+                st.info("Next step: " + trail.next_step)
+            if trail.qa_freshness in {"pending", "stale", "not_reviewed"} and trail.period_comparison:
+                if st.button(
+                    "Run QA for refreshed answer",
+                    key="run_qa_for_refreshed_cash_conversion",
+                    use_container_width=True,
+                ):
+                    requested_intent = "run_refreshed_answer_qa"
+            with st.expander("How the investigation progressed", expanded=False):
+                render_status_badge(st, "Run outcome", trail.outcome)
+                for step in trail.steps:
+                    render_status_badge(
+                        st,
+                        step.label,
+                        step.status.replace("_", " ").title(),
+                    )
+                    st.caption(step.summary)
+            st.caption(
+                "Sandbox leads: "
+                f"{trail.relevant_candidate_count} relevant; "
+                f"{trail.hidden_candidate_count} rejected or hidden. "
+                "Existing admitted evidence is counted separately."
+            )
     render_section_header(
         st,
         "Evidence integrity",
@@ -279,32 +444,177 @@ def render_evidence_page_overview(st: Any, model: EvidencePageViewModel) -> None
         ("Contradictions", str(model.contradiction_count)),
         ("Research requests", str(len(model.requests))),
     ])
-    render_section_header(st, "Targeted Research Requests")
-    if model.requests:
-        for request in model.requests[:8]:
-            render_research_request_card(st, request)
-    else:
-        render_actionable_empty_state(
+    with st.expander("Complete evidence inventory", expanded=model.investigation_trail is None):
+        render_section_header(st, "Targeted Research Requests")
+        if model.request_groups:
+            for group_label, requests in model.request_groups:
+                st.markdown(f"**{group_label} · {len(requests)}**")
+                for request in requests[:6]:
+                    render_research_request_card(st, request)
+                if len(requests) > 6:
+                    st.caption(f"Showing 6 of {len(requests)} requests in this group.")
+        else:
+            render_actionable_empty_state(
+                st,
+                title="No Research Requests",
+                reason="The auditor did not generate a targeted request, or Independent QA was not run.",
+            )
+        render_section_header(
             st,
-            title="No Research Requests",
-            reason="The auditor did not generate a targeted request, or Independent QA was not run.",
+            "Research Sandbox",
+            "Discovered candidates stay quarantined until registered retrieval and common admission checks succeed.",
         )
-    render_section_header(
-        st,
-        "Research Sandbox",
-        "Discovered candidates stay quarantined until registered retrieval and common admission checks succeed.",
-    )
-    if model.candidates:
-        for candidate in model.candidates[:12]:
-            render_candidate_status_row(st, candidate)
-        if len(model.candidates) > 12:
-            st.caption(f"Showing 12 of {len(model.candidates)} candidates.")
+        st.caption(
+            f"{model.relevant_candidate_count + model.hidden_candidate_count} candidates discovered · "
+            f"{model.relevant_candidate_count} relevant · "
+            f"{model.hidden_candidate_count} rejected or hidden"
+        )
+        if model.candidates:
+            for candidate in model.candidates[:8]:
+                render_candidate_status_row(st, candidate)
+            if len(model.candidates) > 8:
+                st.caption(f"Showing 8 of {len(model.candidates)} relevant candidates.")
+        else:
+            render_actionable_empty_state(
+                st,
+                title="No relevant Sandbox candidates",
+                reason="Discovery was unnecessary, not attempted, or produced only off-scope or rejected metadata leads.",
+            )
+    return requested_intent
+
+
+def _render_plain_text(
+    st: Any,
+    value: str,
+    *,
+    strong: bool = False,
+    list_item: bool = False,
+) -> None:
+    """Render untrusted prose literally, without Markdown/LaTeX parsing."""
+
+    escaped = html.escape(str(value or ""), quote=True).replace("\n", "<br>")
+    if list_item:
+        markup = f"<ul><li>{escaped}</li></ul>"
+    elif strong:
+        markup = f"<p><strong>{escaped}</strong></p>"
     else:
-        render_actionable_empty_state(
-            st,
-            title="No Sandbox candidates",
-            reason="Candidate discovery was unnecessary, not attempted, or produced no valid metadata leads.",
-        )
+        markup = f"<p>{escaped}</p>"
+    st.markdown(markup, unsafe_allow_html=True)
+
+
+def render_investigation_journey(
+    st: Any,
+    model: InvestigationJourneyViewModel,
+    *,
+    heading: str | None = None,
+    compact: bool = False,
+    on_open_evidence: Any | None = None,
+) -> str:
+    title = heading or ("Research journey" if model.active else "Investigation result")
+    with st.container(border=True):
+        st.markdown(f"#### {title} · {model.operation_label}")
+        if compact and not model.active:
+            render_metric_cards(st, [
+                ("Run", model.run_status.replace("_", " ").title() or model.outcome or "Completed"),
+                ("Answer", model.answer_status.replace("_", " ").title() or "Unavailable"),
+                ("Independent QA", model.qa_label),
+            ])
+            if model.direct_answer:
+                _render_plain_text(st, model.direct_answer)
+            if model.change_summaries:
+                st.caption("What changed: " + model.change_summaries[0])
+            if model.strongest_limitation:
+                st.caption("Limitation: " + model.strongest_limitation)
+            st.button(
+                "Open full evidence trail",
+                key=f"open-evidence-trail-{model.ticker}-{model.operation_label}",
+                use_container_width=True,
+                on_click=on_open_evidence,
+            )
+            return ""
+        if compact and model.active:
+            st.progress(model.progress_percent, text=model.progress_label)
+            st.caption(
+                f"{model.ticker} · {model.current_stage} · "
+                f"{model.elapsed_label} elapsed · {model.qa_label}"
+            )
+            if model.execution_state:
+                st.caption(_execution_state_copy(model.execution_state))
+            return ""
+        if model.objective and model.objective.casefold() != model.operation_label.casefold():
+            st.caption(model.objective)
+        if model.active:
+            st.progress(model.progress_percent, text=model.progress_label)
+            st.caption(
+                f"{model.ticker} · {model.current_stage} · "
+                f"{model.elapsed_label} elapsed · {model.qa_label}"
+            )
+            if model.execution_state:
+                st.caption(_execution_state_copy(model.execution_state))
+        else:
+            render_metric_cards(st, [
+                ("Outcome", model.outcome or "Completed"),
+                ("Evidence admitted", str(model.admitted_evidence_count)),
+                ("Restart recovery", model.persistence_status or "Not reported"),
+            ])
+            if model.direct_answer:
+                render_status_badge(
+                    st,
+                    "Direct answer",
+                    model.answer_status.replace("_", " ").title()
+                    or "Completed",
+                )
+                st.write(model.direct_answer)
+                st.caption(f"Confidence: {model.confidence}")
+                if model.key_evidence:
+                    with st.expander("Key evidence and findings", expanded=False):
+                        for item in model.key_evidence:
+                            st.write(f"- {item}")
+                if model.strongest_limitation:
+                    st.info("Strongest limitation: " + model.strongest_limitation)
+        with st.expander("Stage details", expanded=False):
+            for stage in model.stages:
+                icon = (
+                    "✓" if stage.status == "completed"
+                    else "●" if stage.status == "active"
+                    else "○"
+                )
+                st.caption(f"{icon} {stage.label}")
+        if model.change_summaries:
+            st.markdown("**What changed**")
+            for item in model.change_summaries[:4]:
+                st.write(f"- {item}")
+        if model.remaining_actions:
+            with st.expander("What remains to investigate", expanded=False):
+                for item in model.remaining_actions[:3]:
+                    st.write(f"- {item}")
+    return ""
+
+
+def _execution_state_copy(state: str) -> str:
+    return {
+        "starting": "Starting local Codex.",
+        "active": "Codex is reviewing the scoped evidence.",
+        "quiet_but_running": (
+            "Codex is still running; no new progress event has arrived recently."
+        ),
+        "validating_output": "Validating the structured Codex response.",
+        "completed": "Codex review completed.",
+        "authentication_required": "Local Codex needs authentication.",
+        "provider_unavailable": "Local Codex is temporarily unavailable.",
+        "hard_deadline_exceeded": (
+            "The Codex deadline was reached; completed research was preserved."
+        ),
+        "process_exit_failed": "Local Codex exited without a valid result.",
+        "output_schema_failed": "The Codex response failed structured validation.",
+        "cancelled": "Codex review was cancelled.",
+        "interrupted_by_restart": (
+            "Codex review was interrupted; completed research is preserved."
+        ),
+        "cli_update_required": (
+            "Update the Codex CLI to enable observable local review."
+        ),
+    }.get(str(state or "").casefold(), "Local Codex status is updating.")
 
 
 def render_decision_page(
@@ -328,14 +638,16 @@ def render_decision_page(
         )
 
     with st.container(border=True):
-        render_status_badge(st, "Investment conclusion", model.confidence)
+        render_status_badge(st, "Recommendation", model.direction)
         st.markdown(f"#### {model.verdict}")
         st.write(model.thesis)
         render_metric_cards(st, [
             ("Stage", model.stage),
-            ("Direction", model.direction),
+            ("Recommendation", model.direction),
             ("Confidence", model.confidence),
         ])
+        if model.recommendation_reason:
+            st.caption(model.recommendation_reason)
         why_now, next_decision = st.columns(2)
         with why_now:
             st.markdown("**Why now**")
@@ -456,8 +768,11 @@ def render_decision_page(
     else:
         render_actionable_empty_state(
             st,
-            title="No historical analogs",
-            reason="No episode passed the current discovery and source-quality rules.",
+            title="No credible historical playbook yet",
+            reason=(
+                "No issuer- and mechanism-eligible episode passed the current scope, "
+                "source, and audit rules. Investigate a historical playbook when it is decision-relevant."
+            ),
         )
 
     if model.story_lenses:
@@ -625,6 +940,20 @@ def render_publication_readiness(
     st.caption(
         f"Semantic quality: {model.semantic_quality} · {model.progress_label}"
     )
+    if model.repair_progress:
+        symbols = {
+            "Reused": "✓",
+            "Ready to retry": "●",
+            "Pending": "○",
+        }
+        with st.container(border=True):
+            for stage in model.repair_progress:
+                st.markdown(
+                    f"{symbols.get(stage.status, '•')} "
+                    f"**{stage.label}** · {stage.status}"
+                )
+            if model.execution_note:
+                st.caption(model.execution_note)
     for card in model.repair_cards:
         with st.container(border=True):
             render_status_badge(st, card.title, card.status)
@@ -641,7 +970,7 @@ def render_publication_readiness(
                     st.caption(f"Attempts: {card.attempts}")
     if model.can_repair:
         if st.button(
-            "Repair and recheck",
+            model.primary_action_label,
             type="primary",
             use_container_width=True,
             key="publication-repair-and-recheck",
@@ -650,6 +979,12 @@ def render_publication_readiness(
                 intent_type="repair_and_recheck",
                 action_ids=tuple(
                     card.action_id for card in model.repair_cards if card.action_id
+                ),
+                retry_stages=(
+                    ("closure_checker",)
+                    if model.primary_action_label
+                    == "Retry Independent QA closure"
+                    else ()
                 ),
             )
     elif not model.publication_eligible:

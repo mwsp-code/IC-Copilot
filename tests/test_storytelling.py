@@ -3,33 +3,96 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from equity_research.contributor_tools import build_contribution_pack, save_contribution_pack
 from equity_research.models import ChangeEvent, MetricResolutionAudit, ProbabilityProvenance
 from equity_research.sample_data import demo_result
 from equity_research.presentation.view_models import build_decision_brief_view_model
-from equity_research.storytelling import _event_drawers, build_bull_bear_judge, demo_cases
+from equity_research.storytelling import (
+    _event_drawers,
+    build_bull_bear_judge,
+    demo_cases,
+    public_demo_cases,
+)
 
 
 def test_demo_gallery_cases_are_keyless_and_story_focused() -> None:
     cases = demo_cases()
     tickers = {case.ticker for case in cases}
 
-    assert {"AAPL", "NVDA", "ORCL", "BABA", "TSLA", "GS", "SPCX"}.issubset(tickers)
+    assert {"AAPL", "NVDA", "ORCL", "BABA", "BLK", "TSLA", "GS", "SPCX"}.issubset(tickers)
     assert all(case.network_required is False for case in cases)
     assert all(case.lesson for case in cases)
     assert all(case.screenshot_focus for case in cases)
     current_cases = [
         case for case in cases
-        if case.ticker in {"AAPL", "NVDA", "ORCL", "BABA", "TSLA", "GS"}
+        if case.ticker in {"AAPL", "NVDA", "ORCL", "BABA", "BLK", "TSLA", "GS"}
     ]
-    assert all(case.content_version.startswith("Deep Initiation Premium") for case in current_cases)
+    assert all(case.content_version.startswith("Deep Initiation") for case in current_cases)
     assert all(case.research_profile.startswith("Deep Initiation") for case in current_cases)
     assert all(case.budget_mode == "Premium" for case in current_cases)
     assert all("Wisburg research lens" in case.enabled_layers or "Wisburg bilingual research lens" in case.enabled_layers for case in current_cases)
     oracle = next(case for case in cases if case.ticker == "ORCL")
     assert oracle.content_version == "Deep Initiation Premium 2026.07.24"
     assert oracle.refreshed_at == "2026-07-24"
+    apple = next(case for case in cases if case.ticker == "AAPL")
+    assert apple.content_version == (
+        "Deep Initiation + Independent Research QA 2026.08.11"
+    )
+    assert apple.refreshed_at == "2026-08-11"
+    assert "Agent-led primary research" in apple.enabled_layers
+    assert "Independent Research QA" in apple.enabled_layers
     assert all(case.refreshed_at for case in cases)
+
+
+def test_public_demo_gallery_is_limited_to_curated_examples() -> None:
+    assert [case.ticker for case in public_demo_cases()] == [
+        "AAPL", "NVDA", "BABA", "BLK",
+    ]
+
+
+def test_blk_demo_uses_current_registrant_and_asset_manager_lens() -> None:
+    result = demo_result("BLK")
+
+    assert result.demo_case is not None
+    assert result.demo_case.demo_id == "blk-organic-flows-fee-growth"
+    assert result.identity.name == "BlackRock, Inc."
+    assert result.identity.cik == "0002012383"
+    assert result.entity_resolution.cik == "0002012383"
+    metric_names = {metric.name for metric in result.metrics}
+    assert {
+        "Assets Under Management",
+        "Quarterly Net Inflows",
+        "Organic Base Fee Growth",
+        "Operating Margin",
+        "Diluted Shares",
+    }.issubset(metric_names)
+    assert result.peer_universe.status == "Configured"
+    assert {peer.ticker for peer in result.peer_universe.peers} == {
+        "TROW", "BEN", "BX", "KKR", "APO", "BAM",
+    }
+    peer_rows = [
+        row
+        for rows in result.peer_metric_readthrough.values()
+        for row in rows
+    ]
+    assert {row.peer_ticker for row in peer_rows} == {"TROW", "BX", "KKR"}
+    assert all("Apple" not in event.title for event in result.events)
+    assert all("aapl-" not in filing.primary_doc for filing in result.filings)
+    playbook = build_decision_brief_view_model(result).historical_analogs
+    assert [item.episode for item in playbook] == [
+        "BlackRock BGI and iShares integration cycle, 2009-2012",
+        "BlackRock market drawdown and flow-resilience test, 2021-2023",
+    ]
+    assert all("Apple" not in item.episode for item in playbook)
+    assert all("NVIDIA" not in item.episode for item in playbook)
+    assert all(item.kind == "Candidate to investigate" for item in playbook)
+
+
+def test_unregistered_demo_ticker_never_reuses_aapl_profile() -> None:
+    with pytest.raises(ValueError, match="No registered deterministic demo profile"):
+        demo_result("NOTAREALTICKER")
 
 
 def test_nvda_demo_is_current_ticker_specific_and_has_peer_operating_evidence() -> None:
@@ -47,6 +110,13 @@ def test_nvda_demo_is_current_ticker_specific_and_has_peer_operating_evidence() 
     readthroughs = [row for rows in result.peer_metric_readthrough.values() for row in rows]
     assert {row.peer_ticker for row in readthroughs} == {"TSM", "AMD"}
     assert all(row.status == "available" and row.observations for row in readthroughs)
+
+    playbook = build_decision_brief_view_model(result).historical_analogs
+    assert playbook
+    assert all("Apple" not in item.episode for item in playbook)
+    assert all(item.kind == "Candidate to investigate" for item in playbook)
+    assert any("Cisco supplier commitments" in item.episode for item in playbook)
+    assert all("not thesis evidence" in item.status for item in playbook)
 
 
 def test_orcl_demo_uses_live_capture_semantics_without_vendor_payloads() -> None:
@@ -146,7 +216,7 @@ def test_demo_stage_remains_authoritative_after_work_order_closure() -> None:
 
 
 def test_latest_showcase_demos_use_deep_premium_macro_and_wisburg_fixtures() -> None:
-    for ticker in ["NVDA", "ORCL", "BABA", "AAPL", "TSLA", "GS"]:
+    for ticker in ["NVDA", "ORCL", "BABA", "BLK", "AAPL", "TSLA", "GS"]:
         result = demo_result(ticker)
 
         assert result.research_profile.profile_id == "deep_initiation", ticker
@@ -176,6 +246,7 @@ def test_latest_showcase_demos_use_deep_premium_macro_and_wisburg_fixtures() -> 
 def test_named_demos_do_not_reuse_aapl_financial_payload() -> None:
     expected_markers = {
         "BABA": "Share Repurchases",
+        "BLK": "Assets Under Management",
         "ORCL": "Remaining Performance Obligations",
         "TSLA": "Deliveries",
         "GS": "Investment Banking Fees",

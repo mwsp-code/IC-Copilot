@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from urllib.error import URLError
 
+import pytest
+
 import server
 from equity_research.adr_profiles import adr_profile_for
 from equity_research.driver_templates import TEMPLATES, template_for_event
@@ -26,7 +28,7 @@ class FixtureProvider:
 
 
 def test_golden_demo_outputs_have_story_sections_and_do_not_bypass_gates() -> None:
-    for ticker in ["AAPL", "BABA", "TSLA", "GS", "NVDA", "JPM"]:
+    for ticker in ["AAPL", "NVDA", "BABA", "BLK"]:
         result = demo_result(ticker)
 
         assert result.research_scout.status == "Available"
@@ -47,6 +49,9 @@ def test_golden_demo_outputs_have_story_sections_and_do_not_bypass_gates() -> No
                 assert idea.gate_result.high_conviction
             if idea.direction == "Watch":
                 assert idea.stage in {"Candidate", "Watch"}
+
+    with pytest.raises(ValueError, match="No registered deterministic demo profile"):
+        demo_result("JPM")
 
 
 def test_driver_templates_cover_all_core_thesis_families_with_falsification_sources() -> None:

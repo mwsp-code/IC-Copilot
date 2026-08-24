@@ -7,6 +7,7 @@ from pathlib import Path
 
 from equity_research.local_secrets import (
     DpapiFileBackend,
+    FallbackKeyringBackend,
     LLM_PROFILE_SECRET_PREFIX,
     LocalSecretsManager,
     ValidationResult,
@@ -138,6 +139,47 @@ class LocalSecretsTests(unittest.TestCase):
             self.assertEqual(finnhub["backend"], "windows_dpapi")
             manager.delete("FINNHUB_API_KEY")
             self.assertIsNone(manager.get("FINNHUB_API_KEY"))
+
+    def test_fallback_backend_reads_legacy_store_but_writes_one_canonical_store(self) -> None:
+        primary = FakeKeyring()
+        legacy = FakeKeyring()
+        legacy.set_password(
+            "equity-research-radar",
+            f"{LLM_PROFILE_SECRET_PREFIX}legacy-profile",
+            "legacy-secret",
+        )
+        backend = FallbackKeyringBackend(
+            primary,
+            legacy,
+            backend_name="windows_dpapi",
+        )
+        manager = LocalSecretsManager(backend=backend)
+
+        self.assertEqual(
+            manager.get(f"{LLM_PROFILE_SECRET_PREFIX}legacy-profile"),
+            "legacy-secret",
+        )
+        manager.set(f"{LLM_PROFILE_SECRET_PREFIX}new-profile", "new-secret")
+        self.assertEqual(
+            primary.get_password(
+                "equity-research-radar",
+                f"{LLM_PROFILE_SECRET_PREFIX}new-profile",
+            ),
+            "new-secret",
+        )
+        self.assertIsNone(
+            legacy.get_password(
+                "equity-research-radar",
+                f"{LLM_PROFILE_SECRET_PREFIX}new-profile",
+            )
+        )
+        manager.delete(f"{LLM_PROFILE_SECRET_PREFIX}legacy-profile")
+        self.assertIsNone(
+            legacy.get_password(
+                "equity-research-radar",
+                f"{LLM_PROFILE_SECRET_PREFIX}legacy-profile",
+            )
+        )
 
     def test_save_validated_keys_only_saves_valid_provider_keys(self) -> None:
         backend = FakeKeyring()

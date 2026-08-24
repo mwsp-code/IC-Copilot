@@ -50,3 +50,23 @@ jobs:
           done
           cat /tmp/ic-copilot.log
           exit 1
+
+  windows-python39-compatibility:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Verify saved research, launch intent, and Streamlit compatibility
+        run: >-
+          python -m pytest -q
+          tests/test_saved_research.py
+          tests/test_streamlit_saved_research.py
+          tests/test_investigation_storytelling.py
+          tests/test_research_launch.py
+          tests/test_agent_led_research.py

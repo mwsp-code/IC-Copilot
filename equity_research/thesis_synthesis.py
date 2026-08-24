@@ -95,6 +95,7 @@ class OpenAICompatibleProvider:
         max_tokens: int | None = None,
         reasoning_effort: str = "",
         thinking_enabled: bool = False,
+        structured_json_repair_attempts: int = 1,
         fetch_json=None,
     ) -> None:
         self.api_key = api_key
@@ -105,6 +106,9 @@ class OpenAICompatibleProvider:
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
         self.thinking_enabled = thinking_enabled
+        self.structured_json_repair_attempts = max(
+            0, min(1, int(structured_json_repair_attempts))
+        )
         self.fetch_json = fetch_json or _post_json
         self.last_usage: dict[str, int] = {}
         self.last_cost_usd: float | None = None
@@ -144,7 +148,51 @@ class OpenAICompatibleProvider:
         content = (((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         if not content:
             raise RuntimeError("LLM provider returned no message content.")
-        return json.loads(content)
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            if self.structured_json_repair_attempts < 1:
+                raise
+            repair_payload = dict(payload)
+            repair_payload["temperature"] = 0
+            repair_payload["messages"] = [
+                *payload["messages"],
+                {"role": "assistant", "content": content[:32_000]},
+                {
+                    "role": "user",
+                    "content": (
+                        "The preceding response is malformed or truncated JSON. "
+                        "Return one corrected, compact JSON object only. Preserve "
+                        "only statements supported by the original supplied "
+                        "evidence. Answer every material audit finding. Omit "
+                        "optional repetition before truncating any string or "
+                        "object. Do not add commentary or Markdown fences."
+                    ),
+                },
+            ]
+            repaired_response = self.fetch_json(
+                f"{self.base_url}/chat/completions",
+                repair_payload,
+                headers,
+                self.timeout_seconds,
+            )
+            self.last_usage = _sum_provider_usage(
+                self.last_usage,
+                _normalized_provider_usage(repaired_response.get("usage")),
+            )
+            repair_cost = _provider_reported_cost(repaired_response)
+            if self.last_cost_usd is None:
+                self.last_cost_usd = repair_cost
+            elif repair_cost is not None:
+                self.last_cost_usd += repair_cost
+            repaired_content = (((
+                repaired_response.get("choices") or [{}]
+            )[0].get("message") or {}).get("content") or "").strip()
+            if not repaired_content:
+                raise RuntimeError(
+                    "LLM provider returned no content while repairing structured JSON."
+                )
+            return json.loads(repaired_content)
 
 
 class AnthropicProvider:
@@ -2317,6 +2365,23 @@ def _provider_reported_cost(response: object) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _sum_provider_usage(
+    first: dict[str, int], second: dict[str, int]
+) -> dict[str, int]:
+    """Combine bounded structured-response retries for usage accounting."""
+
+    return {
+        key: int(first.get(key, 0)) + int(second.get(key, 0))
+        for key in {
+            "input_tokens",
+            "cached_input_tokens",
+            "reasoning_tokens",
+            "output_tokens",
+            "total_tokens",
+        }
+    }
 
 
 def _redact(text: str) -> str:

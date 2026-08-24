@@ -16,8 +16,10 @@ from equity_research.application import (
 from equity_research.application.research_runs import ResearchReadiness
 from equity_research.decision_intelligence import (
     build_prioritized_research_queue,
+    reconcile_investigation_actions_with_answers,
     reconcile_targeted_investigation_action,
 )
+from equity_research.domain.research_integrity import ResearchRequest
 from equity_research.models import (
     EvidenceWorkOrder,
     EvidenceWorkOrderItem,
@@ -32,6 +34,41 @@ from equity_research.presentation.view_models import (
     build_research_route_view_model,
 )
 from equity_research.sample_data import demo_result
+
+
+def test_validated_closed_cash_answer_resolves_its_canonical_action() -> None:
+    action = PrioritizedResearchAction(
+        rank=1,
+        action_id="cash-action",
+        title="Test AAPL cash conversion",
+        why_it_matters="Decision relevant",
+        source_type="sec_filing",
+        status="genuinely_unavailable",
+        decision_impact="Thesis quality",
+        action_kind="cash_conversion_analysis",
+    )
+    assessment = SimpleNamespace(
+        direct_answer="Cash conversion appears recurring.",
+        comparison_periods=2,
+        material_gaps=(),
+        strongest_limitation="No material gap.",
+    )
+    bridge = SimpleNamespace(
+        status="answered",
+        qa_freshness="closed_with_residual_risk",
+        assessment=assessment,
+        intent_id="cash-intent",
+    )
+
+    reconcile_investigation_actions_with_answers(
+        [action],
+        cash_conversion_recurrence=bridge,
+    )
+
+    assert action.status == "resolved"
+    assert action.answer_status == "answered"
+    assert action.resolution_summary == "Cash conversion appears recurring."
+    assert action.remaining_work == []
 
 
 def test_saved_profile_connection_is_ready_without_unused_environment_slot() -> None:
@@ -149,6 +186,63 @@ def test_duplicate_cash_conversion_actions_merge_into_one_canonical_item() -> No
     assert "AAPL" in queue[0].objective
 
 
+def test_cash_request_merges_with_cash_action_but_not_unrelated_filing_work() -> None:
+    work_order = EvidenceWorkOrder(
+        status="Open",
+        summary="Targeted primary-source work",
+        items=[EvidenceWorkOrderItem(
+            "cash-work",
+            "High",
+            "Cash flow statement",
+            "Test cash generation after working capital and capex",
+            "cash_flow_statement",
+            "Comparable cash conversion bridge",
+            "Tests cash-conversion durability",
+            "Evidence work order",
+            blocks_research_ready=True,
+        )],
+    )
+    cash_request = ResearchRequest(
+        request_id="audit_cash_conversion",
+        objective=(
+            "Obtain a same-duration cash-flow bridge from net income to operating "
+            "cash flow, working capital, cash taxes, capex, financing, dividends, "
+            "and repurchases."
+        ),
+        required_source_families=["sec_filing", "issuer_ir_report"],
+        status="attempted",
+    )
+    unrelated_request = ResearchRequest(
+        request_id="audit_balance_sheet_classification",
+        objective=(
+            "Explain the intangible-asset increase and related amortization or "
+            "impairment exposure."
+        ),
+        required_source_families=["sec_filing", "issuer_announcement"],
+        status="attempted",
+    )
+
+    queue = build_prioritized_research_queue(
+        work_order,
+        ticker="AAPL",
+        research_requests=[cash_request, unrelated_request],
+    )
+
+    cash = next(
+        item for item in queue
+        if item.action_kind == "cash_conversion_analysis"
+    )
+    other = next(
+        item for item in queue
+        if "intangible" in item.objective.casefold()
+    )
+    assert cash.related_work_order_ids == ["cash-work"]
+    assert cash.related_research_request_ids == ["audit_cash_conversion"]
+    assert "audit_balance_sheet_classification" not in cash.related_research_request_ids
+    assert other.action_id == "audit_balance_sheet_classification"
+    assert len(queue) == 2
+
+
 def test_missing_valuation_input_becomes_a_targeted_automatic_action() -> None:
     work_order = EvidenceWorkOrder(
         status="Closed",
@@ -188,8 +282,12 @@ def test_decision_uses_canonical_actions_and_research_has_lazy_route_models() ->
     assert 0 < len(decision.investigation_actions) <= 3
     assert decision.market_expectations is not None
     assert decision.market_expectations.price_label == "Price at research cutoff"
-    assert decision.market_expectations.current_price == "$313.33"
-    assert decision.market_expectations.price_as_of == "2026-08-07"
+    assert decision.market_expectations.current_price == (
+        f"${result.market_implied_expectations.current_price:,.2f}"
+    )
+    assert decision.market_expectations.price_as_of == (
+        result.market_implied_expectations.price_as_of
+    )
     assert all(
         action.intent_type in {
             "configure_source",
@@ -198,13 +296,16 @@ def test_decision_uses_canonical_actions_and_research_has_lazy_route_models() ->
         }
         for action in decision.investigation_actions
     )
+    assert all(
+        action.action_kind != "cash_conversion_analysis"
+        for action in decision.investigation_actions
+    )
     cash_action = next(
-        action for action in decision.investigation_actions
+        action for action in result.prioritized_research_queue
         if action.action_kind == "cash_conversion_analysis"
     )
-    assert cash_action.intent_type == "execute_action"
-    assert cash_action.primary_cta == "Run investigation"
-    assert cash_action.setup_steps == ()
+    assert cash_action.status == "qa_pending"
+    assert cash_action.answer_status == "answered"
     assert decision.debate is not None
     assert decision.debate.resolution_actions == ()
     for route in ResearchSubroute:
@@ -233,10 +334,10 @@ def test_manual_action_keeps_the_two_step_source_setup_handoff() -> None:
     action = build_decision_brief_view_model(result).investigation_actions[0]
 
     assert action.intent_type == "configure_source"
-    assert action.primary_cta == "Set up source, then rerun"
+    assert action.primary_cta == "Select investigation"
     assert action.setup_steps == (
         "Set up an eligible source.",
-        "Run / Refresh Research to create an updated live result.",
+        "Confirm the selected investigation in the sidebar.",
     )
 
 
@@ -271,8 +372,41 @@ def test_targeted_action_records_attempt_without_claiming_resolution() -> None:
 
     assert matched is action
     assert action.status == "attempted_unresolved"
-    assert "Attempted via sec_filing" in action.attempt_summary
+    assert "Source retrieval attempted via sec_filing" in action.attempt_summary
     assert "No additional period-aligned" in action.blocking_reason
+
+
+def test_validated_source_records_do_not_claim_the_question_was_answered() -> None:
+    action = PrioritizedResearchAction(
+        rank=1,
+        action_id="cash-action",
+        title="Test AAPL cash conversion",
+        why_it_matters="Tests recurring cash generation.",
+        source_type="SEC filing",
+        status="planned",
+        decision_impact="Thesis quality",
+        auto_resolvable=True,
+        action_kind="cash_conversion_analysis",
+        related_research_request_ids=["audit_cash_conversion"],
+    )
+    lifecycle = SourceRetrievalLifecycle(
+        request_id="audit_cash_conversion",
+        source_id="sec-filing",
+        status="validated",
+        source_type="sec_filing",
+        message="12 source record(s) reached validated.",
+    )
+
+    reconcile_targeted_investigation_action(
+        [action],
+        action_id="audit_cash_conversion",
+        retrieval_lifecycles=[lifecycle],
+    )
+
+    assert action.status == "attempted_unresolved"
+    assert "retrieval status: validated" in action.attempt_summary
+    assert "completion criteria" in action.blocking_reason
+    assert "12 source record" not in action.blocking_reason
 
 
 def test_price_csv_requires_beta_history_and_supports_complete_aapl_package() -> None:

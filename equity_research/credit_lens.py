@@ -2,10 +2,22 @@ from __future__ import annotations
 
 from .analysis import format_number
 from .models import CompanyIdentity, CreditBridgeCheck, CreditLens, CreditMetric, FinancialMetric
+from .domain.research_ontology import BusinessArchetype, SecurityResearchProfile
 
 
-def build_credit_lens(identity: CompanyIdentity, metrics: list[FinancialMetric]) -> CreditLens:
-    by_name = {metric.name: metric for metric in metrics}
+def build_credit_lens(
+    identity: CompanyIdentity,
+    metrics: list[FinancialMetric],
+    security_profile: SecurityResearchProfile | None = None,
+) -> CreditLens:
+    asset_manager = bool(
+        security_profile
+        and security_profile.business_archetype == BusinessArchetype.ASSET_MANAGER
+    )
+    by_name = {
+        metric.name: metric for metric in metrics
+        if not asset_manager or _is_corporate_credit_metric(metric.name)
+    }
     cash = _first_metric(by_name, "Cash", "Cash and Cash Equivalents")
     debt_metric = _first_metric(by_name, "Long-term Debt", "Current Debt", "Short-term Debt")
     debt = _sum_metrics(by_name, "Long-term Debt", "Current Debt", "Short-term Debt")
@@ -47,15 +59,21 @@ def build_credit_lens(identity: CompanyIdentity, metrics: list[FinancialMetric])
         else:
             risks.append(f"Net debt position of {format_number(net_debt)} {cash.unit}.")
 
-    debt_to_revenue = debt / revenue.value if debt is not None and revenue and revenue.value else None
+    debt_to_revenue = (
+        debt / revenue.value
+        if not asset_manager and debt is not None and revenue and revenue.value
+        else None
+    )
     if debt_to_revenue is not None:
         metrics_out.append(_metric("Debt / revenue", debt_to_revenue, "x", _ratio_status(debt_to_revenue, 0.5, 1.5), "Debt load relative to revenue scale.", revenue))
         if debt_to_revenue >= 1.5:
             risks.append(f"Debt/revenue is elevated at {debt_to_revenue:.1f}x.")
         elif debt_to_revenue <= 0.5:
             positives.append(f"Debt/revenue is modest at {debt_to_revenue:.1f}x.")
-    else:
+    elif not asset_manager:
         gaps.append("Debt/revenue could not be computed.")
+    else:
+        gaps.append("Asset-manager leverage requires a duration-aligned corporate earnings or cash-flow denominator; quarterly revenue is not used.")
 
     interest_coverage = operating_income.value / interest.value if operating_income and interest and interest.value else None
     if interest_coverage is not None:
@@ -77,27 +95,43 @@ def build_credit_lens(identity: CompanyIdentity, metrics: list[FinancialMetric])
     else:
         gaps.append("Operating cash flow and capex are needed for free-cash-flow conversion.")
 
-    current_ratio = current_assets.value / current_liabilities.value if current_assets and current_liabilities and current_liabilities.value else None
+    current_ratio = (
+        current_assets.value / current_liabilities.value
+        if not asset_manager and current_assets and current_liabilities and current_liabilities.value
+        else None
+    )
     if current_ratio is not None:
         metrics_out.append(_metric("Current ratio", current_ratio, "x", _coverage_status(current_ratio, weak=1.0, strong=1.5), "Short-term asset coverage of current liabilities.", current_assets))
         if current_ratio < 1:
             risks.append(f"Current ratio is below 1.0x at {current_ratio:.1f}x.")
         elif current_ratio >= 1.5:
             positives.append(f"Current ratio is healthy at {current_ratio:.1f}x.")
-    else:
+    elif not asset_manager:
         gaps.append("Current assets/current liabilities are needed for short-term liquidity analysis.")
 
     risk_level = _risk_level(risks, positives, metrics_out)
     status = "Available" if metrics_out else "Unavailable"
     if metrics_out and gaps:
         status = "Partial"
-    summary = _summary(identity, risk_level, positives, risks, gaps)
-    required = [
-        "Debt footnote and maturity schedule.",
-        "Cash location/restriction disclosure.",
-        "Interest-rate mix, refinancing terms, covenants, and rating/spread evidence.",
-        "Operating cash flow, capex, working-capital bridge, and dividend/buyback commitments.",
-    ]
+    summary = (
+        _asset_manager_summary(identity, risk_level, positives, risks, gaps)
+        if asset_manager else _summary(identity, risk_level, positives, risks, gaps)
+    )
+    required = (
+        [
+            "Corporate cash and restricted-cash disclosure.",
+            "Corporate debt footnote, maturities, interest coverage, and acquisition funding.",
+            "Commitments, guarantees, capital returns, and rating/spread evidence.",
+            "Explicit exclusion of client, fund, custodial, consolidated-VIE, and non-recourse balances.",
+        ]
+        if asset_manager else
+        [
+            "Debt footnote and maturity schedule.",
+            "Cash location/restriction disclosure.",
+            "Interest-rate mix, refinancing terms, covenants, and rating/spread evidence.",
+            "Operating cash flow, capex, working-capital bridge, and dividend/buyback commitments.",
+        ]
+    )
     credit_bridge = _credit_bridge_checks(
         by_name,
         cash,
@@ -127,6 +161,36 @@ def build_credit_lens(identity: CompanyIdentity, metrics: list[FinancialMetric])
         falsification_tests=falsification_tests,
         data_gaps=_dedupe(gaps)[:8],
     )
+
+
+def _is_corporate_credit_metric(name: str) -> bool:
+    lowered = str(name or "").casefold()
+    excluded = (
+        "client", "fund", "custodial", "assets under management", "aum",
+        "consolidated vie", "non-recourse",
+    )
+    return not any(term in lowered for term in excluded)
+
+
+def _asset_manager_summary(
+    identity: CompanyIdentity,
+    risk_level: str,
+    positives: list[str],
+    risks: list[str],
+    gaps: list[str],
+) -> str:
+    if risk_level == "Unknown":
+        return (
+            f"{identity.ticker} corporate credit is not established: client and fund "
+            "balances are excluded, while corporate cash, debt, maturities, coverage, "
+            "commitments, and acquisition funding remain incomplete."
+        )
+    lead = f"{identity.ticker} corporate credit risk screens as {risk_level.lower()} on eligible corporate balances only."
+    if risks:
+        return lead + " Main issue: " + risks[0]
+    if positives:
+        return lead + " Main support: " + positives[0]
+    return lead + (" Key missing input: " + gaps[0] if gaps else "")
 
 
 def _first_metric(by_name: dict[str, FinancialMetric], *names: str) -> FinancialMetric | None:

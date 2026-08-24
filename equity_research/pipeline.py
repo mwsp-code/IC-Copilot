@@ -57,11 +57,36 @@ from .auditable_retrieval import (
     semantic_evidence_hash,
     source_record_to_evidence,
 )
+from .application.source_capabilities import (
+    build_source_capability_registry,
+)
+from .application.research_tools import ContextResearchToolGateway
+from .application.cash_conversion import cash_conversion_intent_id
+from .application.repair_stage_execution import (
+    RepairExecutionPolicy,
+    RepairStageCheckpointRepository,
+    RepairStageSupervisor,
+    SupervisedRepairProvider,
+)
+from .domain.financial_facts import CashConversionRecurrenceBridge
+from .domain.research_ontology import (
+    CausalBridgeAssessment,
+    LensAssessment,
+    RESEARCH_MECHANISMS,
+    SecurityResearchProfile,
+    SecurityResearchProfileResolver,
+    build_research_assessments,
+)
+from .application.investigation_action_canonicalization import (
+    canonicalize_investigation_actions,
+)
 from .hybrid_research import (
     DEFAULT_HYBRID_PROFILE,
     HYBRID_PROMPT_VERSION,
     OPENAI_RESPONSES_BACKEND,
     build_hybrid_research_context,
+    build_quality_repair_replay_provider,
+    closure_requires_primary_revision,
     hybrid_prompt_is_resumable,
     hybrid_run_from_payload,
     run_hybrid_research,
@@ -83,9 +108,11 @@ from .market_implied import build_market_implied_expectations
 from .decision_intelligence import (
     build_catalyst_clock,
     build_decision_delta,
+    build_decision_recommendation,
     build_decision_snapshot,
     build_ic_implied_expectations_snapshot,
     build_prioritized_research_queue,
+    reconcile_investigation_actions_with_answers,
     reconcile_targeted_investigation_action,
 )
 from .earnings_surprise_proxy import build_earnings_surprise_proxy
@@ -150,6 +177,7 @@ from .models import (
     ExecutionBackend,
     IcImpliedExpectationsSnapshot,
     DecisionDelta,
+    DecisionRecommendation,
     CatalystClock,
     PrioritizedResearchAction,
     ICDecisionBrief,
@@ -433,6 +461,12 @@ class ResearchResult:
     adaptive_macro_plan: AdaptiveMacroResearchPlan | None = None
     research_ai_plan: ResearchAiExecutionPlan | None = None
     independent_research_qa: IndependentResearchQaRun | None = None
+    cash_conversion_recurrence: CashConversionRecurrenceBridge | None = None
+    decision_recommendation: DecisionRecommendation | None = None
+    security_research_profile: SecurityResearchProfile | None = None
+    causal_bridge_assessment: CausalBridgeAssessment | None = None
+    equity_lens_assessment: LensAssessment | None = None
+    credit_lens_assessment: LensAssessment | None = None
 
 
 @dataclass
@@ -453,6 +487,8 @@ def _targeted_investigation_request(
     objective: str,
     source_families: tuple[str, ...],
     preferred_connectors: tuple[str, ...],
+    intent_id: str = "",
+    target_id: str = "",
 ) -> dict[str, object]:
     """Translate a canonical Decision action into one registered request."""
 
@@ -479,6 +515,23 @@ def _targeted_investigation_request(
         "priority": "High",
         "materiality": "High",
         "status": "planned",
+        "intent_id": intent_id,
+        "agenda_item_id": intent_id,
+        "question_key": (
+            "cash_generation_capital_allocation"
+            if action_kind == "cash_conversion_analysis" else ""
+        ),
+        "mechanism_key": (
+            "recurring_cash_conversion"
+            if action_kind == "cash_conversion_analysis" else ""
+        ),
+        "target_type": "issuer",
+        "target_id": target_id,
+        "period_scope": (
+            "comparable_ttm"
+            if action_kind == "cash_conversion_analysis" else ""
+        ),
+        "decision_dependency": "thesis_quality",
         "stopping_rule": (
             "Stop when admitted evidence satisfies the action or registered "
             "sources are exhausted."
@@ -510,6 +563,7 @@ def run_us_equity_research(
     investigation_action_kind: str = "",
     investigation_objective: str = "",
     investigation_semantic_key: str = "",
+    research_intent_id: str = "",
     investigation_source_families: tuple[str, ...] = (),
     investigation_preferred_connectors: tuple[str, ...] = (),
     enable_hybrid_research: bool = False,
@@ -524,8 +578,14 @@ def run_us_equity_research(
     research_execution_policy: ResearchExecutionPolicy | None = None,
     data_access_policy: DataAccessPolicy | None = None,
     enable_independent_research_qa: bool | None = None,
+    enable_agent_research: bool | None = None,
     enable_two_choreography_benchmark: bool = False,
     resume_hybrid_run_id: str = "",
+    agent_research_effort: str = "answer_oriented",
+    repair_stage_repository: RepairStageCheckpointRepository | None = None,
+    repair_attempt_id: str = "",
+    repair_execution_policy: RepairExecutionPolicy | None = None,
+    repair_retry_stages: tuple[str, ...] = (),
 ) -> ResearchResult:
     profiler = profiler or ResearchProfiler(enabled=config.ENABLE_RESEARCH_PROFILING)
     profiler.start()
@@ -538,6 +598,11 @@ def run_us_equity_research(
         enable_hybrid_research
         if enable_independent_research_qa is None
         else bool(enable_independent_research_qa)
+    )
+    agent_research_enabled = (
+        bool(enable_hybrid_research)
+        if enable_agent_research is None
+        else bool(enable_agent_research)
     )
     sec = sec_client or SecClient()
     store = store or ResearchStore()
@@ -771,15 +836,17 @@ def run_us_equity_research(
     events = annotate_change_importance(sec_events + management_events)
     peer_universe = peer_universe_for(identity.ticker)
     manual_data_status = scan_manual_data_sources(identity.ticker)
+    security_research_profile = SecurityResearchProfileResolver().resolve(identity)
     company_economics = build_company_economics(
         identity,
         metrics,
         events,
         peer_universe,
         manual_data_status,
+        security_research_profile,
     )
-    credit_lens = build_credit_lens(identity, metrics)
-    attach_economic_context(events, company_economics)
+    credit_lens = build_credit_lens(identity, metrics, security_research_profile)
+    attach_economic_context(events, company_economics, security_research_profile)
     contextual_disclosure_comparisons = attach_disclosure_intelligence(
         identity.ticker,
         events,
@@ -804,7 +871,7 @@ def run_us_equity_research(
         historical_trend_summaries=historical_trend_summaries,
     )
     metric_assessments = build_metric_change_assessments(
-        events, metrics, historical_research.selected_event_ids,
+        events, metrics, historical_research.selected_event_ids, security_research_profile,
     )
     playbook_portfolio = build_playbook_portfolio(
         identity, company_economics, events, management_package,
@@ -953,6 +1020,7 @@ def run_us_equity_research(
         metrics,
         consensus_package,
         current_price,
+        security_research_profile,
     )
     evidence_ledger = build_evidence_ledger(
         identity.ticker, ideas, events, management_package.cross_checks,
@@ -1200,6 +1268,7 @@ def run_us_equity_research(
         store=store,
         sec_client=sec,
         price_client=price_client,
+        security_profile=security_research_profile,
     )
     thesis_validation = build_thesis_validation_report(
         ideas,
@@ -1253,7 +1322,7 @@ def run_us_equity_research(
     research_ai_plan: ResearchAiExecutionPlan | None = None
     independent_research_qa: IndependentResearchQaRun | None = None
     hybrid_context: dict | None = None
-    if independent_qa_enabled:
+    if agent_research_enabled or independent_qa_enabled:
         hybrid_context = build_hybrid_research_context(
             identity,
             research_profile_id=selected_profile.profile_id,
@@ -1266,6 +1335,7 @@ def run_us_equity_research(
             source_plan=source_plan,
             evidence_closure=evidence_closure,
             supplemental_context={
+                "security_research_profile": security_research_profile,
                 "management_sources": management_package,
                 "peer_metric_readthrough": peer_metric_readthrough,
                 "valuation": valuation,
@@ -1273,19 +1343,61 @@ def run_us_equity_research(
                 "market_implied_expectations": market_implied_expectations,
                 "company_model": company_model,
                 "expectations_bridge": expectations_bridge,
+                "consensus": consensus_package,
                 "thesis_clusters": thesis_clusters,
                 "research_questions": research_questions,
                 "playbook_portfolio": playbook_portfolio,
                 "external_evidence_status": external_evidence.status,
+                "adaptive_macro_plan": adaptive_macro_plan,
+                "news_intelligence_summary": {
+                    "status": news_intelligence.status,
+                    "coverage_status": news_intelligence.coverage_status,
+                    "summary": news_intelligence.summary,
+                    "top_debate": news_intelligence.top_debate,
+                },
             },
         )
-        if investigation_action_id:
+        focused_scope = bool(
+            investigation_action_id
+            or research_intent_id
+            or investigation_objective
+        )
+        cash_scope = (
+            "cash" in str(research_intent_id or "").casefold()
+            or "cash conversion" in str(investigation_objective or "").casefold()
+        )
+        # Historical saved queues may carry a stale action kind even when the
+        # canonical intent and objective are unambiguously cash conversion.
+        # The research intent owns routing; legacy display metadata cannot
+        # downgrade this focused investigation to an unrelated connector lane.
+        effective_action_kind = (
+            "cash_conversion_analysis"
+            if cash_scope
+            else investigation_action_kind or "focused_recheck"
+        )
+        if focused_scope:
             targeted_request = _targeted_investigation_request(
-                action_id=investigation_action_id,
-                action_kind=investigation_action_kind,
+                action_id=(
+                    investigation_action_id
+                    or research_intent_id
+                    or hashlib.sha256(
+                        investigation_objective.encode("utf-8")
+                    ).hexdigest()[:20]
+                ),
+                action_kind=effective_action_kind,
                 objective=investigation_objective,
                 source_families=investigation_source_families,
                 preferred_connectors=investigation_preferred_connectors,
+                intent_id=(
+                    cash_conversion_intent_id(
+                        identity.ticker,
+                        cik=identity.cik,
+                        exchange=identity.exchange,
+                    )
+                    if effective_action_kind == "cash_conversion_analysis"
+                    else research_intent_id
+                ),
+                target_id=("cik:" + identity.cik if identity.cik else identity.ticker),
             )
             hybrid_context.setdefault("source_requests", []).insert(
                 0, targeted_request
@@ -1294,8 +1406,9 @@ def run_us_equity_research(
             hybrid_context.setdefault("decision_context", {})[
                 "targeted_investigation"
             ] = {
-                "action_id": investigation_action_id,
-                "action_kind": investigation_action_kind,
+                "action_id": investigation_action_id or research_intent_id,
+                "action_kind": effective_action_kind,
+                "research_intent_id": research_intent_id,
                 "objective": investigation_objective,
                 "completion_rule": (
                     "Do not report this investigation as resolved unless its "
@@ -1320,7 +1433,24 @@ def run_us_equity_research(
             )
         except (TypeError, ValueError):
             previous_hybrid_run = None
-        if previous_hybrid_run is not None and resume_hybrid_run_id:
+        additive_ids: list[str] = []
+        frozen_quality_repair = bool(
+            previous_hybrid_run is not None
+            and resume_hybrid_run_id
+            and previous_hybrid_run.deterministic_validation_status == "passed"
+            and previous_hybrid_run.lifecycle_state == "repair_required"
+        )
+        frozen_repair_context_restored = bool(
+            frozen_quality_repair
+            and _restore_frozen_repair_evidence_context(
+                hybrid_context,
+                previous_hybrid_run,
+            )
+        )
+        if frozen_repair_context_restored:
+            hybrid_context["_requested_resume_run_id"] = resume_hybrid_run_id
+            additive_ids = []
+        elif previous_hybrid_run is not None and resume_hybrid_run_id:
             resume_eligible, additive_ids = partial_rerun_eligible(
                 previous_hybrid_run.evidence_fingerprints,
                 dict(hybrid_context.get("evidence_fingerprints") or {}),
@@ -1332,9 +1462,10 @@ def run_us_equity_research(
             hybrid_context["_partial_rerun_changed_ids"] = additive_ids
             if not resume_eligible:
                 previous_hybrid_run = None
-        _merge_validated_retrieval_cache(
-            hybrid_context, previous_hybrid_run
-        )
+        if not frozen_repair_context_restored:
+            _merge_validated_retrieval_cache(
+                hybrid_context, previous_hybrid_run
+            )
         if (
             previous_hybrid_run is not None
             and previous_hybrid_run.audit_repair_queue is not None
@@ -1401,6 +1532,7 @@ def run_us_equity_research(
             price_client=price_client,
             filings=filings,
             metrics=metrics,
+            company_facts=facts,
             catalog=hybrid_context.get(
                 "searchable_evidence_catalog", []
             ),
@@ -1408,12 +1540,111 @@ def run_us_equity_research(
                 url, ttl_seconds=7 * 24 * 60 * 60
             ),
         )
+        # Application-only deterministic inputs.  They are deliberately kept
+        # behind an underscore key so the agent receives the calculation
+        # result, never mutable domain objects or provider internals.
+        hybrid_context["_market_implied_inputs"] = {
+            "identity": identity,
+            "metrics": metrics,
+            "current_price": current_price,
+            "valuation": valuation,
+            "company_model": company_model,
+            "price_source": recent_market_context.source,
+            "price_as_of": recent_market_context.price_as_of,
+        }
         hybrid_context["_enable_final_audit_repair"] = True
+        hybrid_context["agent_research_depth"] = agent_research_effort
         deepseek_provider = (
-            hybrid_planner_provider or hybrid_checker_provider
+            hybrid_planner_provider
+            or hybrid_checker_provider
+            or llm_provider
         )
         sol_provider = (
             hybrid_executor_provider or hybrid_critic_provider
+        ) if independent_qa_enabled else None
+        closure_repair_replay = bool(
+            previous_hybrid_run is not None
+            and resume_hybrid_run_id
+            and frozen_repair_context_restored
+            and previous_hybrid_run.deterministic_validation_status == "passed"
+            and previous_hybrid_run.lifecycle_state == "repair_required"
+            and sol_provider is not None
+        )
+        if closure_repair_replay:
+            replayable_primary_roles = _closure_repair_replay_roles(
+                previous_hybrid_run
+            )
+            deepseek_provider = build_quality_repair_replay_provider(
+                deepseek_provider,
+                previous_hybrid_run,
+                roles=replayable_primary_roles,
+            )
+            sol_provider = build_quality_repair_replay_provider(
+                sol_provider,
+                previous_hybrid_run,
+                roles=("independent_research_auditor", "adversarial_evidence_scout"),
+            )
+            hybrid_context["repair_execution_mode"] = "revision_and_closure_only"
+            hybrid_context["repair_parent_run_id"] = previous_hybrid_run.run_id
+            if repair_stage_repository is not None:
+                supervisor = RepairStageSupervisor(
+                    attempt_id=(
+                        repair_attempt_id
+                        or hashlib.sha256(
+                            (
+                                "repair-attempt|"
+                                + previous_hybrid_run.run_id
+                                + "|"
+                                + str(hybrid_context.get("evidence_hash") or "")
+                            ).encode("utf-8")
+                        ).hexdigest()[:24]
+                    ),
+                    parent_run_id=previous_hybrid_run.run_id,
+                    ticker=identity.ticker,
+                    evidence_hash=str(hybrid_context.get("evidence_hash") or ""),
+                    repository=repair_stage_repository,
+                    policy=repair_execution_policy,
+                    progress_callback=hybrid_progress_callback,
+                    cancel_requested=(
+                        hybrid_cancel_event.is_set
+                        if hybrid_cancel_event is not None
+                        and callable(getattr(hybrid_cancel_event, "is_set", None))
+                        else None
+                    ),
+                    # A closure-repair replay is user initiated. Permit one
+                    # fresh bounded provider call when an earlier invocation
+                    # stopped for missing authentication or provider credit.
+                    # Automatic retries within the same invocation remain off.
+                    allow_provider_action_retry=True,
+                    authorized_retry_stages=repair_retry_stages,
+                )
+                deepseek_provider = SupervisedRepairProvider(
+                    deepseek_provider,
+                    supervisor,
+                )
+                sol_provider = SupervisedRepairProvider(
+                    sol_provider,
+                    supervisor,
+                )
+                hybrid_context["_repair_stage_supervisor"] = supervisor
+                hybrid_context["repair_attempt_id"] = supervisor.attempt_id
+        capability_registry = build_source_capability_registry(
+            hybrid_context,
+            retrieval_engine=hybrid_context["_retrieval_engine"],
+            local_codex_ready=bool(
+                str(getattr(sol_provider, "provider_name", "") or "")
+                == "codex_local"
+                and getattr(sol_provider, "enabled", True)
+            ),
+        )
+        hybrid_context["_source_capability_registry"] = capability_registry
+        hybrid_context["source_capabilities"] = (
+            capability_registry.prompt_catalog()
+        )
+        hybrid_context["_research_tool_gateway"] = ContextResearchToolGateway(
+            hybrid_context,
+            capability_registry,
+            retrieval_engine=hybrid_context["_retrieval_engine"],
         )
         research_ai_plan = build_research_ai_execution_plan(
             research_execution_policy,
@@ -1431,6 +1662,7 @@ def run_us_equity_research(
             cached_payload
             and not research_execution_policy.cache_bypass
             and not investigation_action_id
+            and not closure_repair_replay
         ):
             try:
                 candidate_cache = hybrid_run_from_payload(cached_payload)
@@ -1491,6 +1723,24 @@ def run_us_equity_research(
         hybrid_research.evidence_hash = str(
             hybrid_context.get("evidence_hash") or hybrid_research.evidence_hash
         )
+        hybrid_research.security_profile_id = security_research_profile.profile_id
+        hybrid_research.core_mechanism_ids = list(dict.fromkeys([
+            *list(security_research_profile.applicable_mechanisms[:1]),
+            *[
+                str(
+                    event.metrics.get("research_mechanism_id")
+                    or event.metrics.get("driver_family")
+                    or ""
+                )
+                for event in events
+                if str(
+                    event.metrics.get("research_mechanism_id")
+                    or event.metrics.get("driver_family")
+                    or ""
+                ) in RESEARCH_MECHANISMS
+            ],
+        ]))
+        hybrid_research.research_ontology_version = security_research_profile.schema_version
         source_candidates = list({
             item.candidate_id: item
             for item in [
@@ -1853,6 +2103,8 @@ def run_us_equity_research(
     prioritized_research_queue = build_prioritized_research_queue(
         evidence_work_order,
         ticker=identity.ticker,
+        cik=identity.cik,
+        exchange=identity.exchange,
         research_requests=(
             independent_research_qa.research_requests
             if independent_research_qa else ()
@@ -1865,6 +2117,19 @@ def run_us_equity_research(
         events=events,
         valuation=valuation,
         limit=20,
+    )
+    prioritized_research_queue = list(
+        canonicalize_investigation_actions(
+            identity.ticker,
+            prioritized_research_queue,
+        ).actions
+    )
+    reconcile_investigation_actions_with_answers(
+        prioritized_research_queue,
+        cash_conversion_recurrence=(
+            hybrid_research.cash_conversion_recurrence
+            if hybrid_research else None
+        ),
     )
     if investigation_action_id:
         reconcile_targeted_investigation_action(
@@ -2007,6 +2272,21 @@ def run_us_equity_research(
     )
     profiler.checkpoint("memo_rendering")
     profiling = profiler.finish()
+    causal_bridge_assessment, equity_lens_assessment, credit_lens_assessment = (
+        build_research_assessments(
+            security_research_profile,
+            metrics,
+            events,
+            one_pager=ic_one_pager,
+            credit_lens=credit_lens,
+        )
+    )
+    if hybrid_research is not None:
+        hybrid_research.lens_assessment_statuses = {
+            "causal_bridge": causal_bridge_assessment.status.value,
+            "equity": equity_lens_assessment.status.value,
+            "credit": credit_lens_assessment.status.value,
+        }
     story_presentation = build_story_presentation(
         identity=identity,
         ideas=ideas,
@@ -2028,7 +2308,14 @@ def run_us_equity_research(
         recent_market_context=recent_market_context,
         decision_delta=decision_delta,
         catalyst_clock=catalyst_clock,
+        causal_bridge_assessment=causal_bridge_assessment,
+        equity_lens_assessment=equity_lens_assessment,
+        credit_lens_assessment=credit_lens_assessment,
     )
+    # The story builder owns construction of the IC brief.  Resolve it before
+    # computing the public recommendation so live runs do not depend on the
+    # later ``**story_presentation`` expansion in the return value.
+    ic_decision_brief = story_presentation.get("ic_decision_brief")
     research_freshness = build_research_freshness(
         run_manifest=run_manifest,
         filings=filings,
@@ -2039,6 +2326,14 @@ def run_us_equity_research(
         llm_run_manifest=thesis_synthesis.llm_manifest,
         dual_model_research=dual_model_research,
         completed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    )
+    decision_recommendation = build_decision_recommendation(
+        ic_decision_brief,
+        ideas[0] if ideas else None,
+        valuation,
+        data_quality,
+        thesis_validation,
+        hybrid_research,
     )
 
     return ResearchResult(
@@ -2190,6 +2485,15 @@ def run_us_equity_research(
         adaptive_macro_plan=adaptive_macro_plan,
         research_ai_plan=research_ai_plan,
         independent_research_qa=independent_research_qa,
+        cash_conversion_recurrence=(
+            hybrid_research.cash_conversion_recurrence
+            if hybrid_research else None
+        ),
+        decision_recommendation=decision_recommendation,
+        security_research_profile=security_research_profile,
+        causal_bridge_assessment=causal_bridge_assessment,
+        equity_lens_assessment=equity_lens_assessment,
+        credit_lens_assessment=credit_lens_assessment,
         **story_presentation,
     )
 
@@ -4372,6 +4676,100 @@ def _merge_validated_retrieval_cache(
     )
     context["evidence_hash"] = evidence_hash
     context["evidence_fingerprints"] = fingerprints
+
+
+def _restore_frozen_repair_evidence_context(
+    context: dict,
+    previous_run: HybridResearchRun,
+) -> bool:
+    """Pin a closure repair to the parent's exact admitted evidence graph.
+
+    An explicit repair of a deterministically validated ``repair_required``
+    artifact is different from refreshing the research.  Live bootstrap data
+    may accumulate between attempts, which previously changed an inexpensive
+    revision/closure retry into a full agent-led run.  The saved normalized
+    records are the immutable, claim-eligible evidence payload for the repair;
+    current data remains available only through a separate refresh command.
+    """
+
+    parent_fingerprints = dict(previous_run.evidence_fingerprints or {})
+    if not parent_fingerprints:
+        return False
+    records_by_id = {
+        record.source_id: record
+        for record in previous_run.normalized_sources
+        if record.source_id in parent_fingerprints
+    }
+    if set(records_by_id) != set(parent_fingerprints):
+        return False
+
+    records = [records_by_id[source_id] for source_id in parent_fingerprints]
+    searchable_catalog = [source_record_to_evidence(record) for record in records]
+    eligible_records = [
+        record for record in records
+        if (
+            record.validation_status in {"validated", "contradicted"}
+            and record.retrieval_status != "metadata_only"
+        )
+    ]
+    evidence_catalog = [
+        source_record_to_evidence(record) for record in eligible_records
+    ]
+    evidence_ids = [record.source_id for record in eligible_records]
+    context["evidence_catalog"] = evidence_catalog
+    context["searchable_evidence_catalog"] = searchable_catalog
+    context["evidence_metadata_catalog"] = searchable_catalog
+    context["normalized_sources"] = [asdict(record) for record in records]
+    context["claim_eligible_evidence_ids"] = evidence_ids
+    context["_opened_evidence_ids"] = evidence_ids
+    frozen_candidates = [
+        asdict(item) for item in previous_run.source_candidates
+    ]
+    frozen_admission_decisions = [
+        asdict(item) for item in previous_run.source_admission_decisions
+    ]
+    context["source_candidates"] = frozen_candidates
+    context["source_admission_decisions"] = frozen_admission_decisions
+    context["_source_candidates"] = frozen_candidates
+    context["_source_admission_decisions"] = frozen_admission_decisions
+    context["evidence_hash"] = previous_run.evidence_hash
+    context["evidence_fingerprints"] = parent_fingerprints
+    context["_partial_rerun_changed_ids"] = []
+    context["_resume_evidence_relationship"] = "frozen_parent_snapshot"
+    context["decision_context"] = {
+        "repair_parent_run_id": previous_run.run_id,
+        "repair_scope": "frozen_evidence_snapshot",
+    }
+    if previous_run.cash_conversion_recurrence is not None:
+        context["cash_conversion_recurrence"] = asdict(
+            previous_run.cash_conversion_recurrence
+        )
+    policy = dict(context.get("quality_first_execution") or {})
+    policy.update({
+        "max_investigation_cycles": 0,
+        "focused_mapping_escalation_limit": 0,
+    })
+    context["quality_first_execution"] = policy
+    return True
+
+
+def _closure_repair_replay_roles(previous_hybrid_run) -> tuple[str, ...]:
+    """Return frozen primary roles that a closure-only resume may replay.
+
+    A completed revision is replayable only when closure itself needs a retry.
+    If closure identified an unanswered material finding or contrary item, the
+    primary must receive that finding and produce a fresh response first.
+    """
+
+    roles = ["research_planner", "primary_investment_analyst"]
+    if not closure_requires_primary_revision(previous_hybrid_run) and any(
+        getattr(item, "role", "") == "primary_revision"
+        and getattr(item, "status", "") == "completed"
+        and getattr(item, "artifact", None) is not None
+        for item in getattr(previous_hybrid_run, "rounds", ()) or ()
+    ):
+        roles.append("primary_revision")
+    return tuple(roles)
 
 
 def _is_validation_rewrite_repair(reason: str) -> bool:

@@ -13,6 +13,7 @@ data/*
 !data/quality_benchmark_cases.csv
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .streamlit/secrets.toml
 .venv/

@@ -33,7 +33,10 @@ strangler migration, legacy public imports remain available through facades.
 ```mermaid
 flowchart TD
     BOOT["Deterministic bootstrap"] --> ADMIT0["Parse, validate, and admit initial evidence"]
-    ADMIT0 --> PRIMARY["Primary research"]
+    ADMIT0 --> CAP["Secret-free source capabilities"]
+    CAP --> PRIMARY["Iterative primary research agent"]
+    PRIMARY --> TOOLS["Search, read, extract, calculate, and replan"]
+    TOOLS --> PRIMARY
     PRIMARY --> VALIDATE["Deterministic claim, mapping, policy, and provenance validation"]
     VALIDATE -->|"material blocker"| REPAIR["Typed repair actions"]
     REPAIR --> VALIDATE
@@ -58,6 +61,11 @@ The secondary order is fixed: frozen audit, adversarial scout, then closure.
 The frozen auditor cannot see later Sandbox activity. Recursion is bounded by
 research depth, cost, provider availability, cancellation, no-new-evidence, and
 no-expected-material-information-gain rules.
+
+The primary agent runs whether or not an independent auditor is configured.
+QA controls the secondary sequence, not access to lead research. Both native
+tool-calling and JSON-only models use the same `ResearchAgentRuntime`; the
+application retains conversation state and executes every tool request.
 
 ## Research completion and publication readiness
 
@@ -139,6 +147,39 @@ existing saved research is not destructively migrated.
 | Industry playbook | `data/industry_playbooks.csv` | economics, catalysts, valuation methods, peer logic |
 | ADR/FPI profile | `data/adr_profiles.csv` | ratio, currency, forms, home exchange, issuer sources |
 | Metric alias | `data/metric_ontology.csv` | canonical metric, source tag, derivation, confidence |
+
+## Archetype and mechanism ontology
+
+Issuer-aware analysis begins with the versioned contracts in
+`equity_research/domain/research_ontology.py`:
+
+```text
+stable issuer identity
+→ SecurityResearchProfile
+→ ResearchMechanism / MetricMechanismDefinition
+→ typed causal, equity, and credit assessments
+→ AnalogEligibilityDecision
+→ presentation and publication gates
+```
+
+Unknown issuers remain `unknown`; they are not silently treated as generic
+operating companies. A new archetype must define its applicable mechanisms,
+metric aliases, required financial paths, valuation family, credit scope, and
+source families. Provider-specific retrieval remains in infrastructure.
+
+Historical candidates pass a hard scope decision before relevance ranking.
+Same-issuer episodes require the same stable issuer identity; cross-industry
+episodes require an explicit shared mechanism and transfer dimension. Generic
+word overlap cannot establish eligibility, and unaudited candidates cannot
+affect valuation, confidence, probabilities, or trade direction.
+
+When extending the ontology, add:
+
+- a versioned profile rule and mechanism definition;
+- metric-alias and false-positive phrase fixtures;
+- typed lens-input assembly behavior;
+- analog eligibility/rejection fixtures;
+- publication-gate and historical-artifact compatibility tests.
 | Demo case | fixtures/sample data | sanitized, no network, deterministic assertions |
 | Publication gate | domain/application registry | typed failure code, repair strategy, completion criteria, events, readable view model, offline fixture |
 
@@ -154,6 +195,15 @@ reads or copies tokens. Every secondary role uses a fresh ephemeral, read-only
 subprocess with repository instructions, writes, shell retrieval, plugins, MCP,
 and direct browsing disabled. Absence or failure never disables deterministic
 or primary research.
+
+Real local executions use `codex exec --json` and consume its JSONL lifecycle
+stream. The app persists only coarse state, last activity, usage totals, and a
+technical thread reference; prompts, reasoning, event content, and credentials
+are never written to repair checkpoints. A quiet interval is visible but does
+not imply failure. Startup, authentication, provider, hard-deadline, schema,
+cancellation, and restart interruptions are distinct outcomes. Completed
+revision and validation checkpoints are reused, so retrying Independent QA
+closure cannot silently rerun primary research or retrieval.
 
 ## UI ownership
 

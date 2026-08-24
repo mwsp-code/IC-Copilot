@@ -1,7 +1,7 @@
 {
   "benchmark": "IC Copilot Research Integrity Benchmark",
   "version": "0.1.0",
-  "generated_at": "2026-07-18T16:51:13.878970+00:00",
+  "generated_at": "2026-08-14T03:33:23.908807+00:00",
   "fixture_only": true,
   "network_required": false,
   "scope_note": "Structural evidence-chain benchmark on sanitized fixtures; it does not measure forecast accuracy or investment returns.",

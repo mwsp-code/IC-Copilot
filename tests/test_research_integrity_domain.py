@@ -131,6 +131,73 @@ def test_instruction_like_source_content_is_rejected_as_untrusted_data() -> None
     assert result.evidence is None
 
 
+def test_off_scope_security_candidate_requires_explicit_related_entity_scope() -> None:
+    candidate = _requested(new_candidate(
+        candidate_type=CandidateType.SOURCE,
+        ticker="MSFT",
+        objective="Unscoped Microsoft news",
+        origin_role="adversarial_evidence_scout",
+        url="https://www.ftc.gov/example",
+        title="Microsoft source",
+        proposed_source_family="primary_official",
+    ))
+    result = EvidenceAdmissionGateway().admit(
+        candidate,
+        _document(candidate.candidate_id),
+        EvidenceAdmissionPolicy(target_ticker="AAPL"),
+    )
+
+    assert result.decision.status == "rejected"
+    assert result.decision.evidence_id == ""
+    assert "targets another security" in result.decision.reason
+
+
+def test_explicit_peer_candidate_can_enter_common_admission_pipeline() -> None:
+    candidate = _requested(new_candidate(
+        candidate_type=CandidateType.CONTRADICTION,
+        ticker="MSFT",
+        objective="Test whether a peer contradicts the AAPL demand mechanism",
+        origin_role="adversarial_evidence_scout",
+        url="https://www.ftc.gov/example",
+        title="Scoped Microsoft peer evidence",
+        proposed_source_family="primary_official",
+        relationship_to_subject="peer",
+        scope_status="in_scope_related_entity",
+        referenced_entities=("MSFT",),
+    ))
+    result = EvidenceAdmissionGateway().admit(
+        candidate,
+        _document(candidate.candidate_id),
+        EvidenceAdmissionPolicy(
+            target_ticker="AAPL",
+            permitted_related_entities=("MSFT",),
+        ),
+    )
+
+    assert "targets another security" not in result.decision.reason
+
+
+def test_candidate_cannot_hide_off_scope_entity_behind_target_ticker() -> None:
+    candidate = _requested(new_candidate(
+        candidate_type=CandidateType.SOURCE,
+        ticker="AAPL",
+        objective="Unscoped company lead",
+        origin_role="adversarial_evidence_scout",
+        url="https://www.ftc.gov/example",
+        title="Other-company source labelled as AAPL",
+        proposed_source_family="primary_official",
+        referenced_entities=("MSFT",),
+    ))
+    result = EvidenceAdmissionGateway().admit(
+        candidate,
+        _document(candidate.candidate_id),
+        EvidenceAdmissionPolicy(target_ticker="AAPL"),
+    )
+
+    assert result.decision.status == "rejected"
+    assert "outside the target security" in result.decision.reason
+
+
 def test_invalid_candidate_transition_and_direct_evidence_attachment_fail() -> None:
     candidate = _candidate()
 

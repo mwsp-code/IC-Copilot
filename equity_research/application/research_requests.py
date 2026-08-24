@@ -145,11 +145,13 @@ class ResearchRequestDispatcher:
             [*request.admitted_evidence_ids, *admitted_ids]
         ))
         if admitted_ids:
-            request.status = "resolved"
+            request.status = "evidence_admitted"
             request.resolution_summary = (
-                f"{len(admitted_ids)} evidence item(s) passed registered retrieval and common admission."
+                f"{len(admitted_ids)} evidence item(s) passed registered retrieval "
+                "and common admission. Downstream analysis must still satisfy the "
+                "Research Request stopping rule."
             )
-            execution.status = "resolved"
+            execution.status = "evidence_admitted"
             execution.stopping_reason = execution.stopping_reason or "admitted_evidence"
         elif execution.attempts:
             request.status = "unavailable"

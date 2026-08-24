@@ -37,6 +37,7 @@ from .research_requests import ResearchRequestDispatcher
 
 _NUMBER_RE = re.compile(r"(?:\$|\b)\d+(?:\.\d+)?(?:%|x|\b)", re.I)
 _MATERIAL = {"critical", "high", "material"}
+DETERMINISTIC_SAFE_REVISION_VERSION = "deterministic-safe-revision-v3"
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,210 @@ class RepairExecutionContext:
     evidence_hash: str
     recursion_depth: int
     event_recorder: Callable[[str, dict[str, Any]], None] | None = None
+
+
+def build_deterministic_safe_primary_revision(
+    prompt: dict[str, Any],
+    *,
+    failure_class: str = "provider_credit_required",
+) -> dict[str, Any]:
+    """Narrow a validated primary artifact when its revision provider stops.
+
+    This is deliberately a *removal* strategy rather than a replacement
+    analyst. It preserves evidence-linked observations, accepts the frozen
+    auditor's limitations, removes directional/valuation conclusions, and
+    converts unsupported claims into research leads. Independent closure is
+    still required before the result can become publication-eligible.
+    """
+
+    primary = prompt.get("investigation_artifact")
+    audit = prompt.get("audit_artifact")
+    primary = dict(primary) if isinstance(primary, dict) else {}
+    audit = dict(audit) if isinstance(audit, dict) else {}
+
+    # A model-authored finding does not become validated merely because it
+    # names admitted evidence. The fallback preserves only observations that
+    # an earlier deterministic stage explicitly marked as passed.
+    established_observations: list[dict[str, Any]] = []
+    for raw in primary.get("validated_observations") or []:
+        if not isinstance(raw, dict):
+            continue
+        statement = str(
+            raw.get("claim") or raw.get("finding") or raw.get("summary") or ""
+        ).strip()
+        evidence_ids = _safe_string_list(raw.get("evidence_ids"))
+        classification = str(raw.get("classification") or "").casefold()
+        validation_status = str(
+            raw.get("validation_status") or raw.get("status") or ""
+        ).casefold()
+        admission_status = str(
+            raw.get("admission_status") or "admitted"
+        ).casefold()
+        if (
+            not statement
+            or not evidence_ids
+            or classification not in {"fact", "validated_observation"}
+            or validation_status not in {"passed", "validated"}
+            or admission_status != "admitted"
+        ):
+            continue
+        established_observations.append({
+            "claim": statement,
+            "classification": "validated_observation",
+            "evidence_ids": evidence_ids,
+        })
+
+    audit_findings: list[dict[str, Any]] = []
+    primary_responses: list[dict[str, Any]] = []
+    research_leads: list[dict[str, Any]] = []
+    for raw in audit.get("findings") or []:
+        if not isinstance(raw, dict):
+            continue
+        finding_id = str(raw.get("finding_id") or "").strip()
+        finding = str(
+            raw.get("finding") or raw.get("summary") or ""
+        ).strip()
+        classification = str(raw.get("classification") or "").strip()
+        evidence_ids = _safe_string_list(raw.get("evidence_ids"))
+        if finding:
+            audit_findings.append({
+                "finding_id": finding_id,
+                "classification": classification or "audit_finding",
+                "finding": finding,
+                "evidence_ids": evidence_ids,
+                "audit_implication": str(raw.get("audit_implication") or ""),
+            })
+        if finding:
+            research_leads.append({
+                "lead_id": stable_contract_id(
+                    "deterministic-safe-revision-audit-lead",
+                    prompt.get("ticker"),
+                    finding_id or finding,
+                ),
+                "statement": finding,
+                "status": "investigation_required",
+                "reason": str(
+                    raw.get("audit_implication")
+                    or "Independent audit finding accepted through conclusion removal."
+                ),
+                "evidence_needed": "",
+                "cannot_support_conclusions": True,
+            })
+        if finding_id:
+            primary_responses.append({
+                "finding_id": finding_id,
+                "state": "accepted",
+                "conclusion_changed": True,
+                "change_summary": (
+                    "Accepted through deterministic narrowing: the disputed "
+                    "conclusion was removed and retained only as an open "
+                    "research lead. It cannot support the thesis, valuation, "
+                    "confidence, or trade direction."
+                ),
+                "evidence_ids": [],
+            })
+
+    for index, raw in enumerate(audit.get("unsupported_claims") or []):
+        if not isinstance(raw, dict):
+            continue
+        statement = str(raw.get("claim") or "").strip()
+        if not statement:
+            continue
+        research_leads.append({
+            "lead_id": stable_contract_id(
+                "deterministic-safe-revision-lead", prompt.get("ticker"), index, statement
+            ),
+            "statement": statement,
+            "status": "investigation_required",
+            "reason": str(raw.get("reason") or "Independent audit did not validate this claim."),
+            "evidence_needed": str(raw.get("evidence_needed") or ""),
+            "cannot_support_conclusions": True,
+        })
+
+    limitations = [
+        str(item.get("limitation") or item.get("summary") or "").strip()
+        for item in audit.get("limitations") or []
+        if isinstance(item, dict)
+    ]
+    if not limitations:
+        limitations = [
+            str(item).strip()
+            for item in audit.get("limitations") or []
+            if str(item).strip()
+        ]
+    limitations.append(
+        "The primary revision provider was unavailable. The application used a "
+        "conservative deterministic narrowing pass; it did not create a new "
+        "investment thesis, valuation, or trade recommendation."
+    )
+
+    strongest = [
+        str(item.get("claim") or "").strip()
+        for item in established_observations[:3]
+        if str(item.get("claim") or "").strip()
+    ]
+    summary = (
+        "Admitted evidence establishes: " + " ".join(strongest)
+        if strongest
+        else "No model-authored directional conclusion survived conservative revision."
+    )
+    summary += (
+        " Independent audit found the causal mechanism, duration, market "
+        "expectations, and valuation unresolved; no trade conclusion is established."
+    )
+
+    source_requests = _dedupe_dicts([
+        *(primary.get("source_requests") or []),
+        *(audit.get("source_requests") or []),
+    ], "request_id")
+    candidate_hypotheses = [
+        value for value in (
+            primary.get("leading_thesis"),
+            *(primary.get("competing_hypotheses") or []),
+        )
+        if isinstance(value, str) and value.strip()
+    ]
+
+    return {
+        "summary": summary,
+        "verdict": "No validated trade conclusion established.",
+        "leading_thesis": (
+            "Candidate hypothesis only; the causal investment mechanism remains unresolved."
+        ),
+        "candidate_hypotheses": candidate_hypotheses,
+        "claims": [],
+        "established_observations": established_observations,
+        # Keep the audit trail outside conclusion-bearing fields. Leaving the
+        # disputed assertions in ``findings`` made closure interpret them as
+        # part of the revised thesis.
+        "findings": [],
+        "addressed_audit_findings": audit_findings,
+        "adverse_hypotheses": [],
+        "risks": [],
+        "limitations": list(dict.fromkeys(item for item in limitations if item)),
+        "monitors": [],
+        "research_leads": _dedupe_dicts(research_leads, "lead_id"),
+        "source_requests": source_requests,
+        "primary_responses": primary_responses,
+        "historical_analog_dossiers": [],
+        "publication_scope": {
+            "status": "residual_diligence",
+            "valuation_or_trade_direction_supported": False,
+            "unsupported_claims_removed": len(research_leads),
+            "revision_mode": "deterministic_safe_narrowing",
+            "failure_class": failure_class,
+            "conclusion_eligible_claim_count": 0,
+        },
+        "deterministic_safe_revision": {
+            "applied": True,
+            "strategy_version": DETERMINISTIC_SAFE_REVISION_VERSION,
+            "failure_class": failure_class,
+            "preserved_observations": len(established_observations),
+            "accepted_audit_findings": len(primary_responses),
+            "research_leads_created": len(research_leads),
+            "requires_independent_closure": True,
+        },
+    }
 
 
 def canonicalize_artifact_for_publication(
@@ -340,6 +545,44 @@ def _dedupe_dicts(items: Iterable[Any], key: str) -> list[dict[str, Any]]:
     return result
 
 
+def _safe_string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return list(dict.fromkeys(
+        str(item).strip() for item in value if str(item).strip()
+    ))
+
+
+def _safe_revision_claim_is_conclusion_eligible(
+    raw: dict[str, Any],
+    *,
+    finding: str,
+    classification: str,
+    evidence_ids: list[str],
+) -> bool:
+    """Keep only affirmative, evidence-linked inferences after safe narrowing.
+
+    Facts, integrity defects, and unresolved reconciliation observations remain
+    visible in the artifact, but they are not silently promoted to a mechanism
+    merely to improve a publication score.
+    """
+
+    if not finding or not evidence_ids or classification != "validated_inference":
+        return False
+    implication = str(raw.get("audit_implication") or "").casefold()
+    unresolved_markers = (
+        "does not provide",
+        "not provided",
+        "cannot be",
+        "premature",
+        "unresolved",
+        "requires reconciliation",
+        "requires a bridge",
+        "remains unvalidated",
+    )
+    return not any(marker in implication for marker in unresolved_markers)
+
+
 class RepairStrategy(Protocol):
     def execute(
         self,
@@ -480,7 +723,7 @@ class RepairControllerResult:
 class SemanticQualityScorer:
     """Deterministic, dependency-addressable quality scoring service."""
 
-    version = "semantic-quality-scorer-v1"
+    version = "semantic-quality-scorer-v2"
 
     def score(
         self,
@@ -518,9 +761,16 @@ class SemanticQualityScorer:
                 "Audited Research Analog", "Frozen Demo Dossier"
             }
         ]
-        analog_score = 10 if audited else 2 if dossiers else 0
+        analog_applicable = bool(audited)
+        analog_score = 10
         requirements = independent_origin_requirements(run, audited, required=2)
-        provenance_score = 10 if requirements and all(item.satisfied for item in requirements) else 4 if audited else 0
+        provenance_applicable = bool(requirements)
+        provenance_score = (
+            10
+            if not provenance_applicable
+            or all(item.satisfied for item in requirements)
+            else 4
+        )
         valuation_rows = list(getattr(run, "historical_valuation_observations", []) or [])
         valuation_score = 10 if any(
             getattr(item, "fcf_ttm", None) is not None
@@ -537,8 +787,31 @@ class SemanticQualityScorer:
             SemanticQualityDimension("period_unit_consistency", consistency_score, 10, _dimension_status(consistency_score)),
             SemanticQualityDimension("mechanism_clarity", mechanism_score, 10, _dimension_status(mechanism_score)),
             SemanticQualityDimension("counter_thesis_quality", counter_score, 10, _dimension_status(counter_score)),
-            SemanticQualityDimension("analog_usefulness", analog_score, 10, _dimension_status(analog_score)),
-            SemanticQualityDimension("provenance_independence", provenance_score, 10, _dimension_status(provenance_score)),
+            SemanticQualityDimension(
+                "analog_usefulness",
+                analog_score,
+                10,
+                _dimension_status(analog_score) if analog_applicable else "not_applicable",
+                (
+                    "Eligible audited analogs were evaluated."
+                    if analog_applicable
+                    else "Analog candidates were excluded from conclusions and scoring."
+                ),
+            ),
+            SemanticQualityDimension(
+                "provenance_independence",
+                provenance_score,
+                10,
+                (
+                    _dimension_status(provenance_score)
+                    if provenance_applicable else "not_applicable"
+                ),
+                (
+                    "Independent-origin requirements were evaluated."
+                    if provenance_applicable
+                    else "No conclusion-eligible quantified analog required provenance scoring."
+                ),
+            ),
             SemanticQualityDimension("valuation_completeness", valuation_score, 10, _dimension_status(valuation_score)),
             SemanticQualityDimension("monitoring_falsification", monitor_score, 10, _dimension_status(monitor_score)),
             SemanticQualityDimension("mapping_and_classification", mapping_score, 10, _dimension_status(mapping_score)),
@@ -628,12 +901,77 @@ class PublicationGateEvaluator:
                 RepairKind.COMPLETE_DETERMINISTIC_VALIDATION,
                 "Publication requires passed deterministic validation before final audit.",
             ))
+        ontology_version = str(getattr(run, "research_ontology_version", "") or "")
+        if ontology_version:
+            profile_id = str(getattr(run, "security_profile_id", "") or "")
+            if not profile_id or profile_id.startswith("unknown"):
+                failures.append(_failure(
+                    PublicationFailureCode.SECURITY_PROFILE_UNRESOLVED,
+                    run_id,
+                    "The security research profile is unresolved.",
+                    f"Resolved profile is {profile_id or 'missing'} under {ontology_version}.",
+                    RepairKind.RESOLVE_NUMERIC_MAPPING,
+                    "Publication requires a validated issuer archetype and reporting policy.",
+                ))
+            if not list(getattr(run, "core_mechanism_ids", []) or []):
+                failures.append(_failure(
+                    PublicationFailureCode.CORE_MECHANISM_UNMAPPED,
+                    run_id,
+                    "No canonical core research mechanism is mapped.",
+                    "The current artifact has no profile-scoped mechanism eligible for directional interpretation.",
+                    RepairKind.RESOLVE_NUMERIC_MAPPING,
+                    "An unresolved core thesis mechanism cannot produce an actionable recommendation.",
+                ))
+            lens_statuses = dict(getattr(run, "lens_assessment_statuses", {}) or {})
+            controlled_lens_statuses = {
+                "Supported", "Partial", "Contradicted", "Unavailable", "Not material",
+            }
+            if (
+                set(lens_statuses) != {"causal_bridge", "equity", "credit"}
+                or any(status not in controlled_lens_statuses for status in lens_statuses.values())
+            ):
+                failures.append(_failure(
+                    PublicationFailureCode.LENS_STATUS_MISLEADING,
+                    run_id,
+                    "Causal, equity, and credit lens statuses are not truthfully resolved.",
+                    (
+                        "All three typed lens assessments are required and must use the controlled "
+                        f"status vocabulary; received {lens_statuses or 'no statuses'}."
+                    ),
+                    RepairKind.REVISE_PRIMARY_ARTIFACT,
+                    "Rebuild lens assessments from the current admitted evidence snapshot.",
+                ))
         primary = next(
             (item for item in getattr(run, "variants", []) or [] if getattr(item, "variant_id", "") == "deepseek_led"),
             None,
         )
+        final_payload = dict(
+            getattr(getattr(run, "final_artifact", None), "payload", {}) or {}
+        )
+        publication_scope = final_payload.get("publication_scope")
+        publication_scope = (
+            dict(publication_scope)
+            if isinstance(publication_scope, dict) else {}
+        )
+        if (
+            publication_scope.get("revision_mode")
+            == "deterministic_safe_narrowing"
+            and int(
+                publication_scope.get("conclusion_eligible_claim_count") or 0
+            ) < 1
+        ):
+            failures.append(_failure(
+                PublicationFailureCode.SEMANTIC_CRITICAL_FAILURE,
+                run_id,
+                "Conservative revision retained no validated research mechanism.",
+                "All model-authored conclusions were narrowed to observations or research leads.",
+                RepairKind.RETRIEVE_MISSING_PRIMARY_EVIDENCE,
+                "Residual-diligence publication still requires at least one validated, evidence-linked mechanism.",
+                source_families=("historical_filing",),
+            ))
         audit_decision = getattr(primary, "audit_decision", None)
         closure_state = _closure_state(run, audit_decision)
+        closure_unresolved_ids = _closure_unresolved_finding_ids(run)
         if policy.require_closed_qa and closure_state not in set(
             policy.eligible_closure_states
         ):
@@ -676,15 +1014,27 @@ class PublicationGateEvaluator:
             if str(getattr(item, "severity", "")).casefold() in _MATERIAL
             and not _finding_has_valid_response(item)
         ]
-        if policy.require_closed_qa and unresolved:
+        unresolved_ids = tuple(dict.fromkeys([
+            *(str(getattr(item, "finding_id", "") or "") for item in unresolved),
+            *closure_unresolved_ids,
+        ]))
+        unresolved_ids = tuple(value for value in unresolved_ids if value)
+        if policy.require_closed_qa and unresolved_ids:
             failures.append(_failure(
                 PublicationFailureCode.MATERIAL_AUDIT_FINDING_UNADDRESSED,
                 run_id,
-                f"{len(unresolved)} material QA finding(s) remain unresolved.",
-                "; ".join(str(getattr(item, "summary", "")) for item in unresolved[:5]),
+                f"{len(unresolved_ids)} material QA finding(s) remain unresolved.",
+                (
+                    "; ".join(
+                        str(getattr(item, "summary", ""))
+                        for item in unresolved[:5]
+                        if str(getattr(item, "summary", ""))
+                    )
+                    or "Final closure identified material findings that still require a primary response."
+                ),
                 RepairKind.RESPOND_TO_AUDIT_FINDING,
                 "Every material audit finding requires an accepted, evidenced rejection, or unresolved response.",
-                finding_ids=tuple(str(getattr(item, "finding_id", "")) for item in unresolved),
+                finding_ids=unresolved_ids,
             ))
         records = list(getattr(run, "normalized_sources", []) or [])
         if policy.require_no_promoted_quarantined_metadata and _promoted_quarantine_count(run, records):
@@ -697,15 +1047,42 @@ class PublicationGateEvaluator:
                 "Only the common deterministic admission gateway may create evidence IDs.",
                 retryable=False,
             ))
+        invalid_scope_dossiers = [
+            item for item in dossiers
+            if str(getattr(item, "scope_status", "legacy_unchecked") or "legacy_unchecked")
+            not in {"legacy_unchecked", "in_scope"}
+            or str(getattr(item, "eligibility_code", "legacy_unchecked") or "legacy_unchecked")
+            in {
+                "issuer_scope_violation", "archetype_scope_violation",
+                "mechanism_scope_violation", "core_mechanism_unresolved",
+                "security_profile_unresolved", "scope_not_evaluated",
+            }
+        ]
+        if invalid_scope_dossiers:
+            failures.append(_failure(
+                PublicationFailureCode.HISTORICAL_ANALOG_SCOPE_INTEGRITY,
+                run_id,
+                "A historical analog violates issuer or mechanism scope.",
+                "; ".join(
+                    str(getattr(item, "eligibility_code", "scope violation"))
+                    for item in invalid_scope_dossiers[:5]
+                ),
+                RepairKind.NARROW_OR_REMOVE_UNSUPPORTED_CONCLUSION,
+                "Cross-ticker analog contamination is a hard publication blocker.",
+                scope_type="analog",
+                retryable=False,
+            ))
         eligible_dossiers = [
             item for item in dossiers
             if str(getattr(item, "status", "")) in {"Audited Research Analog", "Frozen Demo Dossier"}
+            and item not in invalid_scope_dossiers
         ]
         candidate_dossiers = [
             item for item in dossiers
             if str(getattr(item, "status", "")).casefold() in {
                 "historical analog candidate", "candidate", "candidate watch"
             }
+            and item not in invalid_scope_dossiers
         ]
         origin_requirements = independent_origin_requirements(
             run,
@@ -1487,6 +1864,53 @@ def _closure_state(run: Any, audit_decision: Any) -> str:
     ) == "passed":
         return "closed"
     return "failed_material_findings_unaddressed"
+
+
+def _closure_unresolved_finding_ids(run: Any) -> tuple[str, ...]:
+    """Recover material blocker identities emitted by the closure checker.
+
+    Some providers report a newly detected blocker only inside the final
+    closure payload.  Treating that as a generic closure retry causes a costly
+    loop because the primary artifact has not changed.  Promote those IDs into
+    the repair DAG so primary response/revision necessarily precedes closure.
+
+    ``unresolved_findings`` is also used by some providers for readable
+    residual-diligence notes.  Those sentences are not finding identities and
+    must not be promoted into material blockers after a
+    ``closed_with_residual_risk`` decision.  Prefer structured references,
+    recognise IDs already present in the frozen audit, and retain the compact
+    legacy ``F1``/``MC6`` convention for older artifacts.
+    """
+
+    artifact = getattr(run, "final_artifact", None)
+    payload = getattr(artifact, "payload", None)
+    if not isinstance(payload, dict):
+        return ()
+    closure = payload.get("closure_audit")
+    if not isinstance(closure, dict):
+        return ()
+    audit = closure.get("audit_decision")
+    if not isinstance(audit, dict):
+        return ()
+    values = audit.get("unresolved_findings") or ()
+    known_ids = {
+        str(getattr(item, "finding_id", "") or "").strip()
+        for item in (getattr(run, "audit_findings", []) or [])
+    }
+    known_ids.discard("")
+    result: list[str] = []
+    for value in values if isinstance(values, (list, tuple)) else (values,):
+        if isinstance(value, dict):
+            finding_id = str(value.get("finding_id") or value.get("id") or "")
+        else:
+            candidate = str(value or "").strip()
+            finding_id = candidate if (
+                candidate in known_ids
+                or re.fullmatch(r"(?:F|MC)\d{1,4}", candidate)
+            ) else ""
+        if finding_id:
+            result.append(finding_id)
+    return tuple(dict.fromkeys(result))
 
 
 def _finding_has_valid_response(finding: Any) -> bool:

@@ -4,8 +4,9 @@ import html
 import hashlib
 import json
 import os
+import sys
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -18,12 +19,37 @@ from equity_research.application.research_runs import (
     ResearchRunService,
 )
 from equity_research.application import (
+    DeterministicCashConversionRefreshService,
+    DeterministicEvidenceRefreshCommand,
+    ContextResearchToolGateway,
     InMemoryEphemeralCredentialBroker,
     InvestigationActionCommand,
     InvestigationActionResult,
     InvestigationActionService,
+    build_investigation_journey,
+    build_displayed_research_context,
+    build_displayed_investigation_reference,
     build_provider_connection_statuses,
     parse_event_price_csv,
+    SavedResearchError,
+    SavedResearchLoadError,
+    SavedResearchService,
+    ResearchLaunchIntent,
+    ResearchLaunchIntentStatus,
+    ResearchLaunchService,
+    ResearchOperationKind,
+    build_research_launch_intent,
+    resolve_research_parent_reference,
+    should_auto_load_saved_result,
+    canonicalize_investigation_actions,
+    SourceCapabilityRegistry,
+)
+from equity_research.application.repair_stage_execution import (
+    RepairExecutionPolicy,
+)
+from equity_research.auditable_retrieval import (
+    AuditableEvidenceRetriever,
+    source_record_to_evidence,
 )
 from equity_research.application.readiness import preview_research_readiness
 from equity_research.analysis import format_number
@@ -37,6 +63,32 @@ from equity_research.idea_engine import build_payoff_model, expected_value
 from equity_research.infrastructure.job_repository import (
     SqliteResearchJobRepository,
 )
+from equity_research.infrastructure.repair_checkpoint_repository import (
+    SqliteRepairStageCheckpointRepository,
+)
+from equity_research.infrastructure.saved_research_codec import (
+    JsonResearchResultArtifactCodec,
+    SavedResearchCodecError,
+)
+from equity_research.infrastructure.saved_research_repository import (
+    ContentAddressedGzipBlobStore,
+    InMemorySavedResearchBlobStore,
+    InMemorySavedResearchRepository,
+    SavedResearchStorageError,
+    SqliteSavedResearchRepository,
+)
+from equity_research.domain.saved_research import (
+    DisplayedResearchContext,
+    DerivedEvidenceRecoveryAttempt,
+    SAVED_RESEARCH_CODEC_VERSION,
+    SaveResearchResultCommand,
+    SavedArtifactHealth,
+    SavedResearchOrigin,
+    SavedResearchQuery,
+    SavedResearchScope,
+    SavedResearchStatus,
+)
+from equity_research.domain.financial_facts import CASH_CONVERSION_ANALYSIS_VERSION
 from equity_research.domain.cache_policy import build_cache_isolation_key
 from equity_research.infrastructure.provider_registry import (
     ProviderResolutionRequest,
@@ -73,9 +125,11 @@ from equity_research.presentation.components import (
     render_decision_page as render_decision_page_component,
     render_evidence_page_overview,
     render_investigation_action_register,
+    render_investigation_journey,
     render_integrity_timeline as render_integrity_timeline_component,
     render_publication_readiness,
     render_research_route_header,
+    render_research_session_workbench,
 )
 from equity_research.presentation.session_state import UiSessionState
 from equity_research.presentation.view_models import (
@@ -87,8 +141,12 @@ from equity_research.presentation.view_models import (
     build_evidence_page_view_model,
     build_integrity_timeline_view_model,
     build_investigation_action_view_models,
+    build_investigation_journey_view_model,
     build_publication_readiness_view_model,
+    build_research_launch_intent_view_model,
     build_research_route_view_model,
+    build_research_session_view_model,
+    build_saved_research_library_view_model,
 )
 from equity_research.market_implied import build_market_implied_expectations
 from equity_research.decision_intelligence import build_ic_implied_expectations_snapshot
@@ -99,7 +157,7 @@ from equity_research.research_profiles import event_identifier, research_profile
 from equity_research.rigor import build_calibration_report
 from equity_research.sample_data import demo_result
 from equity_research.sec_client import SecClient, SecClientError
-from equity_research.storytelling import demo_cases
+from equity_research.storytelling import demo_cases, public_demo_cases
 
 
 st.set_page_config(
@@ -112,15 +170,201 @@ st.set_page_config(
 GITHUB_REPOSITORY_URL = "https://github.com/mwsp-code/IC-Copilot"
 LIVE_DEMO_URL = "https://ic-copilot.streamlit.app/"
 FEEDBACK_DISCUSSION_URL = "https://github.com/mwsp-code/IC-Copilot/discussions/3"
-HYBRID_JOB_MANAGER_SCHEMA_VERSION = "durable-run-events-v3"
+HYBRID_JOB_MANAGER_SCHEMA_VERSION = "explicit-research-launch-v5"
 MACRO_POLICY_OPTIONS = ("Adaptive", "Paused", "Global diagnostic", "Custom")
 
 
 @st.cache_resource
-def _research_run_service() -> ResearchRunService:
+def _cached_research_run_service(database_path: str) -> ResearchRunService:
     return ResearchRunService(
-        SqliteResearchJobRepository(config.RESEARCH_DB_PATH)
+        SqliteResearchJobRepository(Path(database_path))
     )
+
+
+def _research_launch_service() -> ResearchLaunchService:
+    return ResearchLaunchService(_research_run_service())
+
+
+def _research_run_service() -> ResearchRunService:
+    """Resolve durable run state by path so config/workspace changes cannot reuse stale cache."""
+
+    return _cached_research_run_service(str(Path(config.RESEARCH_DB_PATH).resolve()))
+
+
+@st.cache_resource
+def _repair_stage_repository(database_path: str):
+    return SqliteRepairStageCheckpointRepository(Path(database_path))
+
+
+def _repair_execution_policy(*, closure_retry: bool = False) -> RepairExecutionPolicy:
+    return RepairExecutionPolicy(
+        revision_timeout_seconds=config.REPAIR_REVISION_TIMEOUT_SECONDS,
+        closure_timeout_seconds=(
+            config.REPAIR_CLOSURE_RETRY_TIMEOUT_SECONDS
+            if closure_retry else config.REPAIR_CLOSURE_TIMEOUT_SECONDS
+        ),
+        total_timeout_seconds=(
+            config.REPAIR_TOTAL_RETRY_TIMEOUT_SECONDS
+            if closure_retry else config.REPAIR_TOTAL_TIMEOUT_SECONDS
+        ),
+        max_transient_retries=config.REPAIR_MAX_TRANSIENT_RETRIES,
+        policy_version=(
+            "repair-execution-policy-v2-closure-retry"
+            if closure_retry else "repair-execution-policy-v1"
+        ),
+    )
+
+
+def _selected_research_intent() -> ResearchLaunchIntent | None:
+    value = st.session_state.get("_selected_research_launch_intent")
+    return value if isinstance(value, ResearchLaunchIntent) else None
+
+
+def _stage_research_intent(intent: ResearchLaunchIntent) -> None:
+    """Persist a selection without launching providers or retrieval."""
+
+    st.session_state._selected_research_launch_intent = intent
+    st.session_state.pop("_research_launch_repeat_confirmation", None)
+
+
+def _clear_research_intent() -> None:
+    st.session_state.pop("_selected_research_launch_intent", None)
+    st.session_state.pop("_research_launch_repeat_confirmation", None)
+    st.session_state.pop("_investigation_source_setup", None)
+    st.session_state.pop("_open_additional_sources", None)
+
+
+def _has_active_research_task() -> bool:
+    job_id = str(st.session_state.get("hybrid_job_id") or "")
+    job = _hybrid_job_manager().get(job_id) if job_id else None
+    if job is not None and job.status in {
+        "queued", "running", "saving_result", "cancelling"
+    }:
+        return True
+    focused_id = str(st.session_state.get("_focused_research_run_id") or "")
+    snapshot = _research_run_service().inspect(focused_id) if focused_id else None
+    return bool(
+        snapshot is not None
+        and snapshot.status in {
+            "queued", "running", "cancelling", "waiting_for_credential",
+            "research_attempt_finished", "validation_pending", "repair_required",
+            "repair_running", "revision_pending", "audit_pending", "closure_pending",
+        }
+    )
+
+
+def _displayed_parent_context(result: ResearchResult | None) -> dict[str, str]:
+    artifact_id = str(
+        st.session_state.get("_displayed_saved_artifact_id") or ""
+    )
+    saved_artifact = None
+    if artifact_id:
+        try:
+            storage_scope = str(
+                st.session_state.get("_displayed_saved_storage_scope")
+                or _saved_research_scope()[0].value
+            )
+            scope_id = str(
+                st.session_state.get("_displayed_saved_scope_id")
+                or _saved_research_scope()[1]
+            )
+            saved_artifact = _saved_research_service_for_scope(
+                storage_scope
+            ).repository.get(artifact_id, scope_id=scope_id)
+        except (OSError, RuntimeError, ValueError):
+            saved_artifact = None
+    parent = resolve_research_parent_reference(
+        result,
+        saved_artifact=saved_artifact,
+        session_run_id=str(
+            st.session_state.get("_displayed_parent_run_id")
+            or st.session_state.get("research_lifecycle_run_id")
+            or ""
+        ),
+        artifact_id=artifact_id,
+    )
+    return {
+        "parent_run_id": parent.run_id,
+        "parent_artifact_id": parent.artifact_id,
+        "parent_evidence_hash": parent.evidence_hash,
+    }
+
+
+def _public_hosted_mode() -> bool:
+    explicit = str(os.environ.get("IC_COPILOT_PUBLIC_HOSTED", "")).strip().casefold()
+    if explicit:
+        return explicit in {"1", "true", "yes", "on"}
+    return bool(str(os.environ.get("STREAMLIT_SHARING_MODE", "")).strip())
+
+
+@st.cache_resource
+def _local_saved_research_service(
+    database_path: str,
+    storage_root: str,
+) -> SavedResearchService:
+    root = Path(storage_root)
+    try:
+        return SavedResearchService(
+            SqliteSavedResearchRepository(Path(database_path)),
+            ContentAddressedGzipBlobStore(root / "blobs"),
+            JsonResearchResultArtifactCodec(),
+        )
+    except (OSError, SavedResearchStorageError) as exc:
+        # Research and frozen demos remain usable when a locked-down host,
+        # stale test directory, or transient filesystem failure prevents local
+        # persistence. Keep the fallback explicitly session-only so the UI
+        # never promises restart recovery that is not available.
+        service = SavedResearchService(
+            InMemorySavedResearchRepository(ttl_seconds=14_400),
+            InMemorySavedResearchBlobStore(ttl_seconds=14_400),
+            JsonResearchResultArtifactCodec(),
+        )
+        service.persistence_available = False
+        service.persistence_error = str(exc)
+        return service
+
+
+@st.cache_resource
+def _hosted_saved_research_service() -> SavedResearchService:
+    return SavedResearchService(
+        InMemorySavedResearchRepository(ttl_seconds=14_400),
+        InMemorySavedResearchBlobStore(ttl_seconds=14_400),
+        JsonResearchResultArtifactCodec(),
+    )
+
+
+def _saved_research_scope() -> tuple[SavedResearchScope, str]:
+    if not _public_hosted_mode():
+        return SavedResearchScope.LOCAL_WORKSPACE, "local"
+    if "_saved_research_session_scope" not in st.session_state:
+        st.session_state._saved_research_session_scope = "session-" + uuid.uuid4().hex
+    return (
+        SavedResearchScope.HOSTED_SESSION,
+        str(st.session_state._saved_research_session_scope),
+    )
+
+
+def _saved_research_service_for_scope(
+    storage_scope: SavedResearchScope | str,
+) -> SavedResearchService:
+    value = (
+        storage_scope.value
+        if isinstance(storage_scope, SavedResearchScope)
+        else str(storage_scope)
+    )
+    return (
+        _hosted_saved_research_service()
+        if value == SavedResearchScope.HOSTED_SESSION.value
+        else _local_saved_research_service(
+            str(config.SAVED_RESEARCH_DB_PATH),
+            str(config.SAVED_RESEARCH_ROOT),
+        )
+    )
+
+
+def _saved_research_service() -> SavedResearchService:
+    storage_scope, _ = _saved_research_scope()
+    return _saved_research_service_for_scope(storage_scope)
 
 
 @st.cache_resource
@@ -208,11 +452,173 @@ def _issue_session_credential_leases(
     return tuple(reference.lease_id for reference in references)
 
 
+def _saved_status_for_result(result: ResearchResult, run_status: str) -> SavedResearchStatus:
+    normalized = str(run_status or "").casefold()
+    if normalized in {"failed", "unavailable", "timeout", "validation_failed"}:
+        return SavedResearchStatus.FAILED
+    if normalized in {"partial", "investigated_draft", "cancelled"}:
+        return SavedResearchStatus.PARTIAL
+    freeze = getattr(result, "demo_freeze_decision", None) or getattr(
+        getattr(result, "hybrid_research", None), "demo_freeze_decision", None
+    )
+    publication = str(getattr(freeze, "publication_label", "") or "").casefold()
+    closure = str(
+        getattr(
+            getattr(
+                getattr(result, "independent_research_qa", None),
+                "closure_result",
+                None,
+            ),
+            "state",
+            "",
+        )
+        or ""
+    ).casefold()
+    if "residual" in publication or closure == "closed_with_residual_risk":
+        return SavedResearchStatus.RESIDUAL_DILIGENCE
+    return SavedResearchStatus.COMPLETED
+
+
+def _save_displayable_result(
+    result: ResearchResult,
+    *,
+    run_id: str,
+    operation_kind: str,
+    operation_label: str,
+    run_status: str,
+    preferred_route: str,
+    setup_summary: dict,
+    storage_scope: SavedResearchScope,
+    scope_id: str,
+    created_at: str = "",
+    completed_at: str = "",
+    parent_artifact_id: str = "",
+) -> str:
+    status = _saved_status_for_result(result, run_status)
+    outcome = "completed"
+    if operation_kind in {"targeted_investigation", "action_investigation"}:
+        remaining = _remaining_targeted_action(
+            result,
+            type(
+                "SavedOperation",
+                (),
+                {
+                    "investigation_action_id": str(
+                        setup_summary.get("investigation_action_id") or ""
+                    ),
+                    "investigation_action_kind": str(
+                        setup_summary.get("investigation_action_kind") or ""
+                    ),
+                    "investigation_semantic_key": str(
+                        setup_summary.get("investigation_semantic_key") or ""
+                    ),
+                },
+            )(),
+        )
+        outcome = "unresolved" if remaining is not None else "resolved"
+    elif status in {SavedResearchStatus.DRAFT, SavedResearchStatus.PARTIAL}:
+        outcome = "partial"
+    elif status is SavedResearchStatus.FAILED:
+        outcome = "failed"
+    hybrid = getattr(result, "hybrid_research", None)
+    lifecycle_state = str(
+        getattr(hybrid, "lifecycle_state", "")
+        or ""
+    )
+    if not lifecycle_state:
+        lifecycle_state = (
+            "completed_not_publishable"
+            if status in {SavedResearchStatus.COMPLETED, SavedResearchStatus.RESIDUAL_DILIGENCE}
+            else "research_attempt_finished"
+        )
+    command = SaveResearchResultCommand(
+        result=result,
+        run_id=run_id,
+        operation_kind=operation_kind,
+        operation_label=operation_label,
+        lifecycle_state=lifecycle_state,
+        outcome=outcome,
+        status=status,
+        origin=(
+            SavedResearchOrigin.LEGACY_ADOPTED
+            if operation_kind == "legacy_adopted"
+            else SavedResearchOrigin.REPAIR_RECHECK
+            if operation_kind in {"repair_recheck", "repair_and_recheck"}
+            else SavedResearchOrigin.TARGETED_INVESTIGATION
+            if operation_kind in {
+                "targeted_investigation",
+                "action_investigation",
+                "event_investigation",
+                "analog_investigation",
+            }
+            else SavedResearchOrigin.LIVE_RESEARCH
+        ),
+        created_at=created_at,
+        completed_at=completed_at,
+        preferred_route=preferred_route,
+        setup_summary=setup_summary,
+        storage_scope=storage_scope,
+        scope_id=scope_id,
+        parent_artifact_id=parent_artifact_id,
+        supersedes_artifact_id=(
+            parent_artifact_id
+            if status in {
+                SavedResearchStatus.COMPLETED,
+                SavedResearchStatus.RESIDUAL_DILIGENCE,
+            }
+            else ""
+        ),
+    )
+    artifact = _saved_research_service_for_scope(storage_scope).save_result(command)
+    return artifact.artifact_id
+
+
+def _persist_hybrid_job_result(state) -> str:
+    if not _is_displayable_research_result(getattr(state, "result", None)):
+        return ""
+    storage_scope = SavedResearchScope(str(state.saved_storage_scope))
+    setup = dict(getattr(state, "saved_setup_summary", {}) or {})
+    setup.update({
+        "investigation_action_id": str(getattr(state, "investigation_action_id", "") or ""),
+        "investigation_action_kind": str(getattr(state, "investigation_action_kind", "") or ""),
+        "investigation_semantic_key": str(getattr(state, "investigation_semantic_key", "") or ""),
+    })
+    artifact_id = _save_displayable_result(
+        state.result,
+        run_id=state.job_id,
+        operation_kind=state.operation_kind,
+        operation_label=state.operation_label,
+        run_status=(state.result_terminal_status or state.status),
+        preferred_route=state.result_route,
+        setup_summary=setup,
+        storage_scope=storage_scope,
+        scope_id=state.saved_scope_id,
+        created_at=state.created_at,
+        completed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        parent_artifact_id=state.originating_artifact_id,
+    )
+    try:
+        _research_run_service().record_event(
+            state.job_id,
+            stage="result_persistence",
+            status="completed",
+            summary="Displayable research result saved for zero-call loading.",
+            details={"saved_artifact_id": artifact_id},
+            idempotency_key=f"result-saved:{artifact_id}",
+        )
+    except (KeyError, ValueError, OSError):
+        pass
+    return artifact_id
+
+
 @st.cache_resource
 def _hybrid_job_manager(
     _schema_version: str = HYBRID_JOB_MANAGER_SCHEMA_VERSION,
 ) -> HybridResearchJobManager:
-    return HybridResearchJobManager(_research_run_service())
+    return HybridResearchJobManager(
+        _research_run_service(),
+        result_persister=_persist_hybrid_job_result,
+    )
 
 
 @st.cache_resource(ttl=30, show_spinner=False)
@@ -252,43 +658,101 @@ def _handle_decision_page_intent(
 
     if intent is None:
         return
+    if _has_active_research_task():
+        st.warning(
+            "Another research task is active. Finish or cancel it before selecting "
+            "a different investigation; no hidden queue was created."
+        )
+        return
+    canonical_actions = canonicalize_investigation_actions(
+        result.identity.ticker,
+        result.prioritized_research_queue,
+    )
+    canonical_action_id = (
+        canonical_actions.resolve_action_id(intent.action_id)
+        or intent.action_id
+    )
     action = next(
         (
-            item for item in result.prioritized_research_queue
-            if item.action_id == intent.action_id
+            item for item in canonical_actions.actions
+            if item.action_id == canonical_action_id
         ),
         None,
     )
     if action is None:
         st.error("This investigation action is no longer present in the run.")
         return
-    if intent.intent_type == "configure_source":
+    if intent.intent_type == "upload_price_data":
+        aliases = canonical_actions.aliases_by_canonical_id.get(
+            canonical_action_id
+        )
+        mutable_action = next((
+            item for item in result.prioritized_research_queue
+            if aliases is not None
+            and str(getattr(item, "action_id", "") or "")
+            in aliases.action_ids
+        ), None)
+        if mutable_action is not None:
+            action = mutable_action
+    if intent.intent_type != "upload_price_data":
         source_families = tuple(
-            str(value).replace("_", " ")
+            str(value)
             for value in list(getattr(action, "required_source_families", ()) or ())
             if value
         )
         connectors = tuple(
-            str(value).replace("_", " ")
+            str(value)
             for value in list(getattr(action, "preferred_connectors", ()) or ())
             if value
         )
-        st.session_state._investigation_source_setup = {
-            "ticker": result.identity.ticker,
-            "action_id": action.action_id,
-            "action_kind": action.action_kind,
-            "title": action.title,
-            "objective": action.objective or action.title,
-            "semantic_key": action.semantic_key,
-            "source_families": source_families,
-            "connectors": connectors,
-            "registered_source_families": tuple(
-                action.required_source_families
+        current_setup = dict(
+            st.session_state.get("_current_research_setup") or {}
+        )
+        parent = _displayed_parent_context(result)
+        _, workspace_scope = _saved_research_scope()
+        launch_intent = build_research_launch_intent(
+            ticker=result.identity.ticker,
+            operation_kind=ResearchOperationKind.ACTION_INVESTIGATION,
+            operation_label=str(action.title or "Selected investigation"),
+            objective=str(action.objective or action.title),
+            launch_origin="decision_investigate_next",
+            research_profile=str(
+                current_setup.get("profile") or "adaptive_ic"
             ),
-            "registered_connectors": tuple(action.preferred_connectors),
-            "is_frozen_demo": bool(getattr(result, "demo_case", None)),
-        }
-        st.session_state._open_additional_sources = True
+            preferred_result_route="Evidence",
+            action_id=str(action.action_id or ""),
+            action_kind=str(action.action_kind or ""),
+            action_semantic_key=str(action.semantic_key or action.action_id or ""),
+            research_intent_id=str(getattr(action, "intent_id", "") or ""),
+            action_semantic_aliases=tuple(
+                str(value) for value in
+                list(getattr(action, "alias_semantic_keys", ()) or ())
+                if value
+            ),
+            event_id=str(intent.event_id or action.event_id or ""),
+            required_source_families=source_families,
+            preferred_connectors=connectors,
+            qa_enabled=bool(current_setup.get("qa_resolved")),
+            workspace_scope=workspace_scope,
+            needs_source_setup=intent.intent_type == "configure_source",
+            fingerprint_context={
+                "source_policy": current_setup,
+                "action_kind": str(action.action_kind or ""),
+            },
+            **parent,
+        )
+        _stage_research_intent(launch_intent)
+        if intent.intent_type == "configure_source":
+            st.session_state._open_additional_sources = True
+            st.session_state._investigation_queue_notice = (
+                "Investigation selected. Complete source setup, then explicitly "
+                "confirm the task in Next research task. No research has started."
+            )
+        else:
+            st.session_state._investigation_queue_notice = (
+                "Investigation selected. Review its exact scope in Next research "
+                "task, then choose Run selected investigation. No providers were called."
+            )
         st.rerun()
         return
     qa_run = getattr(result, "independent_research_qa", None)
@@ -301,31 +765,6 @@ def _handle_decision_page_intent(
     source_fingerprint = str(
         getattr(qa_run, "source_policy_fingerprint", "") or ""
     )
-    if action.action_kind != "market_event_attribution":
-        action.attempt_summary = "Queued for the next targeted research pass."
-        st.session_state._pending_research_operation = {
-            "operation_kind": "targeted_investigation",
-            "operation_label": action.title,
-            "investigation_action_id": action.action_id,
-            "investigation_action_kind": action.action_kind,
-            "investigation_objective": action.objective or action.title,
-            "investigation_semantic_key": action.semantic_key,
-            "investigation_source_families": tuple(
-                action.required_source_families
-            ),
-            "investigation_preferred_connectors": tuple(
-                action.preferred_connectors
-            ),
-            "result_route": "Evidence",
-        }
-        st.session_state._pending_live_refresh = result.identity.ticker
-        st.session_state._investigation_queue_notice = (
-            "Targeted investigation queued. Its result will be reported as "
-            "resolved, attempted but unresolved, or not attempted with a "
-            "specific source reason."
-        )
-        st.rerun()
-        return
     event = next(
         (
             item for item in result.events
@@ -449,29 +888,57 @@ def _handle_publication_repair_intent(
 
     if intent is None or intent.intent_type != "repair_and_recheck":
         return
+    if _has_active_research_task():
+        st.warning(
+            "Another research task is active. Finish or cancel it before selecting "
+            "repair and recheck; no hidden queue was created."
+        )
+        return
     hybrid = getattr(result, "hybrid_research", None)
     if hybrid is None:
         st.error("This result has no repairable research artifact.")
         return
-    run_id = str(
-        st.session_state.get("research_lifecycle_run_id")
-        or getattr(hybrid, "run_id", "")
-        or ""
+    current_setup = dict(st.session_state.get("_current_research_setup") or {})
+    _, workspace_scope = _saved_research_scope()
+    parent = _displayed_parent_context(result)
+    if not parent["parent_run_id"]:
+        st.error(
+            "Repair and recheck is unavailable because this displayed result "
+            "has no recoverable parent run. Reload a saved live result first."
+        )
+        return
+    run_id = parent["parent_run_id"]
+    launch_intent = build_research_launch_intent(
+        ticker=result.identity.ticker,
+        operation_kind=ResearchOperationKind.REPAIR_RECHECK,
+        operation_label="Repair and recheck publication readiness",
+        objective=(
+            "Repair material blockers, revalidate affected claims, revise the "
+            "artifact, recompute quality, and rerun closure."
+        ),
+        launch_origin="audit_publication_readiness",
+        research_profile=str(current_setup.get("profile") or "adaptive_ic"),
+        preferred_result_route="Audit",
+        repair_action_ids=tuple(intent.action_ids),
+        repair_retry_stages=tuple(intent.retry_stages),
+        qa_enabled=True,
+        workspace_scope=workspace_scope,
+        fingerprint_context={
+            "repair_action_ids": tuple(intent.action_ids),
+            "repair_retry_stages": tuple(intent.retry_stages),
+        },
+        **parent,
     )
-    st.session_state._pending_publication_repair = {
-        "source_run_id": run_id,
-        "source_evidence_hash": str(getattr(hybrid, "evidence_hash", "") or ""),
-        "action_ids": tuple(intent.action_ids),
-    }
+    _stage_research_intent(launch_intent)
     lifecycle = _research_run_service()
     if run_id and lifecycle.inspect(run_id) is not None:
         lifecycle.record_event(
             run_id,
             stage="publication_repair",
-            status="queued",
+            status="selected",
             summary=(
-                "Material publication repairs were queued for registered retrieval, "
-                "revision, semantic recheck, and closure."
+                "Material publication repairs were selected for explicit launch "
+                "confirmation."
             ),
             details={"action_ids": list(intent.action_ids)},
             idempotency_key=(
@@ -482,10 +949,9 @@ def _handle_publication_repair_intent(
             ),
         )
     st.session_state._publication_repair_notice = (
-        "Repair and recheck started with the current research setup. Completed "
-        "artifacts will be preserved if a source or credential is unavailable."
+        "Repair and recheck selected. Review the exact task in the sidebar, then "
+        "confirm it. No provider or connector has started."
     )
-    st.session_state._pending_live_refresh = result.identity.ticker
     st.rerun()
 
 
@@ -578,7 +1044,7 @@ def _format_research_setup(
         "fast_screening": "Fast Screening",
         "adaptive_ic": "Adaptive IC Research",
         "deep_initiation": "Deep Initiation",
-        "investigate_event": "Investigate This Event",
+        "investigate_event": "Focused event investigation",
     }.get(profile_id, profile_id.replace("_", " ").title() or "Current depth")
     macro_policy = str(setup.get("macro_policy") or "Off")
     qa_requested = bool(setup.get("qa_requested", setup.get("hybrid_enabled")))
@@ -625,7 +1091,7 @@ def _demo_research_setup(case) -> dict[str, object]:
     metadata = _demo_case_runtime_metadata(case) if case else {}
     layers = tuple(str(item) for item in metadata.get("enabled_layers", ()))
     layer_text = " ".join(layers).lower()
-    return _research_setup_snapshot(
+    setup = _research_setup_snapshot(
         ticker=getattr(case, "ticker", "") or "",
         profile=str(metadata.get("research_profile") or "deep_initiation"),
         budget_mode=str(metadata.get("budget_mode") or "Premium"),
@@ -644,6 +1110,22 @@ def _demo_research_setup(case) -> dict[str, object]:
             else ""
         ),
     )
+    ticker = str(getattr(case, "ticker", "") or "").upper()
+    published = load_frozen_hybrid_run(ticker) if ticker else None
+    bridge = getattr(published, "cash_conversion_recurrence", None)
+    if bridge is not None:
+        question = (
+            f"Test whether {ticker} cash conversion remains recurring after "
+            "working capital, capex, taxes, financing, and capital returns"
+        )
+        setup.update({
+            "operation_kind": "action_investigation",
+            "operation_label": question,
+            "operation_objective": question,
+            "investigation_action_kind": "cash_conversion_analysis",
+            "research_intent_id": str(getattr(bridge, "intent_id", "") or ""),
+        })
+    return setup
 
 
 def _inject_global_styles() -> None:
@@ -714,12 +1196,49 @@ def _remaining_targeted_action(result: object, state: object):
     action_kind = str(
         getattr(state, "investigation_action_kind", "") or ""
     )
-    queue = list(getattr(result, "prioritized_research_queue", ()) or ())
+    original_queue = list(
+        getattr(result, "prioritized_research_queue", ()) or ()
+    )
+    direct_match = next((
+        item for item in original_queue
+        if (action_id and (
+            str(getattr(item, "action_id", "") or "") == action_id
+            or action_id in list(
+                getattr(item, "alias_action_ids", ()) or ()
+            )
+            or action_id in list(
+                getattr(item, "related_research_request_ids", ()) or ()
+            )
+            or action_id in list(
+                getattr(item, "related_work_order_ids", ()) or ()
+            )
+        ))
+        or (semantic_key and (
+            str(getattr(item, "semantic_key", "") or "") == semantic_key
+            or semantic_key in list(
+                getattr(item, "alias_semantic_keys", ()) or ()
+            )
+        ))
+    ), None)
+    if direct_match is not None:
+        return direct_match
+    identity = getattr(result, "identity", None)
+    canonical_actions = canonicalize_investigation_actions(
+        str(getattr(identity, "ticker", "") or ""),
+        original_queue,
+    )
+    queue = list(canonical_actions.actions)
+    canonical_action_id = (
+        canonical_actions.resolve_action_id(action_id) or action_id
+    )
+    canonical_semantic_action_id = (
+        canonical_actions.resolve_action_id(semantic_key) or ""
+    )
     match = next(
         (
             item for item in queue
-            if (action_id and (
-                str(getattr(item, "action_id", "") or "") == action_id
+            if (canonical_action_id and (
+                str(getattr(item, "action_id", "") or "") == canonical_action_id
                 or action_id in list(
                     getattr(item, "related_research_request_ids", ()) or ()
                 )
@@ -728,9 +1247,9 @@ def _remaining_targeted_action(result: object, state: object):
                 )
             ))
             or (
-                semantic_key
-                and str(getattr(item, "semantic_key", "") or "")
-                == semantic_key
+                canonical_semantic_action_id
+                and str(getattr(item, "action_id", "") or "")
+                == canonical_semantic_action_id
             )
         ),
         None,
@@ -744,8 +1263,780 @@ def _remaining_targeted_action(result: object, state: object):
     return match
 
 
+def _apply_loaded_saved_research(loaded, *, show_notice: bool = True) -> None:
+    loaded, refresh_notice = _refresh_loaded_cash_conversion_if_needed(loaded)
+    artifact = loaded.artifact
+    is_draft = artifact.status in {
+        SavedResearchStatus.DRAFT,
+        SavedResearchStatus.PARTIAL,
+        SavedResearchStatus.FAILED,
+    }
+    st.session_state.result = loaded.result
+    st.session_state.demo_mode = None
+    st.session_state._displayed_research_setup = dict(artifact.setup_summary or {})
+    displayed_context = build_displayed_research_context(artifact)
+    st.session_state._displayed_research_context = displayed_context
+    st.session_state._displayed_investigation_reference = (
+        build_displayed_investigation_reference(displayed_context)
+    )
+    st.session_state._displayed_saved_artifact_id = artifact.artifact_id
+    st.session_state._displayed_parent_run_id = artifact.run_id
+    st.session_state._displayed_saved_storage_scope = artifact.storage_scope
+    st.session_state._displayed_saved_scope_id = artifact.scope_id
+    st.session_state._displayed_result_origin = (
+        "saved_research_draft"
+        if is_draft
+        else "saved_live_research"
+    )
+    st.session_state._displayed_operation_label = artifact.operation_label
+    st.session_state._displayed_outcome = artifact.outcome
+    st.session_state.pop("_prepared_session_result_download", None)
+    UiSessionState(st.session_state).request_route(
+        artifact.preferred_route or "Decision",
+        origin="saved_research_load",
+    )
+    _saved_research_service_for_scope(artifact.storage_scope).remember_displayed(
+        artifact.artifact_id,
+        scope_id=artifact.scope_id,
+    )
+    if show_notice:
+        st.session_state._saved_research_load_notice = (
+            refresh_notice
+            or (
+                f"Loaded {'saved research draft' if is_draft else 'saved live research'} "
+                f"from {_display_timestamp(artifact.completed_at)}. "
+                "No providers were called."
+            )
+        )
+
+
+def _refresh_loaded_cash_conversion_if_needed(loaded):
+    """Derive a cutoff-safe bridge for a legacy focused result, once per session."""
+
+    artifact = loaded.artifact
+    result = loaded.result
+    if getattr(result, "demo_case", None):
+        # Frozen examples must remain reproducible and network-free.  A demo is
+        # refreshed only by the explicit publication workflow, never on load.
+        return loaded, ""
+    # ``analysis_capabilities`` is metadata written by earlier app versions.  It
+    # is useful for discovery, but it is not proof that the decoded payload
+    # actually contains a complete, comparable-period bridge.  In particular,
+    # some pre-upgrade focused investigations advertised the capability while
+    # retaining only the one-period legacy cash summary.  Inspect the payload
+    # itself so loading that result repairs the missing deterministic analysis
+    # instead of showing a misleading completed answer.
+    if _has_current_cash_conversion_bridge(result):
+        return loaded, ""
+    setup = dict(getattr(artifact, "setup_summary", {}) or {})
+    if not _is_focused_cash_conversion_result(artifact, result, setup):
+        return loaded, ""
+    cutoff = str(getattr(artifact, "data_cutoff", "") or "")[:10]
+    if not cutoff:
+        return loaded, "Historical SEC evidence was not refreshed because the saved result has no enforceable data cutoff."
+    recovery_service = _saved_research_service_for_scope(artifact.storage_scope)
+    intent_id = "cash_generation_capital_allocation:recurring_cash_conversion"
+    base_key = ":".join((
+        str(artifact.artifact_id), intent_id, CASH_CONVERSION_ANALYSIS_VERSION, cutoff,
+    ))
+    recovery_key = hashlib.sha256(base_key.encode("utf-8")).hexdigest()[:32]
+    recorded = recovery_service.get_recovery_attempt(
+        recovery_key, scope_id=artifact.scope_id
+    )
+    if recorded is not None and recorded.status == "recovered" and recorded.derived_artifact_id:
+        try:
+            recovered = recovery_service.load_result(
+                recorded.derived_artifact_id, scope_id=artifact.scope_id
+            )
+        except (OSError, ValueError, SavedResearchError):
+            recovered = None
+        if recovered is not None and _has_current_cash_conversion_bridge(
+            recovered.result, expected_cutoff=cutoff
+        ):
+            return recovered, (
+                "Loaded a verified derived cash-conversion revision. No LLM or Codex call was made; "
+                "Independent QA is pending for the refreshed answer."
+            )
+    if recorded is not None and recorded.status == "blocked":
+        return loaded, (
+            "Historical comparison unavailable. "
+            + (recorded.readable_reason or "The prior deterministic recovery could not complete.")
+        )
+    if recorded is not None and recorded.status == "running":
+        return loaded, (
+            "Historical comparison unavailable. A prior deterministic recovery was interrupted; "
+            "the original saved result was preserved."
+        )
+    derived = _load_verified_cash_conversion_revision(artifact, expected_cutoff=cutoff)
+    if derived is not None:
+        recovery_service.save_recovery_attempt(DerivedEvidenceRecoveryAttempt(
+            recovery_key=recovery_key,
+            scope_id=artifact.scope_id,
+            parent_artifact_id=artifact.artifact_id,
+            intent_id=intent_id,
+            data_cutoff=cutoff,
+            analysis_version=CASH_CONVERSION_ANALYSIS_VERSION,
+            status="recovered",
+            attempted_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            derived_artifact_id=derived.artifact.artifact_id,
+            readable_reason="A verified derived revision already existed.",
+        ))
+        return (
+            derived,
+            "Loaded a verified derived cash-conversion revision. No LLM or Codex call was made; Independent QA is pending for the refreshed answer.",
+        )
+    recovery_service.save_recovery_attempt(DerivedEvidenceRecoveryAttempt(
+        recovery_key=recovery_key,
+        scope_id=artifact.scope_id,
+        parent_artifact_id=artifact.artifact_id,
+        intent_id=intent_id,
+        data_cutoff=cutoff,
+        analysis_version=CASH_CONVERSION_ANALYSIS_VERSION,
+        status="running",
+        attempted_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        readable_reason="Refreshing historical SEC evidence for this answer.",
+    ))
+    try:
+        identity = getattr(result, "identity", None)
+        cik = str(getattr(identity, "cik", "") or "")
+        if not identity or not cik:
+            raise ValueError("The saved result has no SEC issuer identity.")
+        facts = SecClient().get_company_facts(cik)
+        snapshot_hash = hashlib.sha256(
+            json.dumps(facts, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
+        normalized_objects = list(getattr(result, "normalized_sources", ()) or ())
+        normalized = [asdict(item) for item in normalized_objects]
+        evidence_catalog = [
+            source_record_to_evidence(item) for item in normalized_objects
+        ]
+        context = {
+            "ticker": str(getattr(identity, "ticker", "") or artifact.ticker),
+            "company": str(getattr(identity, "name", "") or artifact.company_name),
+            "security_key": str(artifact.security_key or "cik:" + cik),
+            "exchange": str(getattr(identity, "exchange", "") or artifact.exchange),
+            "data_cutoff": cutoff,
+            "security_archetype": str(
+                setup.get("security_archetype")
+                or getattr(result, "security_archetype", "")
+                or "operating_company"
+            ),
+            "normalized_sources": normalized,
+            "searchable_evidence_catalog": evidence_catalog,
+            "claim_eligible_evidence_ids": [
+                str(item.get("evidence_id") or "") for item in evidence_catalog
+                if item.get("evidence_id")
+            ],
+        }
+        retriever = AuditableEvidenceRetriever(
+            identity,
+            company_facts=facts,
+            metrics=list(getattr(result, "metrics", ()) or ()),
+            filings=list(getattr(result, "filings", ()) or ()),
+        )
+        gateway = ContextResearchToolGateway(
+            context,
+            SourceCapabilityRegistry(),
+            retrieval_engine=retriever,
+        )
+        command = DeterministicEvidenceRefreshCommand(
+            parent_artifact_id=artifact.artifact_id,
+            ticker=artifact.ticker,
+            intent_id=intent_id,
+            data_cutoff=cutoff,
+            idempotency_key=hashlib.sha256(
+                f"{base_key}:{snapshot_hash}".encode("utf-8")
+            ).hexdigest()[:24],
+        )
+        refreshed = DeterministicCashConversionRefreshService().refresh(
+            command,
+            result=result,
+            gateway=gateway,
+        )
+        if refreshed.status != "refreshed" or refreshed.result is None:
+            raise ValueError(refreshed.failure_reason or refreshed.summary)
+        bridge = _cash_conversion_bridge_for_result(refreshed.result)
+        derived_setup = {
+            **setup,
+            "operation_kind": str(artifact.operation_kind),
+            "operation_label": str(artifact.operation_label),
+            "research_intent_id": str(
+                getattr(bridge, "intent_id", "")
+                or "cash_generation_capital_allocation:recurring_cash_conversion"
+            ),
+            "deterministic_evidence_refresh": CASH_CONVERSION_ANALYSIS_VERSION,
+            "analysis_version": str(getattr(bridge, "analysis_version", "") or ""),
+            "source_snapshot_hash": str(getattr(bridge, "source_snapshot_hash", "") or ""),
+            "cash_conversion_bridge_signature": str(
+                getattr(bridge, "evidence_hash", "") or ""
+            ),
+            "qa_freshness": str(getattr(bridge, "qa_freshness", "pending") or "pending"),
+        }
+        refreshed_id = _save_displayable_result(
+            refreshed.result,
+            run_id=str(artifact.run_id),
+            operation_kind=str(artifact.operation_kind),
+            operation_label=str(artifact.operation_label),
+            run_status="completed",
+            preferred_route=str(artifact.preferred_route or "Evidence"),
+            setup_summary=derived_setup,
+            storage_scope=artifact.storage_scope,
+            scope_id=artifact.scope_id,
+            created_at=artifact.created_at,
+            completed_at=artifact.completed_at,
+            parent_artifact_id=artifact.artifact_id,
+        )
+        derived = _saved_research_service_for_scope(
+            artifact.storage_scope
+        ).load_result(refreshed_id, scope_id=artifact.scope_id)
+        notice = (
+            "Historical SEC evidence was refreshed and saved as a derived revision. "
+            "No LLM or Codex call was made. Independent QA is pending for the refreshed answer."
+        )
+        recovery_service.save_recovery_attempt(DerivedEvidenceRecoveryAttempt(
+            recovery_key=recovery_key,
+            scope_id=artifact.scope_id,
+            parent_artifact_id=artifact.artifact_id,
+            intent_id=intent_id,
+            data_cutoff=cutoff,
+            analysis_version=CASH_CONVERSION_ANALYSIS_VERSION,
+            status="recovered",
+            attempted_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            source_snapshot_hash=str(getattr(bridge, "source_snapshot_hash", "") or ""),
+            derived_artifact_id=refreshed_id,
+            readable_reason=notice,
+        ))
+        return derived, notice
+    except (SecClientError, SavedResearchError, SavedResearchCodecError, OSError, ValueError) as exc:
+        notice = f"Historical comparison unavailable. Historical SEC series could not be completed: {exc}"
+        recovery_service.save_recovery_attempt(DerivedEvidenceRecoveryAttempt(
+            recovery_key=recovery_key,
+            scope_id=artifact.scope_id,
+            parent_artifact_id=artifact.artifact_id,
+            intent_id=intent_id,
+            data_cutoff=cutoff,
+            analysis_version=CASH_CONVERSION_ANALYSIS_VERSION,
+            status="blocked",
+            attempted_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            readable_reason=notice,
+        ))
+        return loaded, notice
+
+
+def _load_verified_cash_conversion_revision(artifact, *, expected_cutoff: str = ""):
+    """Return the newest verified derived bridge for a legacy parent artifact.
+
+    The lookup examines decoded payloads, rather than treating the metadata
+    capability flag as proof.  It performs only local storage I/O and codec
+    verification—never a provider, model, or SEC call.
+    """
+
+    service = _saved_research_service_for_scope(artifact.storage_scope)
+    try:
+        summaries = service.list_results(
+            SavedResearchQuery(
+                scope_id=artifact.scope_id,
+                ticker=artifact.ticker,
+                include_drafts=True,
+                limit=100,
+            )
+        )
+    except (OSError, ValueError, SavedResearchError):
+        return None
+    candidates = sorted(
+        (
+            item for item in summaries
+            if str(getattr(item, "parent_artifact_id", "") or "")
+            == str(artifact.artifact_id)
+            and getattr(item, "health", None) is SavedArtifactHealth.VERIFIED
+        ),
+        key=lambda item: str(getattr(item, "saved_at", "") or ""),
+        reverse=True,
+    )
+    for candidate in candidates:
+        try:
+            loaded = service.load_result(candidate.artifact_id, scope_id=candidate.scope_id)
+        except (OSError, ValueError, SavedResearchError):
+            continue
+        if _has_current_cash_conversion_bridge(
+            loaded.result, expected_cutoff=expected_cutoff
+        ):
+            return loaded
+    return None
+
+
+def _cash_conversion_bridge_for_result(result):
+    """Return the bridge persisted by either current or transitional payloads."""
+
+    bridge = getattr(result, "cash_conversion_recurrence", None)
+    if bridge is not None:
+        return bridge
+    return getattr(
+        getattr(result, "hybrid_research", None),
+        "cash_conversion_recurrence",
+        None,
+    )
+
+
+def _has_current_cash_conversion_bridge(result, *, expected_cutoff: str = "") -> bool:
+    """Whether a loaded result has the complete v1 comparable-TTM analysis."""
+
+    bridge = _cash_conversion_bridge_for_result(result)
+    if bridge is None:
+        return False
+    from equity_research.application.cash_conversion import (
+        validate_cash_conversion_recurrence_bridge,
+    )
+    return validate_cash_conversion_recurrence_bridge(
+        bridge,
+        expected_cutoff=expected_cutoff,
+    ).valid
+
+
+def _is_focused_cash_conversion_result(artifact, result, setup: dict) -> bool:
+    """Identify a targeted cash-conversion result without refreshing broad runs.
+
+    Saved runs from the launch-intent migration used slightly different setup
+    keys.  We deliberately accept those aliases, but require both a cash
+    mechanism and a focused/repair operation so a normal company refresh does
+    not silently initiate an extra SEC retrieval simply because its agenda
+    contains a cash-flow question.
+    """
+
+    operation_kind = str(getattr(artifact, "operation_kind", "") or "").casefold()
+    action_kind = str(setup.get("investigation_action_kind") or "").casefold()
+    operation_label = str(getattr(artifact, "operation_label", "") or "")
+    focused_kinds = {
+        "action_investigation",
+        "event_investigation",
+        "repair_recheck",
+        "canonical_action_investigation",
+    }
+    focused = operation_kind in focused_kinds or any(
+        token in operation_label.casefold()
+        for token in ("investigation", "repair", "independent qa")
+    )
+    if not focused:
+        return False
+
+    searchable: list[str] = [operation_label, action_kind]
+    for key in (
+        "research_intent_id",
+        "intent_id",
+        "investigation_objective",
+        "objective",
+        "selected_action_title",
+        "selected_action_objective",
+    ):
+        searchable.append(str(setup.get(key) or ""))
+    hybrid = getattr(result, "hybrid_research", None)
+    searchable.extend((
+        str(getattr(hybrid, "objective", "") or ""),
+        str(getattr(hybrid, "research_intent_id", "") or ""),
+    ))
+    text = " ".join(searchable).casefold().replace("-", " ").replace("_", " ")
+    return action_kind == "cash_conversion_analysis" or any(
+        token in text
+        for token in (
+            "cash conversion",
+            "cash generation capital allocation",
+            "recurring cash conversion",
+            "operating cash flow",
+            "free cash flow",
+        )
+    )
+
+
+def _apply_in_memory_research(payload: dict) -> None:
+    """Display a completed result even when restart recovery failed."""
+
+    result = payload.get("result")
+    if not _is_displayable_research_result(result):
+        return
+    st.session_state.pop("_prepared_session_result_download", None)
+    st.session_state.result = result
+    st.session_state.demo_mode = None
+    st.session_state._displayed_saved_artifact_id = ""
+    setup_summary = dict(payload.get("setup_summary") or {})
+    displayed_context = DisplayedResearchContext(
+        run_id=str(payload.get("run_id") or ""),
+        operation_kind=str(payload.get("operation_kind") or ""),
+        operation_label=str(payload.get("operation_label") or ""),
+        operation_action_id=str(
+            payload.get("operation_action_id")
+            or setup_summary.get("investigation_action_id")
+            or ""
+        ),
+        research_intent_id=str(
+            payload.get("research_intent_id")
+            or setup_summary.get("research_intent_id")
+            or ""
+        ),
+        evidence_hash=str(payload.get("evidence_hash") or ""),
+        outcome=str(payload.get("outcome") or "completed"),
+    )
+    st.session_state._displayed_research_context = displayed_context
+    st.session_state._displayed_investigation_reference = (
+        build_displayed_investigation_reference(displayed_context)
+    )
+    st.session_state._displayed_parent_run_id = str(payload.get("run_id") or "")
+    st.session_state._displayed_saved_storage_scope = ""
+    st.session_state._displayed_saved_scope_id = ""
+    st.session_state._displayed_result_origin = "live_not_saved"
+    st.session_state._displayed_research_setup = setup_summary
+    st.session_state._displayed_operation_label = str(
+        payload.get("operation_label") or "Research"
+    )
+    st.session_state._displayed_outcome = str(payload.get("outcome") or "completed")
+    UiSessionState(st.session_state).request_route(
+        str(payload.get("preferred_route") or "Decision"),
+        origin="session_result_load",
+    )
+
+
+def _result_adoption_key(result: object) -> str:
+    manifest = getattr(result, "run_manifest", None)
+    hybrid = getattr(result, "hybrid_research", None)
+    raw = {
+        "run_id": str(
+            getattr(manifest, "run_id", "")
+            or getattr(hybrid, "run_id", "")
+            or "session-result"
+        ),
+        "evidence_hash": str(
+            getattr(manifest, "admitted_evidence_hash", "")
+            or getattr(hybrid, "evidence_hash", "")
+            or ""
+        ),
+        "codec": SAVED_RESEARCH_CODEC_VERSION,
+        "runtime": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+    }
+    return hashlib.sha256(
+        json.dumps(raw, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:24]
+
+
+def _load_saved_artifact(artifact_id: str, *, scope_id: str) -> bool:
+    try:
+        loaded = _saved_research_service().load_result(
+            artifact_id,
+            scope_id=scope_id,
+        )
+        _apply_loaded_saved_research(loaded)
+        return True
+    except (
+        SavedResearchError,
+        SavedResearchCodecError,
+        SavedResearchStorageError,
+        OSError,
+        ValueError,
+    ) as exc:
+        st.session_state._saved_research_load_error = {
+            "message": str(exc),
+            "reason": str(getattr(exc, "reason", "") or "load_failed"),
+            "artifact_id": str(getattr(exc, "artifact_id", "") or artifact_id),
+            "failure_path": str(getattr(exc, "failure_path", "") or ""),
+            "annotation": str(getattr(exc, "annotation", "") or ""),
+        }
+        return False
+
+
+def _saved_status_label(status: str) -> str:
+    return {
+        "completed": "Completed research",
+        "residual_diligence": "Completed with residual diligence",
+        "draft": "Research draft",
+        "partial": "Partial research draft",
+        "failed": "Interrupted research draft",
+    }.get(str(status or "").casefold(), str(status or "Unavailable").replace("_", " ").title())
+
+
+def _render_displayed_research_card() -> None:
+    result = st.session_state.get("result")
+    if result is None:
+        return
+    active_job_id = str(st.session_state.get("hybrid_job_id") or "")
+    active_job = _hybrid_job_manager().get(active_job_id) if active_job_id else None
+    ticker = str(getattr(getattr(result, "identity", None), "ticker", "") or "")
+    company = str(getattr(getattr(result, "identity", None), "name", "") or ticker)
+    st.markdown("**Displayed research**")
+    if active_job is not None and active_job.status in {
+        "queued", "running", "cancelling", "saving_result"
+    }:
+        st.info(
+            f"Active run · {active_job.ticker}\n\n"
+            f"{active_job.operation_label or 'Research in progress'}\n\n"
+            f"{active_job.status.replace('_', ' ').title()}"
+        )
+        st.caption(f"The previously displayed {ticker} result remains readable while this runs.")
+        return
+    artifact_id = str(st.session_state.get("_displayed_saved_artifact_id") or "")
+    if artifact_id:
+        storage_scope, scope_id = _saved_research_scope()
+        artifact = _saved_research_service_for_scope(storage_scope).repository.get(
+            artifact_id,
+            scope_id=scope_id,
+        )
+        if artifact is not None:
+            origin = (
+                "Saved research draft"
+                if artifact.status in {
+                    SavedResearchStatus.DRAFT,
+                    SavedResearchStatus.PARTIAL,
+                    SavedResearchStatus.FAILED,
+                }
+                else "Saved live research"
+            )
+            st.info(
+                f"{origin} · {ticker}\n\n{company}\n\n"
+                f"{artifact.operation_label}\n\n"
+                f"{_saved_status_label(artifact.status.value)} · "
+                f"{artifact.outcome.replace('_', ' ').title()}"
+            )
+            st.caption(
+                f"Completed {_display_timestamp(artifact.completed_at)}"
+            )
+            st.caption(
+                f"Validation: {artifact.validation_status.replace('_', ' ').title()} · "
+                f"Independent QA: {artifact.independent_qa_status.replace('_', ' ').title()}"
+            )
+            st.caption(
+                "Restart recovery: "
+                + artifact.health.value.replace("_", " ").title()
+            )
+            if artifact.data_cutoff:
+                st.caption(f"Data cutoff: {_display_timestamp(artifact.data_cutoff)}")
+            return
+    if getattr(result, "demo_case", None) is not None:
+        st.info(f"Frozen demo · {ticker}\n\n{company}\n\nRead-only illustrative research")
+        st.caption("Loading this demo does not refresh data or call a provider.")
+    else:
+        st.warning(f"Live result · {ticker}\n\n{company}\n\nNot saved for restart recovery")
+
+
+def _render_saved_research_library(current_ticker: str) -> None:
+    storage_scope, scope_id = _saved_research_scope()
+    service = _saved_research_service_for_scope(storage_scope)
+    with st.expander("Saved research", expanded=False):
+        if not getattr(service, "persistence_available", True):
+            st.warning(
+                "Restart recovery is temporarily unavailable. Research can "
+                "still run, and completed results remain available in this "
+                "app session. Check the local saved-research folder before "
+                "closing the app."
+            )
+        all_tickers = st.checkbox(
+            "All tickers",
+            value=False,
+            key="saved_research_all_tickers",
+            help="Off shows only the ticker in the run bar.",
+        )
+        ticker_search = (
+            st.text_input(
+                "Find ticker",
+                value="",
+                key="saved_research_ticker_search",
+                placeholder="AAPL",
+            ).strip().upper()
+            if all_tickers
+            else ""
+        )
+        ticker_filter = ticker_search if all_tickers else current_ticker.upper()
+        artifacts = service.list_results(
+            SavedResearchQuery(
+                scope_id=scope_id,
+                ticker=ticker_filter,
+                include_drafts=True,
+                limit=50,
+            )
+        )
+        view_model = build_saved_research_library_view_model(
+            artifacts,
+            current_ticker=current_ticker,
+            session_only=storage_scope is SavedResearchScope.HOSTED_SESSION,
+        )
+        if view_model.session_only:
+            st.caption("Private to this browser session · not saved after expiry.")
+        else:
+            total_bytes = sum(item.compressed_size_bytes for item in artifacts)
+            st.caption(
+                f"{len(view_model.completed)} completed · {len(view_model.drafts)} drafts · "
+                f"{total_bytes / (1024 * 1024):.1f} MB shown"
+            )
+        latest = next((item for item in artifacts if item.is_completed), None)
+        if st.button(
+            "Load latest completed",
+            key="load_latest_saved_research",
+            use_container_width=True,
+            disabled=latest is None,
+        ) and latest is not None:
+            loaded_latest = service.load_latest_completed(
+                scope_id=scope_id,
+                ticker=ticker_filter,
+            )
+            if loaded_latest is not None:
+                _apply_loaded_saved_research(loaded_latest)
+                st.rerun()
+            else:
+                st.session_state._saved_research_load_error = {
+                    "message": (
+                        "No verified completed result could be opened. "
+                        "Select an artifact below to retry its compatibility check."
+                    ),
+                    "reason": "verification_failed",
+                }
+                st.rerun()
+        if not artifacts:
+            if str(st.session_state.get("_displayed_result_origin") or "") == "live_not_saved":
+                st.warning(
+                    "The displayed result was not saved by this app version or its save "
+                    "check failed. It cannot be reconstructed from run metadata alone."
+                )
+            else:
+                st.info(
+                    "No saved research for this selection. Completed and partial live runs "
+                    "will appear here automatically without using extra provider credits to reopen them."
+                )
+            return
+        group_options = [
+            label
+            for label, items in (
+                ("Completed research", view_model.completed),
+                ("Drafts and interrupted work", view_model.drafts),
+            )
+            if items
+        ]
+        if str(st.session_state.get("saved_research_group") or "") not in group_options:
+            st.session_state.saved_research_group = group_options[0]
+        selected_group = (
+            st.radio(
+                "Library section",
+                group_options,
+                horizontal=True,
+                key="saved_research_group",
+            )
+            if len(group_options) > 1
+            else group_options[0]
+        )
+        selectable_artifacts = [
+            item
+            for item in artifacts
+            if item.is_completed == (selected_group == "Completed research")
+        ]
+        st.caption(
+            f"{selected_group} · {len(selectable_artifacts)} result"
+            f"{'s' if len(selectable_artifacts) != 1 else ''}"
+        )
+        labels = {
+            item.artifact_id: (
+                f"{'★ ' if item.pinned else ''}{item.ticker} · {item.operation_label} · "
+                f"{_saved_status_label(item.status.value)} · {_display_timestamp(item.completed_at)}"
+            )
+            for item in selectable_artifacts
+        }
+        selected_id = st.selectbox(
+            "Saved result",
+            list(labels),
+            format_func=lambda value: labels[value],
+            key="saved_research_selection",
+        )
+        selected = next(
+            item for item in selectable_artifacts
+            if item.artifact_id == selected_id
+        )
+        st.markdown(
+            f"**{selected.ticker} · {selected.company_name}**\n\n"
+            f"{selected.operation_label}"
+        )
+        st.caption(
+            f"Outcome: {selected.outcome.replace('_', ' ')} · "
+            f"Depth: {selected.research_profile.replace('_', ' ').title()} · "
+            f"QA: {selected.independent_qa_status.replace('_', ' ').title()} · "
+            f"Open in {selected.preferred_route}"
+        )
+        st.caption(
+            "Restart recovery: "
+            + selected.health.value.replace("_", " ").title()
+        )
+        if st.button(
+            "Load selected",
+            key="load_selected_saved_research",
+            use_container_width=True,
+        ):
+            if _load_saved_artifact(selected_id, scope_id=scope_id):
+                st.rerun()
+        if selected.health is not SavedArtifactHealth.VERIFIED and st.button(
+            "Retry compatibility check",
+            key="retry_selected_saved_research_compatibility",
+            use_container_width=True,
+        ):
+            if _load_saved_artifact(selected_id, scope_id=scope_id):
+                st.rerun()
+        if st.button(
+            "Use this setup for next run",
+            key="use_saved_research_setup",
+            use_container_width=True,
+        ):
+            st.session_state.ticker_input = selected.ticker
+            profile = str(selected.setup_summary.get("profile") or selected.research_profile or "")
+            if profile:
+                st.session_state.research_profile_selector = profile
+            st.success("Non-secret ticker and research-depth settings were applied. No research was run.")
+        manage = st.checkbox("Manage saved research", key="manage_saved_research")
+        if manage:
+            manage_cols = st.columns(2)
+            if manage_cols[0].button(
+                "Unpin" if selected.pinned else "Pin",
+                key="pin_selected_saved_research",
+                use_container_width=True,
+            ):
+                service.pin_result(
+                    selected.artifact_id,
+                    scope_id=scope_id,
+                    pinned=not selected.pinned,
+                )
+                st.rerun()
+            if manage_cols[1].button(
+                "Delete",
+                key="delete_selected_saved_research",
+                use_container_width=True,
+                disabled=selected.pinned,
+            ):
+                if service.delete_result(selected.artifact_id, scope_id=scope_id):
+                    if str(st.session_state.get("_displayed_saved_artifact_id") or "") == selected.artifact_id:
+                        st.session_state._displayed_saved_artifact_id = ""
+                        st.session_state._displayed_result_origin = "live_not_saved"
+                    st.rerun()
+            unpinned_drafts = [
+                item for item in artifacts
+                if not item.pinned
+                and item.status in {
+                    SavedResearchStatus.DRAFT,
+                    SavedResearchStatus.PARTIAL,
+                    SavedResearchStatus.FAILED,
+                }
+            ]
+            if st.button(
+                "Remove unpinned drafts",
+                key="delete_unpinned_saved_research_drafts",
+                use_container_width=True,
+                disabled=not unpinned_drafts,
+            ):
+                deleted_ids = {item.artifact_id for item in unpinned_drafts}
+                for item in unpinned_drafts:
+                    service.delete_result(item.artifact_id, scope_id=scope_id)
+                if str(st.session_state.get("_displayed_saved_artifact_id") or "") in deleted_ids:
+                    st.session_state._displayed_saved_artifact_id = ""
+                    st.session_state._displayed_result_origin = "live_not_saved"
+                st.rerun()
+
+
 def main() -> None:
     _inject_global_styles()
+    # Initialize the durable lifecycle schema even before the first launch.
+    # This makes the valid zero-job state inspectable and prevents a different
+    # SQLite consumer from creating the shared file without the job tables.
+    _research_run_service()
     title_col, repo_col = st.columns([4, 1])
     with title_col:
         st.title("IC Copilot")
@@ -765,11 +2056,167 @@ def main() -> None:
                 "Bull/Bear/Judge. Frozen illustrative research; not investment advice."
             )
     if "result" not in st.session_state:
+        storage_scope, scope_id = _saved_research_scope()
+        restored = (
+            _saved_research_service_for_scope(storage_scope).load_last_displayed(
+                scope_id=scope_id
+            )
+            if storage_scope is SavedResearchScope.LOCAL_WORKSPACE
+            else None
+        )
+        if restored is not None:
+            _apply_loaded_saved_research(restored, show_notice=False)
+            restored_is_draft = restored.artifact.status in {
+                SavedResearchStatus.DRAFT,
+                SavedResearchStatus.PARTIAL,
+                SavedResearchStatus.FAILED,
+            }
+            st.session_state._saved_research_load_notice = (
+                f"Restored {'saved research draft' if restored_is_draft else 'saved live research'} from "
+                f"{_display_timestamp(restored.artifact.completed_at)}. "
+                "No providers were called."
+            )
+        else:
+            st.session_state.result = demo_result("AAPL")
+            st.session_state.demo_mode = "AAPL"
+            UiSessionState(st.session_state).request_public_demo_landing()
+            st.session_state._displayed_research_setup = _demo_research_setup(
+                demo_cases()[0]
+            )
+            st.session_state.pop("_displayed_research_context", None)
+            st.session_state._displayed_result_origin = "frozen_demo"
+            st.session_state._displayed_saved_artifact_id = ""
+            st.session_state._displayed_parent_run_id = ""
+            st.session_state._displayed_saved_storage_scope = ""
+            st.session_state._displayed_saved_scope_id = ""
+    active_storage_scope, active_scope_id = _saved_research_scope()
+    displayed_artifact_id = str(
+        st.session_state.get("_displayed_saved_artifact_id") or ""
+    )
+    if (
+        active_storage_scope is SavedResearchScope.HOSTED_SESSION
+        and displayed_artifact_id
+        and _saved_research_service_for_scope(active_storage_scope).repository.get(
+            displayed_artifact_id,
+            scope_id=active_scope_id,
+        )
+        is None
+    ):
         st.session_state.result = demo_result("AAPL")
         st.session_state.demo_mode = "AAPL"
+        UiSessionState(st.session_state).request_public_demo_landing()
         st.session_state._displayed_research_setup = _demo_research_setup(
             demo_cases()[0]
         )
+        st.session_state.pop("_displayed_research_context", None)
+        st.session_state._displayed_result_origin = "frozen_demo"
+        st.session_state._displayed_saved_artifact_id = ""
+        st.session_state._displayed_parent_run_id = ""
+        st.session_state._displayed_saved_storage_scope = ""
+        st.session_state._displayed_saved_scope_id = ""
+        st.session_state._saved_research_load_notice = (
+            "The private saved-research session expired, so the frozen AAPL demo "
+            "was restored. No providers were called."
+        )
+    existing_session_result = st.session_state.get("result")
+    adoption_key = (
+        _result_adoption_key(existing_session_result)
+        if _is_displayable_research_result(existing_session_result)
+        else ""
+    )
+    attempted_adoptions = set(
+        st.session_state.get("_saved_research_adoption_attempts") or ()
+    )
+    if (
+        _is_displayable_research_result(existing_session_result)
+        and getattr(existing_session_result, "demo_case", None) is None
+        and not str(st.session_state.get("_displayed_saved_artifact_id") or "")
+        and adoption_key not in attempted_adoptions
+    ):
+        attempted_adoptions.add(adoption_key)
+        st.session_state._saved_research_adoption_attempts = tuple(
+            sorted(attempted_adoptions)
+        )
+        existing_manifest = getattr(existing_session_result, "run_manifest", None)
+        existing_hybrid = getattr(existing_session_result, "hybrid_research", None)
+        try:
+            adoption_scope, adoption_scope_id = _saved_research_scope()
+            adopted_artifact_id = _save_displayable_result(
+                existing_session_result,
+                run_id=str(
+                    getattr(existing_manifest, "run_id", "")
+                    or getattr(existing_hybrid, "run_id", "")
+                    or uuid.uuid4()
+                ),
+                operation_kind="legacy_adopted",
+                operation_label=str(
+                    st.session_state.get("_displayed_operation_label")
+                    or f"Recovered live research for {existing_session_result.identity.ticker}"
+                ),
+                run_status=str(getattr(existing_hybrid, "status", "") or "completed"),
+                preferred_route=str(st.session_state.get("research_view") or "Decision"),
+                setup_summary=dict(
+                    st.session_state.get("_displayed_research_setup") or {}
+                ),
+                storage_scope=adoption_scope,
+                scope_id=adoption_scope_id,
+            )
+            adopted = _saved_research_service_for_scope(
+                adoption_scope
+            ).load_result(
+                adopted_artifact_id,
+                scope_id=adoption_scope_id,
+            )
+            _apply_loaded_saved_research(adopted, show_notice=False)
+            st.session_state._saved_research_load_notice = (
+                "Recovered and saved the live research already held in this session. "
+                "No providers were called."
+            )
+        except (
+            SavedResearchError,
+            SavedResearchCodecError,
+            SavedResearchStorageError,
+            OSError,
+            ValueError,
+        ) as exc:
+            st.session_state._displayed_result_origin = "live_not_saved"
+            st.session_state._saved_research_load_error = {
+                "message": (
+                    "The live result remains available, but restart recovery "
+                    "could not be verified. No rerun is required."
+                ),
+                "reason": str(getattr(exc, "reason", "") or "verification_failed"),
+                "artifact_id": str(getattr(exc, "artifact_id", "") or ""),
+                "failure_path": str(getattr(exc, "failure_path", "") or ""),
+                "annotation": str(getattr(exc, "annotation", "") or ""),
+            }
+    saved_notice = st.session_state.pop("_saved_research_load_notice", "")
+    if saved_notice:
+        st.success(saved_notice)
+    saved_error = st.session_state.pop("_saved_research_load_error", "")
+    if saved_error:
+        error_payload = (
+            dict(saved_error)
+            if isinstance(saved_error, dict)
+            else {"message": str(saved_error)}
+        )
+        st.warning(
+            f"Saved-result recovery needs attention. "
+            f"{error_payload.get('message') or 'The result could not be reopened.'} "
+            "The displayed research was preserved and no providers were called."
+        )
+        if any(
+            error_payload.get(key)
+            for key in ("reason", "failure_path", "annotation")
+        ):
+            with st.expander("Review technical compatibility details", expanded=False):
+                st.json({
+                    "reason": error_payload.get("reason") or "load_failed",
+                    "failure_path": error_payload.get("failure_path") or "Not reported",
+                    "annotation": error_payload.get("annotation") or "Not reported",
+                    "codec_version": SAVED_RESEARCH_CODEC_VERSION,
+                    "python_runtime": sys.version.split()[0],
+                })
     if "network_diagnostics" not in st.session_state:
         st.session_state.network_diagnostics = None
     hybrid_job_id = str(st.session_state.get("hybrid_job_id") or "")
@@ -777,23 +2224,245 @@ def main() -> None:
         hybrid_job = _hybrid_job_manager().get(hybrid_job_id)
         if hybrid_job and hybrid_job.status == "completed":
             if _is_displayable_research_result(hybrid_job.result):
-                st.session_state.result = hybrid_job.result
-                st.session_state.demo_mode = None
-                st.session_state._displayed_research_setup = dict(
-                    st.session_state.get("_active_research_setup") or {}
-                )
                 result_route = str(
                     getattr(hybrid_job, "result_route", "Decision")
                     or "Decision"
                 )
-                st.session_state.research_view = result_route
                 operation_label = str(
                     getattr(hybrid_job, "operation_label", "")
                     or f"Research for {hybrid_job.ticker}"
                 )
-                if str(getattr(hybrid_job, "operation_kind", "")) == (
-                    "targeted_investigation"
-                ):
+                st.session_state._last_completed_operation_kind = str(
+                    getattr(hybrid_job, "operation_kind", "full_research")
+                    or "full_research"
+                )
+                st.session_state._last_completed_operation_label = operation_label
+                displayed_result = st.session_state.get("result")
+                displayed_run_id = str(
+                    getattr(
+                        getattr(displayed_result, "run_manifest", None),
+                        "run_id",
+                        "",
+                    )
+                    or ""
+                )
+                origin_run_id = str(
+                    getattr(
+                        getattr(hybrid_job, "displayed_result", None),
+                        "run_id",
+                        "",
+                    )
+                    or ""
+                )
+                still_viewing_origin = should_auto_load_saved_result(
+                    displayed_run_id=displayed_run_id,
+                    originating_run_id=origin_run_id,
+                    displayed_artifact_id=str(
+                        st.session_state.get("_displayed_saved_artifact_id") or ""
+                    ),
+                    originating_artifact_id=str(
+                        getattr(hybrid_job, "originating_artifact_id", "") or ""
+                    ),
+                )
+                saved_artifact_id = str(
+                    getattr(hybrid_job, "saved_artifact_id", "") or ""
+                )
+                if still_viewing_origin:
+                    if saved_artifact_id:
+                        loaded_ok = _load_saved_artifact(
+                            saved_artifact_id,
+                            scope_id=str(getattr(hybrid_job, "saved_scope_id", "local")),
+                        )
+                        if not loaded_ok:
+                            load_error = st.session_state.get("_saved_research_load_error")
+                            in_memory_payload = {
+                                "result": hybrid_job.result,
+                                "run_id": hybrid_job.job_id,
+                                "operation_kind": str(
+                                    getattr(hybrid_job, "operation_kind", "full_research")
+                                    or "full_research"
+                                ),
+                                "operation_label": operation_label,
+                                "ticker": hybrid_job.ticker,
+                                "outcome": "completed",
+                                "preferred_route": result_route,
+                                "parent_artifact_id": str(
+                                    getattr(hybrid_job, "originating_artifact_id", "") or ""
+                                ),
+                                "setup_summary": dict(
+                                    getattr(hybrid_job, "saved_setup_summary", {}) or {}
+                                ),
+                                "completed_at": datetime.now(timezone.utc).isoformat(
+                                    timespec="seconds"
+                                ),
+                                "save_error": (
+                                    dict(load_error)
+                                    if isinstance(load_error, dict)
+                                    else {"message": str(load_error or "")}
+                                ),
+                            }
+                            st.session_state._completed_in_memory_result = in_memory_payload
+                            _apply_in_memory_research(in_memory_payload)
+                            saved_artifact_id = ""
+                    else:
+                        save_failure = str(
+                            getattr(hybrid_job, "result_save_error", "") or ""
+                        )
+                        in_memory_payload = {
+                            "result": hybrid_job.result,
+                            "run_id": hybrid_job.job_id,
+                            "operation_kind": str(
+                                getattr(hybrid_job, "operation_kind", "full_research")
+                                or "full_research"
+                            ),
+                            "operation_label": operation_label,
+                            "ticker": hybrid_job.ticker,
+                            "outcome": (
+                                "unresolved"
+                                if _remaining_targeted_action(hybrid_job.result, hybrid_job)
+                                else "completed"
+                            ),
+                            "preferred_route": result_route,
+                            "parent_artifact_id": str(
+                                getattr(hybrid_job, "originating_artifact_id", "") or ""
+                            ),
+                            "setup_summary": dict(
+                                getattr(hybrid_job, "saved_setup_summary", {}) or {}
+                            ),
+                            "completed_at": datetime.now(timezone.utc).isoformat(
+                                timespec="seconds"
+                            ),
+                            "save_error": (
+                                {
+                                    "message": save_failure,
+                                    "reason": str(
+                                        getattr(
+                                            hybrid_job,
+                                            "result_save_error_reason",
+                                            "",
+                                        )
+                                        or "verification_failed"
+                                    ),
+                                    "failure_path": str(
+                                        getattr(
+                                            hybrid_job,
+                                            "result_save_failure_path",
+                                            "",
+                                        )
+                                        or ""
+                                    ),
+                                    "annotation": str(
+                                        getattr(
+                                            hybrid_job,
+                                            "result_save_annotation",
+                                            "",
+                                        )
+                                        or ""
+                                    ),
+                                }
+                                if save_failure else {}
+                            ),
+                        }
+                        st.session_state._completed_in_memory_result = in_memory_payload
+                        _apply_in_memory_research(in_memory_payload)
+                    UiSessionState(st.session_state).request_route(
+                        result_route,
+                        origin="background_research_completion",
+                    )
+                elif saved_artifact_id:
+                    st.session_state._completed_saved_result = {
+                        "artifact_id": saved_artifact_id,
+                        "scope_id": str(getattr(hybrid_job, "saved_scope_id", "local")),
+                        "operation_label": operation_label,
+                        "ticker": hybrid_job.ticker,
+                        "outcome": (
+                            "unresolved"
+                            if _remaining_targeted_action(hybrid_job.result, hybrid_job)
+                            else "completed"
+                        ),
+                        "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    }
+                else:
+                    background_save_failure = str(
+                        getattr(hybrid_job, "result_save_error", "") or ""
+                    )
+                    st.session_state._completed_in_memory_result = {
+                        "result": hybrid_job.result,
+                        "run_id": hybrid_job.job_id,
+                        "operation_kind": str(
+                            getattr(hybrid_job, "operation_kind", "full_research")
+                            or "full_research"
+                        ),
+                        "operation_label": operation_label,
+                        "ticker": hybrid_job.ticker,
+                        "outcome": "completed",
+                        "preferred_route": result_route,
+                        "parent_artifact_id": str(
+                            getattr(hybrid_job, "originating_artifact_id", "") or ""
+                        ),
+                        "setup_summary": dict(
+                            getattr(hybrid_job, "saved_setup_summary", {}) or {}
+                        ),
+                        "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "save_error": (
+                            {
+                                "message": background_save_failure,
+                                "reason": str(
+                                    getattr(
+                                        hybrid_job,
+                                        "result_save_error_reason",
+                                        "",
+                                    )
+                                    or "verification_failed"
+                                ),
+                                "failure_path": str(
+                                    getattr(
+                                        hybrid_job,
+                                        "result_save_failure_path",
+                                        "",
+                                    )
+                                    or ""
+                                ),
+                                "annotation": str(
+                                    getattr(
+                                        hybrid_job,
+                                        "result_save_annotation",
+                                        "",
+                                    )
+                                    or ""
+                                ),
+                            }
+                            if background_save_failure else {}
+                        ),
+                    }
+                    if still_viewing_origin:
+                        _apply_in_memory_research(
+                            st.session_state._completed_in_memory_result
+                        )
+                # The completed card is rebuilt from the displayed artifact on
+                # every render.  Never cache a view model here: a later saved
+                # result or derived evidence revision would make it stale.
+                handoff_message = (
+                    f"The saved result is loaded below in {result_route}."
+                    if still_viewing_origin and saved_artifact_id
+                    else f"The result is loaded below in {result_route}, but it was not saved."
+                    if still_viewing_origin
+                    else "The saved result is ready to load without rerunning research."
+                    if saved_artifact_id
+                    else "The result is available to load in this session, but it was not saved."
+                )
+                save_error = str(
+                    getattr(hybrid_job, "result_save_error", "") or ""
+                )
+                if save_error:
+                    st.warning(
+                        "Research completed and remains available in this session, "
+                        f"but it was not saved for restart recovery. {save_error}"
+                    )
+                if str(getattr(hybrid_job, "operation_kind", "")) in {
+                    "targeted_investigation",
+                    "action_investigation",
+                }:
                     remaining_action = _remaining_targeted_action(
                         hybrid_job.result, hybrid_job
                     )
@@ -805,19 +2474,17 @@ def main() -> None:
                         st.warning(
                             f"Research pass completed: {operation_label}. "
                             f"The investigation remains unresolved. {attempt} "
-                            f"The updated live result is loaded below in "
-                            f"{result_route}."
+                            + handoff_message
                         )
                     else:
                         st.success(
-                            f"Investigation resolved: {operation_label}. The "
-                            f"updated live result is loaded below in "
-                            f"{result_route}."
+                            f"Investigation resolved: {operation_label}. "
+                            + handoff_message
                         )
                 else:
                     st.success(
-                        f"Completed: {operation_label}. The new result is loaded "
-                        f"below in {result_route}."
+                        f"Completed: {operation_label}. "
+                        + handoff_message
                     )
             else:
                 st.warning(
@@ -825,6 +2492,7 @@ def main() -> None:
                     "displayable research artifact. The previously displayed "
                     "result has been preserved."
                 )
+            _hybrid_job_manager().clear(hybrid_job.job_id)
             st.session_state.hybrid_job_id = ""
             hybrid_job_id = ""
         elif hybrid_job and hybrid_job.status in {
@@ -840,45 +2508,262 @@ def main() -> None:
             displayable_partial = _is_displayable_research_result(
                 hybrid_job.result
             )
+            saved_artifact_id = ""
+            draft_loaded = False
             if displayable_partial:
-                st.session_state.result = hybrid_job.result
-                st.session_state.demo_mode = None
-                st.session_state._displayed_research_setup = dict(
-                    st.session_state.get("_active_research_setup") or {}
+                saved_artifact_id = str(
+                    getattr(hybrid_job, "saved_artifact_id", "") or ""
                 )
-                st.session_state.research_view = str(
-                    getattr(hybrid_job, "result_route", "Audit") or "Audit"
+                displayed_run_id = str(
+                    getattr(
+                        getattr(
+                            st.session_state.get("result"),
+                            "run_manifest",
+                            None,
+                        ),
+                        "run_id",
+                        "",
+                    )
+                    or ""
                 )
+                origin_run_id = str(
+                    getattr(
+                        getattr(hybrid_job, "displayed_result", None),
+                        "run_id",
+                        "",
+                    )
+                    or ""
+                )
+                still_viewing_origin = should_auto_load_saved_result(
+                    displayed_run_id=displayed_run_id,
+                    originating_run_id=origin_run_id,
+                    displayed_artifact_id=str(
+                        st.session_state.get("_displayed_saved_artifact_id") or ""
+                    ),
+                    originating_artifact_id=str(
+                        getattr(hybrid_job, "originating_artifact_id", "") or ""
+                    ),
+                )
+                draft_loaded = still_viewing_origin
+                if still_viewing_origin and saved_artifact_id:
+                    if not _load_saved_artifact(
+                        saved_artifact_id,
+                        scope_id=str(getattr(hybrid_job, "saved_scope_id", "local")),
+                    ):
+                        st.session_state.result = hybrid_job.result
+                        st.session_state.demo_mode = None
+                        st.session_state._displayed_result_origin = "live_not_saved"
+                elif still_viewing_origin:
+                    st.session_state.result = hybrid_job.result
+                    st.session_state.demo_mode = None
+                    st.session_state._displayed_research_setup = dict(
+                        st.session_state.get("_active_research_setup") or {}
+                    )
+                    st.session_state._displayed_result_origin = "live_not_saved"
+                    UiSessionState(st.session_state).request_route(
+                        str(getattr(hybrid_job, "result_route", "Audit") or "Audit"),
+                        origin="background_partial_completion",
+                    )
+                elif saved_artifact_id:
+                    st.session_state._completed_saved_result = {
+                        "artifact_id": saved_artifact_id,
+                        "scope_id": str(getattr(hybrid_job, "saved_scope_id", "local")),
+                        "operation_label": str(
+                            getattr(hybrid_job, "operation_label", "")
+                            or f"Research for {hybrid_job.ticker}"
+                        ),
+                        "ticker": hybrid_job.ticker,
+                        "outcome": "partial",
+                        "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    }
+                else:
+                    st.session_state._completed_in_memory_result = {
+                        "result": hybrid_job.result,
+                        "operation_label": str(
+                            getattr(hybrid_job, "operation_label", "")
+                            or f"Research for {hybrid_job.ticker}"
+                        ),
+                        "ticker": hybrid_job.ticker,
+                        "outcome": "partial",
+                        "preferred_route": str(
+                            getattr(hybrid_job, "result_route", "Audit") or "Audit"
+                        ),
+                        "setup_summary": dict(
+                            getattr(hybrid_job, "saved_setup_summary", {}) or {}
+                        ),
+                        "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    }
             operation_label = str(
                 getattr(hybrid_job, "operation_label", "")
                 or f"Research for {hybrid_job.ticker}"
             )
+            st.session_state._last_completed_operation_kind = str(
+                getattr(hybrid_job, "operation_kind", "full_research")
+                or "full_research"
+            )
+            st.session_state._last_completed_operation_label = operation_label
             st.warning(
                 f"{operation_label} ended as {hybrid_job.status}. "
                 f"{hybrid_job.error or 'Deterministic research remains available.'} "
                 + (
                     f"The latest draft is loaded in "
                     f"{getattr(hybrid_job, 'result_route', 'Audit') or 'Audit'}."
-                    if displayable_partial else
+                    if draft_loaded else
+                    "The saved draft is ready to load without rerunning research."
+                    if saved_artifact_id else
                     "The previously displayed result has been preserved."
                 )
             )
+            _hybrid_job_manager().clear(hybrid_job.job_id)
             st.session_state.hybrid_job_id = ""
             hybrid_job_id = ""
+    completed_saved_result = st.session_state.get("_completed_saved_result")
+    if completed_saved_result:
+        st.info(
+            f"Saved result ready: {completed_saved_result.get('operation_label') or 'Research'} "
+            f"for {completed_saved_result.get('ticker') or 'the selected ticker'} | "
+            f"{str(completed_saved_result.get('outcome') or 'completed').replace('_', ' ')} | "
+            f"{_display_timestamp(completed_saved_result.get('completed_at'))}."
+        )
+        if st.button("Load completed result", key="load_completed_background_result"):
+            if _load_saved_artifact(
+                str(completed_saved_result.get("artifact_id") or ""),
+                scope_id=str(completed_saved_result.get("scope_id") or "local"),
+            ):
+                st.session_state.pop("_completed_saved_result", None)
+                st.rerun()
+    completed_in_memory_result = st.session_state.get("_completed_in_memory_result")
+    if completed_in_memory_result:
+        st.warning(
+            f"Live research · not saved: "
+            f"{completed_in_memory_result.get('operation_label') or 'Research'} for "
+            f"{completed_in_memory_result.get('ticker') or 'the selected ticker'} | "
+            f"{completed_in_memory_result.get('outcome') or 'completed'}. "
+            "Research completed successfully, but restart recovery is unavailable. "
+            "No rerun is required."
+        )
+        session_result_is_displayed = (
+            st.session_state.get("result") is completed_in_memory_result.get("result")
+        )
+        if not session_result_is_displayed and st.button(
+            "Load session result",
+            key="load_completed_in_memory_result",
+            use_container_width=True,
+        ):
+            _apply_in_memory_research(completed_in_memory_result)
+            st.rerun()
+        if st.button(
+            "Retry saving",
+            key="retry_save_completed_in_memory_result",
+            use_container_width=True,
+        ):
+            try:
+                retry_scope, retry_scope_id = _saved_research_scope()
+                artifact_id = _save_displayable_result(
+                    completed_in_memory_result["result"],
+                    run_id=str(
+                        completed_in_memory_result.get("run_id")
+                        or getattr(
+                            getattr(completed_in_memory_result["result"], "run_manifest", None),
+                            "run_id",
+                            "",
+                        )
+                        or uuid.uuid4()
+                    ),
+                    operation_kind=str(
+                        completed_in_memory_result.get("operation_kind")
+                        or "full_research"
+                    ),
+                    operation_label=str(
+                        completed_in_memory_result.get("operation_label") or "Research"
+                    ),
+                    run_status="completed",
+                    preferred_route=str(
+                        completed_in_memory_result.get("preferred_route") or "Decision"
+                    ),
+                    setup_summary=dict(
+                        completed_in_memory_result.get("setup_summary") or {}
+                    ),
+                    storage_scope=retry_scope,
+                    scope_id=retry_scope_id,
+                    completed_at=str(
+                        completed_in_memory_result.get("completed_at") or ""
+                    ),
+                    parent_artifact_id=str(
+                        completed_in_memory_result.get("parent_artifact_id") or ""
+                    ),
+                )
+                if _load_saved_artifact(artifact_id, scope_id=retry_scope_id):
+                    st.session_state.pop("_completed_in_memory_result", None)
+                    st.rerun()
+            except (
+                SavedResearchError,
+                SavedResearchCodecError,
+                SavedResearchStorageError,
+                OSError,
+                ValueError,
+            ) as exc:
+                completed_in_memory_result["save_error"] = {
+                    "message": str(exc),
+                    "reason": str(getattr(exc, "reason", "") or "verification_failed"),
+                    "failure_path": str(getattr(exc, "failure_path", "") or ""),
+                    "annotation": str(getattr(exc, "annotation", "") or ""),
+                }
+                st.session_state._saved_research_load_error = dict(
+                    completed_in_memory_result["save_error"]
+                )
+                st.rerun()
+        download_result_key = _result_adoption_key(
+            completed_in_memory_result["result"]
+        )
+        prepared_download = st.session_state.get(
+            "_prepared_session_result_download"
+        )
+        if (
+            not isinstance(prepared_download, dict)
+            or prepared_download.get("key") != download_result_key
+        ):
+            prepared_download = None
+        if prepared_download is None and st.button(
+            "Prepare sanitized download",
+            key="prepare_completed_in_memory_download",
+            use_container_width=True,
+        ):
+            try:
+                sanitized_download = JsonResearchResultArtifactCodec().encode(
+                    completed_in_memory_result["result"]
+                )
+                st.session_state._prepared_session_result_download = {
+                    "key": download_result_key,
+                    "payload": sanitized_download,
+                }
+                st.rerun()
+            except (SavedResearchCodecError, TypeError, ValueError) as exc:
+                st.warning(f"A sanitized download could not be prepared. {exc}")
+        elif prepared_download is not None:
+            st.download_button(
+                "Download sanitized result",
+                data=prepared_download["payload"],
+                file_name=(
+                    f"{str(completed_in_memory_result.get('ticker') or 'research').lower()}-"
+                    "session-result.json"
+                ),
+                mime="application/json",
+                key="download_completed_in_memory_result",
+                use_container_width=True,
+            )
+        if completed_in_memory_result.get("save_error"):
+            with st.expander("Review technical compatibility details", expanded=False):
+                st.json(completed_in_memory_result["save_error"])
     pending_demo_preset = st.session_state.pop("_pending_demo_preset", None)
     if pending_demo_preset:
         st.session_state.research_profile_selector = pending_demo_preset.get(
             "research_profile", "deep_initiation"
         )
         st.session_state.budget_mode_selector = pending_demo_preset.get("budget_mode", "Premium")
-    pending_live_refresh_ticker = st.session_state.pop(
-        "_pending_live_refresh", ""
-    )
-    if pending_live_refresh_ticker:
-        st.session_state.ticker_input = str(
-            pending_live_refresh_ticker
-        ).upper()
-    pending_live_refresh = bool(pending_live_refresh_ticker)
+    # Pre-intent app versions used this flag to auto-start research after a
+    # rerun. Discard it during migration so an upgrade cannot launch hidden work.
+    st.session_state.pop("_pending_live_refresh", None)
 
     with st.sidebar:
         st.header("Research Run")
@@ -896,6 +2781,17 @@ def main() -> None:
             key="display_timezone",
             help="Canonical UTC timestamps remain available in Audit & Memo.",
         )
+        _render_displayed_research_card()
+        saved_library_ticker = str(
+            st.session_state.get("ticker_input")
+            or getattr(
+                getattr(st.session_state.get("result"), "identity", None),
+                "ticker",
+                "AAPL",
+            )
+            or "AAPL"
+        ).upper()
+        _render_saved_research_library(saved_library_ticker)
         secrets_manager = LocalSecretsManager()
         local_secret_status = secrets_manager.redacted_status(getattr(config, "_SYSTEM_ENV_KEYS", set()))
         configured_secret_count = sum(
@@ -907,7 +2803,7 @@ def main() -> None:
             st.caption(f"{configured_secret_count} saved provider key(s) configured via {local_secret_backend}.")
         elif not secrets_manager.backend_available:
             st.warning("OS keychain is unavailable. Install keyring support or use .env.local manually.")
-        cases = demo_cases()
+        cases = public_demo_cases()
         demo_labels = [f"{case.ticker} - {case.title}" for case in cases]
         st.subheader("Load Demo Gallery")
         selected_demo = st.selectbox("Demo case", demo_labels, index=0)
@@ -939,20 +2835,37 @@ def main() -> None:
         profile_ids = [item.profile_id for item in profile_options if not item.event_scoped]
         profile_by_id = {item.profile_id: item for item in profile_options}
         default_profile = config.RESEARCH_PROFILE if config.RESEARCH_PROFILE in profile_ids else "adaptive_ic"
+        profile_radio_kwargs: dict[str, object] = {}
+        if "research_profile_selector" not in st.session_state:
+            profile_radio_kwargs["index"] = profile_ids.index(default_profile)
         selected_profile_id = st.radio(
             "Research depth",
             profile_ids,
-            index=profile_ids.index(default_profile),
             format_func=lambda value: profile_by_id[value].label,
             help="Fast screens one anomaly; Adaptive is the default analyst workflow; Deep builds a fuller initiation pack.",
             key="research_profile_selector",
+            **profile_radio_kwargs,
         )
         selected_profile = profile_by_id[selected_profile_id]
         st.caption(
             f"{selected_profile.quarter_depth} quarters, {selected_profile.annual_depth} annual reports, "
             f"{selected_profile.call_depth} calls."
         )
-        investigate_clicked = False
+        agent_research_effort = st.selectbox(
+            "Agent research effort",
+            ("answer_oriented", "maximum"),
+            index=0,
+            format_func=lambda value: (
+                "Answer-oriented"
+                if value == "answer_oriented" else "Maximum depth"
+            ),
+            help=(
+                "Answer-oriented is the readable default. Maximum depth gives "
+                "the primary researcher and Codex larger bounded tool and time budgets."
+            ),
+            key="agent_research_effort_selector",
+        )
+        select_event_clicked = False
         investigate_event_id = None
         prior_result = st.session_state.get("result")
         if prior_result and getattr(prior_result, "events", None):
@@ -966,7 +2879,11 @@ def main() -> None:
                 list(event_labels),
                 format_func=lambda value: event_labels[value],
             )
-            investigate_clicked = st.button("Investigate This Event", use_container_width=True)
+            select_event_clicked = st.button(
+                "Select event investigation",
+                use_container_width=True,
+                disabled=_has_active_research_task(),
+            )
         # Legacy internals still accept a budget label, but production research
         # always admits every configured and entitled source. Research depth
         # controls breadth and latency, never source eligibility.
@@ -986,8 +2903,27 @@ def main() -> None:
         ).strip()
         sec_user_agent = sec_user_agent_input or config.SEC_USER_AGENT
         st.subheader("Consensus Connection")
-        source_setup_request = st.session_state.get(
-            "_investigation_source_setup"
+        setup_intent = _selected_research_intent()
+        source_setup_request = (
+            {
+                "ticker": setup_intent.ticker,
+                "title": setup_intent.operation_label,
+                "source_families": tuple(
+                    value.replace("_", " ")
+                    for value in setup_intent.required_source_families
+                ),
+                "connectors": tuple(
+                    value.replace("_", " ")
+                    for value in setup_intent.preferred_connectors
+                ),
+                "is_frozen_demo": bool(
+                    getattr(st.session_state.get("result"), "demo_case", None)
+                ),
+            }
+            if setup_intent is not None
+            and setup_intent.status
+            is ResearchLaunchIntentStatus.NEEDS_SOURCE_SETUP
+            else None
         )
         if source_setup_request:
             setup_title = str(
@@ -1003,11 +2939,10 @@ def main() -> None:
                 f"Step 1 of 2 — source setup for {setup_title}. "
                 + (
                     "Frozen demos are read-only. Connect an eligible source "
-                    "below; step 2 is to use Run / Refresh Research for an "
-                    "updated live result. "
+                    "below; step 2 is to confirm the selected investigation. "
                     if source_setup_request.get("is_frozen_demo")
-                    else "Connect an eligible source below; step 2 is to use "
-                    "Run / Refresh Research for an updated live result. "
+                    else "Connect an eligible source below; step 2 is to confirm "
+                    "the selected investigation. "
                 )
                 + (
                     "Requested source families: " + ", ".join(setup_sources) + "."
@@ -1022,12 +2957,11 @@ def main() -> None:
                     + "."
                 )
             if st.button(
-                "Dismiss source setup",
+                "Clear selected investigation",
                 key="dismiss-investigation-source-setup",
                 use_container_width=True,
             ):
-                st.session_state.pop("_investigation_source_setup", None)
-                st.session_state.pop("_open_additional_sources", None)
+                _clear_research_intent()
                 st.rerun()
         configured_alpha_key = config.ALPHAVANTAGE_API_KEY or _streamlit_secret("ALPHAVANTAGE_API_KEY")
         configured_finnhub_key = config.FINNHUB_API_KEY or _streamlit_secret("FINNHUB_API_KEY")
@@ -1286,6 +3220,21 @@ def main() -> None:
                     "Language policy",
                     ["bilingual_audit", "english_only"],
                     index=0 if selection.get("language_policy", config.LLM_LANGUAGE_POLICY) != "english_only" else 1,
+                )
+                st.caption("Actionability policy applies to the Decision recommendation; it does not change the underlying research evidence.")
+                st.slider(
+                    "Minimum risk-adjusted return for Long / Short (%)",
+                    min_value=5,
+                    max_value=30,
+                    value=int(st.session_state.get("actionability_min_return_pct", 10)),
+                    key="actionability_min_return_pct",
+                )
+                st.slider(
+                    "Minimum evidence quality for an actionable rating",
+                    min_value=40,
+                    max_value=90,
+                    value=int(st.session_state.get("actionability_min_evidence_score", 60)),
+                    key="actionability_min_evidence_score",
                 )
             st.markdown("**Independent Research QA**")
             codex_readiness = _local_codex_readiness()
@@ -1911,6 +3860,9 @@ def main() -> None:
                 )
             ),
         )
+        current_research_setup["agent_research_effort"] = (
+            agent_research_effort
+        )
         st.session_state._current_research_setup = current_research_setup
         if configured_sources:
             st.caption(
@@ -1923,39 +3875,411 @@ def main() -> None:
                 f"Market data: {configured_market_sources} paid connector(s) "
                 "enabled for price attribution."
             )
-        st.markdown("**Next live run**")
-        st.info(_format_research_setup(current_research_setup))
+        primary_agent_ready = hybrid_preflight.deepseek.status == "ready"
+        effective_agent_research = bool(enable_llm and primary_agent_ready)
+        effective_hybrid_research = bool(
+            enable_hybrid_research and research_readiness.qa_resolved
+        )
+        launch_source_families = tuple(dict.fromkeys([
+            "sec",
+            *(name.casefold().replace(" ", "_") for name in enabled_macro_sources),
+            *(["wisburg"] if enable_wisburg else []),
+            *(["consensus"] if configured_sources else []),
+            *(["market_data"] if configured_market_sources else []),
+        ]))
+        _, launch_workspace_scope = _saved_research_scope()
+        launch_data_cutoff = datetime.now(timezone.utc).date().isoformat()
+        displayed_result = st.session_state.get("result")
+        parent_context = _displayed_parent_context(displayed_result)
+
+        if select_event_clicked and investigate_event_id:
+            event_label = str(
+                event_labels.get(
+                    investigate_event_id,
+                    f"Selected {ticker} event",
+                )
+            )
+            _stage_research_intent(build_research_launch_intent(
+                ticker=ticker,
+                operation_kind=ResearchOperationKind.EVENT_INVESTIGATION,
+                operation_label=f"Investigate {event_label}",
+                objective=(
+                    "Run a focused investigation of this event, its operating "
+                    "mechanism, market reaction, and affected conclusions."
+                ),
+                launch_origin="sidebar_event_selector",
+                research_profile="investigate_event",
+                preferred_result_route="Research",
+                event_id=str(investigate_event_id),
+                required_source_families=launch_source_families,
+                qa_enabled=effective_hybrid_research,
+                workspace_scope=launch_workspace_scope,
+                fingerprint_context={
+                    "setup": current_research_setup,
+                    "primary_provider": primary_profile_id,
+                    "auditor_provider": secondary_profile_id,
+                },
+                **parent_context,
+            ))
+            st.session_state._investigation_queue_notice = (
+                "Event investigation selected. Review and confirm it in Next "
+                "research task. No providers were called."
+            )
+            st.rerun()
+
+        selected_launch_intent = _selected_research_intent()
+        full_launch_intent = build_research_launch_intent(
+            ticker=ticker,
+            operation_kind=ResearchOperationKind.FULL_RESEARCH,
+            operation_label=(
+                f"{selected_profile.label} for {ticker}"
+                + (
+                    " with Independent Research QA"
+                    if effective_hybrid_research else ""
+                )
+            ),
+            objective=(
+                "Refresh broad company research using the selected depth, "
+                "providers, source policy, and data cutoff."
+            ),
+            launch_origin="sidebar_full_research",
+            research_profile=selected_profile_id,
+            preferred_result_route="Decision",
+            required_source_families=launch_source_families,
+            qa_enabled=effective_hybrid_research,
+            workspace_scope=launch_workspace_scope,
+            fingerprint_context={
+                "setup": current_research_setup,
+                "primary_provider": primary_profile_id,
+                "auditor_provider": secondary_profile_id,
+                "source_families": launch_source_families,
+                "data_cutoff": launch_data_cutoff,
+                "cache_policy": "refresh" if refresh_macro_cache else "eligible_cache",
+            },
+        )
+        st.session_state._current_full_research_intent = full_launch_intent
+        launch_intent_for_run = selected_launch_intent or full_launch_intent
+        launch_view_model = build_research_launch_intent_view_model(
+            launch_intent_for_run
+        )
+        run_clicked = False
+        confirm_repeat = False
+        repeat_attempt_id = ""
+
+        st.markdown("**Next research task**")
+        launch_blocker = str(
+            st.session_state.pop("_research_launch_blocker", "") or ""
+        )
+        if launch_blocker:
+            st.error(launch_blocker)
+        active_hybrid_job_id = str(
+            st.session_state.get("hybrid_job_id") or ""
+        )
+        active_job = (
+            _hybrid_job_manager().get(active_hybrid_job_id)
+            if active_hybrid_job_id else None
+        )
+        focused_run_id = str(
+            st.session_state.get("_focused_research_run_id") or ""
+        )
+        focused_snapshot = (
+            _research_run_service().inspect(focused_run_id)
+            if focused_run_id else None
+        )
+        focused_is_active = bool(
+            focused_snapshot is not None
+            and focused_snapshot.status in {
+                "queued", "running", "cancelling", "waiting_for_credential",
+                "research_attempt_finished", "validation_pending",
+                "repair_required", "repair_running", "revision_pending",
+                "audit_pending", "closure_pending",
+            }
+        )
+        if active_job is not None or focused_is_active:
+            with st.container(border=True):
+                st.markdown("**Active research task**")
+                st.write(
+                    str(
+                        getattr(active_job, "operation_label", "")
+                        if active_job is not None
+                        else getattr(focused_snapshot.command, "operation_label", "")
+                    )
+                    or f"Research for {ticker}"
+                )
+                st.caption(
+                    f"{str(getattr(active_job, 'operation_kind', '') if active_job is not None else focused_snapshot.command.operation_kind).replace('_', ' ').title()} · "
+                    f"{getattr(active_job, 'ticker', ticker) if active_job is not None else focused_snapshot.command.ticker} · "
+                    f"{getattr(active_job, 'status', '') if active_job is not None else focused_snapshot.status}"
+                )
+                progress = getattr(active_job, "progress", None)
+                st.caption(
+                    "Current stage: "
+                    + str(
+                        getattr(progress, "current_stage", "")
+                        or getattr(focused_snapshot, "current_stage", "")
+                        or "Preparing research"
+                    )
+                )
+                if active_job is not None and progress is not None:
+                    if getattr(progress, "research_question", ""):
+                        st.write(
+                            "**Now researching:** "
+                            + str(progress.research_question)
+                        )
+                    if getattr(progress, "current_role", ""):
+                        st.caption(
+                            "Current role: "
+                            + str(progress.current_role).replace("_", " ").title()
+                        )
+                    if getattr(progress, "questions_total", 0):
+                        st.caption(
+                            f"Agenda answers: {progress.questions_answered} of "
+                            f"{progress.questions_total} · "
+                            f"{progress.tool_actions} research tool action(s)"
+                        )
+                    if getattr(progress, "source_capabilities_used", None):
+                        st.caption(
+                            "Sources in use: "
+                            + ", ".join(progress.source_capabilities_used[:5])
+                        )
+                    st.caption(
+                        "Elapsed: "
+                        + _duration_label(
+                            getattr(progress, "elapsed_seconds", 0)
+                        )
+                    )
+            st.caption(
+                "Another task cannot be launched or silently queued while this "
+                "task is active. Your current selection is preserved."
+            )
+        else:
+            with st.container(border=True):
+                st.markdown(f"**{launch_view_model.operation_type_label}**")
+                st.write(launch_view_model.operation_label)
+                st.caption(f"Ticker: {launch_view_model.ticker}")
+                st.caption(
+                    "Status: "
+                    + launch_view_model.status.replace("_", " ").title()
+                )
+                st.caption(f"Objective: {launch_view_model.objective}")
+                st.caption(
+                    f"Sources: {launch_view_model.source_summary} · "
+                    f"{launch_view_model.qa_summary}"
+                )
+                st.caption(
+                    f"Expected result: {launch_view_model.preferred_result_route}"
+                )
+                if launch_view_model.needs_source_setup:
+                    required_names = tuple(
+                        str(item).casefold()
+                        for item in launch_intent_for_run.required_source_families
+                    )
+                    missing_required_sources = []
+                    if any("consensus" in item or "estimate" in item for item in required_names) and not configured_sources:
+                        missing_required_sources.append("consensus or estimate-history source")
+                    if any("wisburg" in item for item in required_names) and not enable_wisburg:
+                        missing_required_sources.append("Wisburg research source")
+                    st.warning(
+                        "Source setup required. Configure an eligible source above, "
+                        "then mark the selection ready. It will not auto-start."
+                    )
+                    if missing_required_sources:
+                        st.caption(
+                            "Still needed: " + ", ".join(missing_required_sources) + "."
+                        )
+                    if st.button(
+                        "Use current eligible sources",
+                        key="mark-selected-research-sources-ready",
+                        use_container_width=True,
+                        disabled=bool(missing_required_sources),
+                    ):
+                        ready_intent = replace(
+                            launch_intent_for_run,
+                            status=ResearchLaunchIntentStatus.READY,
+                            blocking_reason="",
+                        )
+                        _stage_research_intent(ready_intent)
+                        st.session_state.pop("_investigation_source_setup", None)
+                        st.session_state.pop("_open_additional_sources", None)
+                        st.rerun()
+
+            repeat_confirmation = st.session_state.get(
+                "_research_launch_repeat_confirmation"
+            )
+            if (
+                isinstance(repeat_confirmation, dict)
+                and repeat_confirmation.get("fingerprint")
+                == launch_intent_for_run.operation_fingerprint
+            ):
+                existing_status = str(
+                    repeat_confirmation.get("status") or "completed"
+                )
+                st.warning(
+                    "This exact research task already has an attempt with status "
+                    f"{existing_status.replace('_', ' ')}. Loading it is the "
+                    "zero-call default."
+                )
+                existing_reference = str(
+                    repeat_confirmation.get("result_reference") or ""
+                )
+                repeat_cols = st.columns(
+                    2 if existing_status == "completed" else 3
+                )
+                if repeat_cols[0].button(
+                    "Load completed result"
+                    if existing_status == "completed"
+                    else "Load saved draft",
+                    key="load-repeated-research-result",
+                    use_container_width=True,
+                    disabled=not existing_reference,
+                ):
+                    if _load_saved_artifact(
+                        existing_reference,
+                        scope_id=launch_workspace_scope,
+                    ):
+                        _clear_research_intent()
+                        st.rerun()
+                if existing_status == "completed":
+                    if repeat_cols[1].button(
+                        "Run again",
+                        key="confirm-repeated-research-launch",
+                        use_container_width=True,
+                        type="primary",
+                    ):
+                        run_clicked = True
+                        confirm_repeat = True
+                        repeat_attempt_id = str(
+                            repeat_confirmation.get("repeat_attempt_id") or ""
+                        )
+                else:
+                    if repeat_cols[1].button(
+                        "Resume / repair",
+                        key="repair-repeated-research-launch",
+                        use_container_width=True,
+                    ):
+                        repair_intent = build_research_launch_intent(
+                            ticker=str(
+                                repeat_confirmation.get("ticker")
+                                or launch_intent_for_run.ticker
+                            ),
+                            operation_kind=ResearchOperationKind.REPAIR_RECHECK,
+                            operation_label=(
+                                "Repair and resume: "
+                                + str(
+                                    repeat_confirmation.get("operation_label")
+                                    or launch_intent_for_run.operation_label
+                                )
+                            ),
+                            objective=(
+                                "Resume from the preserved draft, repair material "
+                                "blockers, revalidate, and rerun required closure."
+                            ),
+                            launch_origin="repeat_partial_repair",
+                            research_profile=launch_intent_for_run.research_profile,
+                            preferred_result_route="Audit",
+                            parent_run_id=str(
+                                repeat_confirmation.get("run_id") or ""
+                            ),
+                            parent_artifact_id=existing_reference,
+                            parent_evidence_hash=str(
+                                repeat_confirmation.get("evidence_hash") or ""
+                            ),
+                            qa_enabled=launch_intent_for_run.qa_enabled,
+                            workspace_scope=launch_intent_for_run.workspace_scope,
+                        )
+                        _stage_research_intent(repair_intent)
+                        st.rerun()
+                    if repeat_cols[2].button(
+                        "Start new attempt",
+                        key="restart-repeated-research-launch",
+                        use_container_width=True,
+                        type="primary",
+                    ):
+                        run_clicked = True
+                        confirm_repeat = True
+                        repeat_attempt_id = str(
+                            repeat_confirmation.get("repeat_attempt_id") or ""
+                        )
+                if st.button(
+                    "Cancel",
+                    key="cancel-repeated-research-launch",
+                    use_container_width=True,
+                ):
+                    st.session_state.pop(
+                        "_research_launch_repeat_confirmation", None
+                    )
+                    st.rerun()
+            elif launch_view_model.can_launch:
+                separate_full_refresh = bool(
+                    selected_launch_intent is None
+                    and st.session_state.get("_last_completed_operation_kind")
+                    in {
+                        "action_investigation",
+                        "targeted_investigation",
+                        "event_investigation",
+                        "analog_investigation",
+                        "repair_recheck",
+                        "repair_and_recheck",
+                    }
+                )
+                if separate_full_refresh and not st.session_state.get(
+                    "_confirm_separate_full_refresh"
+                ):
+                    if st.button(
+                        "Start a separate full research refresh",
+                        key="stage-separate-full-refresh",
+                        use_container_width=True,
+                        type="primary",
+                    ):
+                        st.session_state._confirm_separate_full_refresh = True
+                        st.rerun()
+                else:
+                    cta = (
+                        "Confirm full research refresh"
+                        if separate_full_refresh
+                        else launch_view_model.primary_cta
+                    )
+                    run_clicked = st.button(
+                        cta,
+                        key="run-selected-research-task",
+                        type="primary",
+                        use_container_width=True,
+                    )
+            if selected_launch_intent is not None:
+                selection_cols = st.columns(2)
+                if selection_cols[0].button(
+                    "Clear selection",
+                    key="clear-selected-research-task",
+                    use_container_width=True,
+                ):
+                    _clear_research_intent()
+                    st.rerun()
+                if selection_cols[1].button(
+                    "Switch to full research",
+                    key="switch-to-full-research-task",
+                    use_container_width=True,
+                ):
+                    _clear_research_intent()
+                    st.session_state._confirm_separate_full_refresh = True
+                    st.rerun()
+
         st.caption(
-            "Every configured and entitled source is eligible. Research depth controls "
-            "breadth and latency; Adaptive Macro selects decision-relevant context."
+            "Every configured and entitled source is eligible. Selecting a task "
+            "does not start provider or connector calls."
         )
         run_network_check = st.button("Run Network Diagnostics", use_container_width=True)
         test_connection = st.button("Test Consensus Sources", use_container_width=True)
-        qa_primary_ready = hybrid_preflight.deepseek.status == "ready"
-        effective_hybrid_research = bool(
-            enable_hybrid_research and qa_primary_ready
-        )
-        run_clicked = st.button(
-            "Run / Refresh Research",
-            type="primary",
-            use_container_width=True,
-            disabled=False,
-        ) or pending_live_refresh
         if (
             run_clicked
             and enable_hybrid_research
-            and not qa_primary_ready
+            and not primary_agent_ready
         ):
             st.warning(
                 "Independent Research QA cannot start because its primary research "
                 "provider is unavailable. Deterministic research will continue and "
                 "the result will state that Independent QA was not run."
             )
-        active_hybrid_job_id = str(
-            st.session_state.get("hybrid_job_id") or ""
-        )
         if active_hybrid_job_id:
-            active_job = _hybrid_job_manager().get(active_hybrid_job_id)
             if active_job:
                 st.info(
                     f"Active: {getattr(active_job, 'operation_label', '') or f'Research for {active_job.ticker}'}. "
@@ -1978,9 +4302,18 @@ def main() -> None:
     if load_demo_clicked:
         st.session_state.result = demo_result(selected_case.ticker)
         st.session_state.demo_mode = selected_case.ticker
+        UiSessionState(st.session_state).request_public_demo_landing()
+        st.session_state._displayed_saved_artifact_id = ""
+        st.session_state._displayed_parent_run_id = ""
+        st.session_state._displayed_saved_storage_scope = ""
+        st.session_state._displayed_saved_scope_id = ""
+        st.session_state._displayed_result_origin = "frozen_demo"
+        st.session_state._displayed_operation_label = ""
+        st.session_state._displayed_outcome = ""
         st.session_state._displayed_research_setup = _demo_research_setup(
             selected_case
         )
+        st.session_state.pop("_displayed_research_context", None)
         st.session_state._pending_demo_preset = {
             "research_profile": "deep_initiation" if case_budget_mode == "Premium" else default_profile,
             "budget_mode": case_budget_mode or budget_mode,
@@ -2040,126 +4373,63 @@ def main() -> None:
             for gap in package.data_gaps:
                 st.sidebar.caption(gap)
 
-    pending_analog_investigation = st.session_state.pop(
-        "_pending_analog_investigation",
-        None,
-    )
-    investigate_analog_id = None
-    if pending_analog_investigation:
-        ticker = str(pending_analog_investigation.get("ticker") or ticker).upper()
-        investigate_analog_id = str(
-            pending_analog_investigation.get("analog_id") or ""
-        ) or None
-        run_clicked = True
+    # Discard legacy implicit-run markers without launching hidden work. Any new
+    # selection is represented by ResearchLaunchIntent.
+    st.session_state.pop("_pending_research_operation", None)
+    st.session_state.pop("_pending_publication_repair", None)
+    st.session_state.pop("_pending_analog_investigation", None)
 
-    pending_research_operation = st.session_state.pop(
-        "_pending_research_operation",
-        None,
-    ) or {}
-    if (
-        run_clicked
-        and not pending_research_operation
-        and source_setup_request
-        and str(source_setup_request.get("ticker") or "").upper() == ticker
-    ):
-        pending_research_operation = {
-            "operation_kind": "targeted_investigation",
-            "operation_label": str(
-                source_setup_request.get("title")
-                or f"Selected investigation for {ticker}"
-            ),
-            "investigation_action_id": str(
-                source_setup_request.get("action_id") or ""
-            ),
-            "investigation_action_kind": str(
-                source_setup_request.get("action_kind") or ""
-            ),
-            "investigation_objective": str(
-                source_setup_request.get("objective")
-                or source_setup_request.get("title")
-                or ""
-            ),
-            "investigation_semantic_key": str(
-                source_setup_request.get("semantic_key") or ""
-            ),
-            "investigation_source_families": tuple(
-                source_setup_request.get("registered_source_families") or ()
-            ),
-            "investigation_preferred_connectors": tuple(
-                source_setup_request.get("registered_connectors") or ()
-            ),
-            "result_route": "Evidence",
-        }
-        st.session_state.pop("_investigation_source_setup", None)
-        st.session_state.pop("_open_additional_sources", None)
-
-    pending_publication_repair = st.session_state.pop(
-        "_pending_publication_repair",
-        None,
-    )
-
-    if (run_clicked or investigate_clicked) and ticker:
-        effective_profile = "investigate_event" if investigate_clicked else selected_profile_id
-        operation_kind = str(
-            pending_research_operation.get("operation_kind")
-            or "full_research"
+    if run_clicked and ticker:
+        selected_intent = launch_intent_for_run
+        if (
+            selected_intent.operation_kind is ResearchOperationKind.REPAIR_RECHECK
+            and not selected_intent.parent_run_id
+        ):
+            st.session_state._research_launch_blocker = (
+                "Repair and recheck could not start because the displayed result "
+                "has no recoverable parent run. Reload the saved result and try "
+                "again; no provider calls were made."
+            )
+            st.rerun()
+        if selected_intent.qa_enabled and not research_readiness.qa_resolved:
+            st.session_state._research_launch_blocker = (
+                "Independent QA is required for this task but its auditor is not "
+                "ready. Connect local Codex or select an available auditor; the "
+                "task selection was preserved and no provider calls were made."
+            )
+            st.rerun()
+        effective_hybrid_for_run = bool(
+            effective_hybrid_research
+            or (selected_intent.qa_enabled and research_readiness.qa_resolved)
         )
-        operation_label = str(
-            pending_research_operation.get("operation_label") or ""
-        )
-        investigation_action_id = str(
-            pending_research_operation.get("investigation_action_id") or ""
-        )
-        investigation_action_kind = str(
-            pending_research_operation.get("investigation_action_kind") or ""
-        )
-        investigation_objective = str(
-            pending_research_operation.get("investigation_objective") or ""
-        )
-        investigation_semantic_key = str(
-            pending_research_operation.get("investigation_semantic_key") or ""
-        )
+        ticker = selected_intent.ticker
+        effective_profile = selected_intent.research_profile
+        operation_kind = selected_intent.operation_kind.value
+        operation_label = selected_intent.operation_label
+        investigation_action_id = selected_intent.action_id
+        investigation_action_kind = selected_intent.action_kind
+        investigation_objective = selected_intent.objective
+        investigation_semantic_key = selected_intent.action_semantic_key
         investigation_source_families = tuple(
-            pending_research_operation.get(
-                "investigation_source_families"
-            ) or ()
+            selected_intent.required_source_families
         )
         investigation_preferred_connectors = tuple(
-            pending_research_operation.get(
-                "investigation_preferred_connectors"
-            ) or ()
+            selected_intent.preferred_connectors
         )
-        result_route = str(
-            pending_research_operation.get("result_route") or "Decision"
+        investigate_event_id = selected_intent.event_id or None
+        investigate_analog_id = selected_intent.analog_id or None
+        result_route = selected_intent.preferred_result_route
+        pending_publication_repair = (
+            {
+                "source_run_id": selected_intent.parent_run_id,
+                "source_evidence_hash": selected_intent.parent_evidence_hash,
+                "action_ids": tuple(selected_intent.repair_action_ids),
+                "retry_stages": tuple(selected_intent.repair_retry_stages),
+            }
+            if selected_intent.operation_kind
+            is ResearchOperationKind.REPAIR_RECHECK
+            else None
         )
-        if investigate_clicked:
-            operation_kind = "event_investigation"
-            operation_label = "Investigate " + str(
-                event_labels.get(
-                    investigate_event_id,
-                    f"selected {ticker} event",
-                )
-            )
-            result_route = "Research"
-        elif investigate_analog_id:
-            operation_kind = "analog_investigation"
-            operation_label = str(
-                (pending_analog_investigation or {}).get("episode")
-                or f"Investigate historical analog {investigate_analog_id}"
-            )
-            result_route = "Research"
-        elif pending_publication_repair:
-            operation_kind = "repair_and_recheck"
-            operation_label = "Repair and recheck publication readiness"
-            result_route = "Audit"
-        elif not operation_label:
-            operation_label = (
-                f"{selected_profile.label} for {ticker}"
-                + (
-                    " with Independent Research QA"
-                    if effective_hybrid_research else ""
-                )
-            )
         active_research_setup = dict(current_research_setup)
         active_research_setup["profile"] = effective_profile
         active_research_setup["ticker"] = ticker
@@ -2185,17 +4455,18 @@ def main() -> None:
                 if hybrid_backend_id == "configured_secondary"
                 else str(getattr(hybrid_executor_provider, "provider_name", "") or "")
             ),
-            independent_qa_enabled=effective_hybrid_research,
+            independent_qa_enabled=effective_hybrid_for_run,
             adaptive_macro=macro_policy != "Paused",
             wisburg_enabled=enable_wisburg,
             enabled_source_families=frozen_source_families,
-            investigate_event_id=(
-                investigate_event_id if investigate_clicked else ""
-            ) or "",
+            data_cutoff=launch_data_cutoff,
+            cache_bypass=bool(refresh_macro_cache),
+            investigate_event_id=investigate_event_id or "",
             investigation_action_id=investigation_action_id,
             investigation_action_kind=investigation_action_kind,
             investigation_objective=investigation_objective,
             investigation_semantic_key=investigation_semantic_key,
+            research_intent_id=selected_intent.research_intent_id,
             investigation_source_families=investigation_source_families,
             investigation_preferred_connectors=(
                 investigation_preferred_connectors
@@ -2207,24 +4478,62 @@ def main() -> None:
                 "repair_and_recheck"
                 if pending_publication_repair else "research"
             ),
-            parent_run_id=str(
-                (pending_publication_repair or {}).get("source_run_id") or ""
-            ),
-            parent_evidence_hash=str(
-                (pending_publication_repair or {}).get(
-                    "source_evidence_hash"
-                ) or ""
-            ),
-            repair_action_ids=tuple(
-                (pending_publication_repair or {}).get("action_ids") or ()
-            ),
-            workspace_scope="local",
+            parent_run_id=selected_intent.parent_run_id,
+            parent_evidence_hash=selected_intent.parent_evidence_hash,
+            repair_action_ids=tuple(selected_intent.repair_action_ids),
+            repair_retry_stages=tuple(selected_intent.repair_retry_stages),
+            workspace_scope=selected_intent.workspace_scope,
+            agent_research_effort=agent_research_effort,
             credential_lease_ids=_issue_session_credential_leases(
                 primary_key=hybrid_deepseek_session_key,
                 auditor_key=hybrid_openai_session_key,
             ),
         )
-        lifecycle_run_id = ""
+        launch_result = _research_launch_service().launch(
+            selected_intent,
+            frozen_run_command,
+            confirm_repeat=confirm_repeat,
+            repeat_attempt_id=repeat_attempt_id,
+        )
+        if launch_result.confirmation_required:
+            existing = launch_result.snapshot
+            st.session_state._research_launch_repeat_confirmation = {
+                "fingerprint": selected_intent.operation_fingerprint,
+                "run_id": str(getattr(existing, "run_id", "") or ""),
+                "status": str(getattr(existing, "status", "") or "completed"),
+                "result_reference": str(
+                    getattr(existing, "result_reference", "") or ""
+                ),
+                "evidence_hash": str(
+                    getattr(existing, "evidence_hash", "") or ""
+                ),
+                "ticker": str(
+                    getattr(getattr(existing, "command", None), "ticker", "")
+                    or selected_intent.ticker
+                ),
+                "operation_label": str(
+                    getattr(
+                        getattr(existing, "command", None),
+                        "operation_label",
+                        "",
+                    )
+                    or selected_intent.operation_label
+                ),
+                "repeat_attempt_id": uuid.uuid4().hex,
+            }
+            st.rerun()
+        if not launch_result.created:
+            existing = launch_result.snapshot
+            if existing is not None:
+                st.session_state.research_run_id = existing.run_id
+                st.session_state._focused_research_run_id = existing.run_id
+            st.info(
+                "The same research task is already active. The existing task "
+                "was focused; no duplicate provider calls were started."
+            )
+            st.rerun()
+        lifecycle_run_id = str(launch_result.snapshot.run_id)
+        st.session_state.research_run_id = lifecycle_run_id
         try:
             store = ResearchStore()
 
@@ -2260,18 +4569,20 @@ def main() -> None:
                         budget_mode=budget_mode,
                         store=store,
                         research_profile=effective_profile,
-                        investigate_event_id=investigate_event_id if investigate_clicked else None,
+                        investigate_event_id=investigate_event_id,
                         investigate_analog_id=investigate_analog_id,
                         investigation_action_id=investigation_action_id,
                         investigation_action_kind=investigation_action_kind,
                         investigation_objective=investigation_objective,
                         investigation_semantic_key=investigation_semantic_key,
+                        research_intent_id=selected_intent.research_intent_id,
                         investigation_source_families=investigation_source_families,
                         investigation_preferred_connectors=(
                             investigation_preferred_connectors
                         ),
-                        enable_hybrid_research=effective_hybrid_research,
-                        enable_independent_research_qa=effective_hybrid_research,
+                        enable_hybrid_research=effective_hybrid_for_run,
+                        enable_agent_research=effective_agent_research,
+                        enable_independent_research_qa=effective_hybrid_for_run,
                         resume_hybrid_run_id=str(
                             (pending_publication_repair or {}).get("source_run_id")
                             or ""
@@ -2283,60 +4594,85 @@ def main() -> None:
                         hybrid_execution_backend=hybrid_execution_backend,
                         hybrid_cancel_event=cancel_event,
                         hybrid_progress_callback=progress_callback,
+                        agent_research_effort=agent_research_effort,
+                        repair_stage_repository=_repair_stage_repository(
+                            str(Path(config.RESEARCH_DB_PATH).resolve())
+                        ),
+                        repair_attempt_id=lifecycle_run_id,
+                        repair_execution_policy=_repair_execution_policy(
+                            closure_retry=(
+                                "closure_checker"
+                                in selected_intent.repair_retry_stages
+                            )
+                        ),
+                        repair_retry_stages=tuple(
+                            selected_intent.repair_retry_stages
+                        ),
                     )
                 return run_us_equity_research(
-                        ticker,
-                        sec_client=SecClient(user_agent=sec_user_agent),
-                        price_client=StooqPriceClient(
-                            store=store,
-                            tiingo_key=effective_tiingo_key,
-                            eodhd_key=effective_eodhd_key,
-                        ),
-                        external_evidence_provider=external_provider,
-                        llm_provider=llm_provider,
-                        secondary_llm_provider=secondary_llm_provider,
-                        enable_secondary_llm_review=enable_secondary_review,
-                        secondary_llm_min_stage=secondary_min_stage,
-                        llm_language_policy=language_policy,
-                        budget_mode=budget_mode,
+                    ticker,
+                    sec_client=SecClient(user_agent=sec_user_agent),
+                    price_client=StooqPriceClient(
                         store=store,
-                        research_profile=effective_profile,
-                        investigate_event_id=investigate_event_id if investigate_clicked else None,
-                        investigate_analog_id=investigate_analog_id,
-                        investigation_action_id=investigation_action_id,
-                        investigation_action_kind=investigation_action_kind,
-                        investigation_objective=investigation_objective,
-                        investigation_semantic_key=investigation_semantic_key,
-                        investigation_source_families=investigation_source_families,
-                        investigation_preferred_connectors=(
-                            investigation_preferred_connectors
-                        ),
-                        enable_hybrid_research=effective_hybrid_research,
-                    enable_independent_research_qa=effective_hybrid_research,
+                        tiingo_key=effective_tiingo_key,
+                        eodhd_key=effective_eodhd_key,
+                    ),
+                    external_evidence_provider=external_provider,
+                    llm_provider=llm_provider,
+                    secondary_llm_provider=secondary_llm_provider,
+                    enable_secondary_llm_review=enable_secondary_review,
+                    secondary_llm_min_stage=secondary_min_stage,
+                    llm_language_policy=language_policy,
+                    budget_mode=budget_mode,
+                    store=store,
+                    research_profile=effective_profile,
+                    investigate_event_id=investigate_event_id,
+                    investigate_analog_id=investigate_analog_id,
+                    investigation_action_id=investigation_action_id,
+                    investigation_action_kind=investigation_action_kind,
+                    investigation_objective=investigation_objective,
+                    investigation_semantic_key=investigation_semantic_key,
+                    research_intent_id=selected_intent.research_intent_id,
+                    investigation_source_families=investigation_source_families,
+                    investigation_preferred_connectors=(
+                        investigation_preferred_connectors
+                    ),
+                    enable_hybrid_research=effective_hybrid_for_run,
+                    enable_agent_research=effective_agent_research,
+                    enable_independent_research_qa=effective_hybrid_for_run,
                     resume_hybrid_run_id=str(
                         (pending_publication_repair or {}).get("source_run_id")
                         or ""
                     ),
-                        hybrid_planner_provider=hybrid_planner_provider,
-                        hybrid_executor_provider=hybrid_executor_provider,
-                        hybrid_checker_provider=hybrid_planner_provider,
-                        hybrid_critic_provider=None,
-                        hybrid_execution_backend=hybrid_execution_backend,
-                        hybrid_cancel_event=cancel_event,
-                        hybrid_progress_callback=progress_callback,
-                    )
-            if effective_hybrid_research:
+                    hybrid_planner_provider=hybrid_planner_provider,
+                    hybrid_executor_provider=hybrid_executor_provider,
+                    hybrid_checker_provider=hybrid_planner_provider,
+                    hybrid_critic_provider=None,
+                    hybrid_execution_backend=hybrid_execution_backend,
+                    hybrid_cancel_event=cancel_event,
+                    hybrid_progress_callback=progress_callback,
+                    agent_research_effort=agent_research_effort,
+                    repair_stage_repository=_repair_stage_repository(
+                        str(Path(config.RESEARCH_DB_PATH).resolve())
+                    ),
+                    repair_attempt_id=lifecycle_run_id,
+                    repair_execution_policy=_repair_execution_policy(
+                        closure_retry=(
+                            "closure_checker"
+                            in selected_intent.repair_retry_stages
+                        )
+                    ),
+                    repair_retry_stages=tuple(
+                        selected_intent.repair_retry_stages
+                    ),
+                )
+            if effective_agent_research:
                 if st.session_state.get("hybrid_job_id"):
                     st.warning(
-                        "An Independent Research QA job is already active. Refresh "
+                        "An agent research job is already active. Refresh "
                         "or cancel it before starting another."
                     )
                 else:
-                    lifecycle = _research_run_service().start(
-                        frozen_run_command
-                    )
-                    lifecycle_run_id = lifecycle.run_id
-                    st.session_state.research_run_id = lifecycle_run_id
                     displayed = st.session_state.get("result")
                     displayed_context = (
                         DisplayedResultContext(
@@ -2376,21 +4712,37 @@ def main() -> None:
                         investigation_action_kind=investigation_action_kind,
                         investigation_semantic_key=investigation_semantic_key,
                         result_route=result_route,
+                        originating_artifact_id=str(
+                            st.session_state.get("_displayed_saved_artifact_id") or ""
+                        ),
+                        saved_setup_summary={
+                            **active_research_setup,
+                            "operation_kind": operation_kind,
+                            "operation_label": operation_label,
+                            "operation_objective": selected_intent.objective,
+                            "investigation_action_id": investigation_action_id,
+                            "investigation_action_kind": investigation_action_kind,
+                            "investigation_semantic_key": investigation_semantic_key,
+                        },
+                        saved_storage_scope=_saved_research_scope()[0].value,
+                        saved_scope_id=_saved_research_scope()[1],
                         job_id=lifecycle_run_id,
                     )
                     st.session_state.hybrid_job_id = state.job_id
+                    _clear_research_intent()
+                    st.session_state.pop("_confirm_separate_full_refresh", None)
                     st.info(
-                        "Independent Research QA started in the background. "
-                        "Use Refresh QA status in the "
+                        (
+                            "Agent research with Independent Research QA started in the background. "
+                            if effective_hybrid_for_run else
+                            "Primary agent research started in the background. Independent QA is not configured for this run. "
+                        )
+                        + "Use Refresh QA status in the "
                         "sidebar; the current result remains visible."
                     )
                     st.rerun()
             else:
-                lifecycle = _research_run_service().start(
-                    frozen_run_command
-                )
-                lifecycle_run_id = lifecycle.run_id
-                st.session_state.research_run_id = lifecycle_run_id
+                parent_displayed_result = st.session_state.get("result")
                 _research_run_service().mark_running(
                     lifecycle_run_id,
                     "deterministic_bootstrap",
@@ -2399,19 +4751,99 @@ def main() -> None:
                 with st.spinner(f"Running research workflow for {ticker}..."):
                     st.session_state.result = execute_live_research()
                     st.session_state.demo_mode = None
-                    st.session_state._displayed_research_setup = dict(
-                        active_research_setup
-                    )
+                    st.session_state._displayed_research_setup = {
+                        **active_research_setup,
+                        "operation_kind": operation_kind,
+                        "operation_label": operation_label,
+                        "operation_objective": selected_intent.objective,
+                        "investigation_action_id": investigation_action_id,
+                        "investigation_action_kind": investigation_action_kind,
+                        "investigation_semantic_key": investigation_semantic_key,
+                    }
                 completed_result = st.session_state.result
                 completed_manifest = getattr(
                     completed_result, "run_manifest", None
                 )
+                saved_artifact_id = ""
+                try:
+                    saved_storage_scope, saved_scope_id = _saved_research_scope()
+                    saved_artifact_id = _save_displayable_result(
+                        completed_result,
+                        run_id=lifecycle_run_id,
+                        operation_kind=operation_kind,
+                        operation_label=operation_label,
+                        run_status="completed",
+                        preferred_route=result_route,
+                        setup_summary={
+                            **active_research_setup,
+                            "operation_kind": operation_kind,
+                            "operation_label": operation_label,
+                            "operation_objective": selected_intent.objective,
+                            "investigation_action_id": investigation_action_id,
+                            "investigation_action_kind": investigation_action_kind,
+                            "investigation_semantic_key": investigation_semantic_key,
+                        },
+                        storage_scope=saved_storage_scope,
+                        scope_id=saved_scope_id,
+                        parent_artifact_id=str(
+                            st.session_state.get("_displayed_saved_artifact_id") or ""
+                        ),
+                    )
+                    loaded = _saved_research_service_for_scope(
+                        saved_storage_scope
+                    ).load_result(
+                        saved_artifact_id,
+                        scope_id=saved_scope_id,
+                    )
+                    _apply_loaded_saved_research(loaded, show_notice=False)
+                    _research_run_service().record_event(
+                        lifecycle_run_id,
+                        stage="result_persistence",
+                        status="completed",
+                        summary="Displayable research result saved for zero-call loading.",
+                        details={"saved_artifact_id": saved_artifact_id},
+                        idempotency_key=f"result-saved:{saved_artifact_id}",
+                    )
+                except (
+                    SavedResearchError,
+                    SavedResearchCodecError,
+                    SavedResearchStorageError,
+                    OSError,
+                    ValueError,
+                ) as exc:
+                    st.session_state._completed_in_memory_result = {
+                        "result": completed_result,
+                        "run_id": lifecycle_run_id,
+                        "operation_kind": operation_kind,
+                        "operation_label": operation_label,
+                        "ticker": ticker,
+                        "outcome": "completed",
+                        "preferred_route": result_route,
+                        "parent_artifact_id": str(
+                            st.session_state.get("_displayed_saved_artifact_id") or ""
+                        ),
+                        "setup_summary": dict(
+                            st.session_state.get("_displayed_research_setup") or {}
+                        ),
+                        "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "save_error": {
+                            "message": str(exc),
+                            "reason": str(getattr(exc, "reason", "") or "verification_failed"),
+                            "failure_path": str(getattr(exc, "failure_path", "") or ""),
+                            "annotation": str(getattr(exc, "annotation", "") or ""),
+                        },
+                    }
+                    _apply_in_memory_research(
+                        st.session_state._completed_in_memory_result
+                    )
+                    st.warning(
+                        "Research completed and remains visible, but it could not be "
+                        f"saved for restart recovery. {exc}"
+                    )
                 _research_run_service().finish(
                     lifecycle_run_id,
                     status="completed",
-                    result_reference=str(
-                        getattr(completed_manifest, "run_id", "") or ""
-                    ),
+                    result_reference=saved_artifact_id,
                     evidence_hash=str(
                         getattr(
                             completed_manifest,
@@ -2429,6 +4861,12 @@ def main() -> None:
                         or "completed"
                     ),
                 )
+                # See the background completion path: journey presentation is
+                # always reconstructed from result plus displayed context.
+                _clear_research_intent()
+                st.session_state.pop("_confirm_separate_full_refresh", None)
+                st.session_state._last_completed_operation_kind = operation_kind
+                st.session_state._last_completed_operation_label = operation_label
         except SecClientError as exc:
             if lifecycle_run_id:
                 try:
@@ -2486,10 +4924,14 @@ def main() -> None:
         result,
         active_job_id=str(st.session_state.get("hybrid_job_id") or ""),
     )
+    # Apply a renderer-originated navigation request before the route radio is
+    # created.  This is the only point in a rerun allowed to update
+    # ``research_view`` directly.
+    ui_state.apply_pending_route()
     if str(st.session_state.get("research_view") or "") not in {
         "Decision", "Research", "Evidence", "Audit",
     }:
-        st.session_state.research_view = "Decision"
+        ui_state.selected_route = "Decision"
     research_view = st.radio(
         "Research view",
         ["Decision", "Research", "Evidence", "Audit"],
@@ -2500,7 +4942,15 @@ def main() -> None:
     if research_view == "Decision":
         decision_intent = render_decision_page_component(
             st,
-            build_decision_brief_view_model(result),
+            build_decision_brief_view_model(
+                result,
+                minimum_expected_return_pct=float(
+                    st.session_state.get("actionability_min_return_pct", 10)
+                ),
+                minimum_evidence_score=int(
+                    st.session_state.get("actionability_min_evidence_score", 60)
+                ),
+            ),
             assumptions_renderer=(
                 (
                     lambda: _render_market_implied_assumption_editor(
@@ -2518,6 +4968,20 @@ def main() -> None:
             tiingo_key=effective_tiingo_key,
             eodhd_key=effective_eodhd_key,
         )
+        completed_journey = _investigation_journey_view_model(
+            result,
+            active_job_id=str(st.session_state.get("hybrid_job_id") or ""),
+        )
+        if completed_journey is not None and not completed_journey.active:
+            render_investigation_journey(
+                st,
+                completed_journey,
+                heading="Latest investigation result",
+                compact=True,
+                on_open_evidence=lambda: ui_state.request_route(
+                    "Evidence", origin="latest_investigation_result"
+                ),
+            )
     elif research_view == "Research":
         route_values = [route.value for route in ResearchSubroute]
         selected_route_value = st.radio(
@@ -2530,6 +4994,10 @@ def main() -> None:
         render_research_route_header(
             st,
             build_research_route_view_model(result, selected_route),
+        )
+        render_research_session_workbench(
+            st,
+            build_research_session_view_model(result, selected_route),
         )
         if selected_route is ResearchSubroute.THESIS_DRIVERS:
             render_research_modes(result)
@@ -2547,10 +5015,50 @@ def main() -> None:
         else:
             render_historical_analog_intelligence(result, compact=False)
     elif research_view == "Evidence":
-        render_evidence_page_overview(
-            st,
-            build_evidence_page_view_model(result),
+        displayed_setup = dict(
+            st.session_state.get("_displayed_research_setup") or {}
         )
+        evidence_intent = render_evidence_page_overview(
+            st,
+            build_evidence_page_view_model(
+                result,
+                displayed_context=st.session_state.get("_displayed_research_context"),
+                operation_kind=str(displayed_setup.get("operation_kind") or ""),
+                operation_label=str(
+                    displayed_setup.get("operation_label")
+                    or st.session_state.get("_displayed_operation_label")
+                    or ""
+                ),
+                operation_action_id=str(
+                    displayed_setup.get("investigation_action_id") or ""
+                ),
+                outcome=str(st.session_state.get("_displayed_outcome") or ""),
+            ),
+        )
+        if evidence_intent == "run_refreshed_answer_qa":
+            parent_context = _displayed_parent_context(result)
+            profile = getattr(result, "research_profile", None)
+            _stage_research_intent(build_research_launch_intent(
+                ticker=str(getattr(getattr(result, "identity", None), "ticker", "") or ""),
+                operation_kind=ResearchOperationKind.REPAIR_RECHECK,
+                operation_label="Independent QA for refreshed cash-conversion answer",
+                objective=(
+                    "Audit the refreshed two-period cash-conversion bridge, address any "
+                    "material findings, and run final closure."
+                ),
+                launch_origin="evidence_refreshed_answer_qa",
+                research_profile=str(
+                    getattr(profile, "profile_id", "")
+                    or displayed_setup.get("research_profile")
+                    or "deep_initiation"
+                ),
+                preferred_result_route="Evidence",
+                research_intent_id="cash_generation_capital_allocation:recurring_cash_conversion",
+                required_source_families=("sec_filing",),
+                qa_enabled=True,
+                **parent_context,
+            ))
+            st.rerun()
         render_investigation_action_register(
             st,
             build_investigation_action_view_models(result),
@@ -2574,7 +5082,10 @@ def main() -> None:
         _handle_publication_repair_intent(result, repair_intent)
         render_integrity_timeline_component(
             st,
-            build_integrity_timeline_view_model(result),
+            build_integrity_timeline_view_model(
+                result,
+                displayed_context=st.session_state.get("_displayed_research_context"),
+            ),
         )
         render_investigation_action_register(
             st,
@@ -2712,12 +5223,16 @@ def _human_decision_comparison(delta) -> str:
     return f"Prior {result_type} run {verb} {timestamp}{profile}"
 
 
-def render_active_hybrid_job_banner(job_id: str) -> None:
+def render_active_hybrid_job_banner(
+    job_id: str,
+    *,
+    result: ResearchResult | None = None,
+) -> None:
     if not job_id:
         return
     state = _hybrid_job_manager().get(job_id)
     if state is None or state.status not in {
-        "queued", "running", "cancelling"
+        "queued", "running", "saving_result", "cancelling"
     }:
         return
     progress = getattr(state, "progress", None)
@@ -2732,58 +5247,98 @@ def render_active_hybrid_job_banner(job_id: str) -> None:
     )
     verb = {
         "targeted_investigation": "Investigating",
+        "action_investigation": "Investigating",
         "event_investigation": "Investigating",
         "analog_investigation": "Investigating",
+        "repair_recheck": "Repairing and rechecking",
         "repair_and_recheck": "Repairing and rechecking",
     }.get(operation_kind, "Running")
-    st.warning(
-        f"{verb}: {operation_label}. Status: {state.status}. "
-        + (
-            f"The displayed result is {displayed.label.lower()} and does not "
-            "yet contain output from this active work."
-            if displayed else
-            "No completed result from this active work is displayed yet."
+    if result is not None:
+        journey_model = _investigation_journey_view_model(
+            result,
+            active_job_id=job_id,
         )
+        if journey_model is not None:
+            render_investigation_journey(
+                st,
+                journey_model,
+                heading="Research journey",
+                compact=True,
+            )
+    displayed_label = (
+        displayed.label.lower() if displayed else "the prior result"
     )
-    _wrapped_metric_grid([
-        (
-            "Current stage",
-            getattr(progress, "current_stage", "Research in progress"),
-        ),
-        (
-            "Model calls",
-            f"{getattr(progress, 'completed_model_calls', 0)}/"
-            f"{getattr(progress, 'attempted_model_calls', 0)} completed",
-        ),
-        (
-            "Provider",
-            " / ".join(
-                item for item in [
-                    getattr(progress, "provider", ""),
-                    getattr(progress, "model", ""),
-                ] if item
-            ) or "Deterministic preparation",
-        ),
-        (
-            "Elapsed",
-            _duration_label(getattr(progress, "elapsed_seconds", 0)),
-        ),
-    ])
     st.caption(
-        f"Started {_display_timestamp(getattr(progress, 'started_at', ''))}; "
-        f"last update {_display_timestamp(getattr(state, 'updated_at', ''))}. "
-        "Use Refresh status to load the finished artifact when this run completes."
+        f"{verb} {operation_label}. {displayed_label.title()} remains visible "
+        "until the new result is saved and loaded."
     )
-    if getattr(progress, "message", ""):
-        st.caption(progress.message)
-    if getattr(progress, "failure_class", ""):
-        st.warning(
-            f"Current model-stage failure: {progress.failure_class}. "
-            f"Retries used: {getattr(progress, 'retry_count', 0)}. Validated completed "
-            "artifacts remain available."
+    with st.expander("Live run details", expanded=False):
+        repair_stage_index = int(
+            getattr(progress, "repair_stage_index", 0) or 0
         )
-    elif getattr(progress, "retry_count", 0):
-        st.caption(f"Automatic retries used: {progress.retry_count}.")
+        repair_stage_count = int(
+            getattr(progress, "repair_stage_count", 0) or 0
+        )
+        if repair_stage_index and repair_stage_count:
+            st.caption(
+                f"Repair stage {repair_stage_index} of {repair_stage_count} · "
+                f"{getattr(progress, 'current_stage', 'Working')}"
+            )
+        st.caption(
+            f"Model calls: {getattr(progress, 'completed_model_calls', 0)}/"
+            f"{getattr(progress, 'attempted_model_calls', 0)} completed · "
+            "Provider: "
+            + (
+                " / ".join(
+                    item for item in [
+                        getattr(progress, "provider", ""),
+                        getattr(progress, "model", ""),
+                    ] if item
+                )
+                or "Deterministic preparation"
+            )
+        )
+        st.caption(
+            f"Started {_display_timestamp(getattr(progress, 'started_at', ''))}; "
+            f"last update {_display_timestamp(getattr(state, 'updated_at', ''))}."
+        )
+        if getattr(progress, "execution_state", ""):
+            execution_state = str(progress.execution_state).replace(
+                "_", " "
+            ).title()
+            activity_at = _display_timestamp(
+                getattr(progress, "execution_last_activity_at", "")
+            )
+            deadline_at = _display_timestamp(
+                getattr(progress, "execution_hard_deadline_at", "")
+            )
+            st.caption(
+                f"Local Codex: {execution_state} · last activity "
+                f"{activity_at} · hard deadline {deadline_at}."
+            )
+        if getattr(progress, "message", ""):
+            st.caption(progress.message)
+        if getattr(progress, "failure_class", ""):
+            failure_class = str(progress.failure_class)
+            if failure_class == "provider_credit_required":
+                st.warning(
+                    "The selected model provider needs additional credit. "
+                    "Completed research is preserved; add credit or choose "
+                    "another eligible primary provider, then resume explicitly."
+                )
+            elif failure_class == "provider_authentication_required":
+                st.warning(
+                    "The selected model provider needs authentication. "
+                    "Completed research is preserved; reconnect or choose "
+                    "another eligible provider, then resume explicitly."
+                )
+            else:
+                st.warning(
+                    f"Current model-stage failure: {failure_class}. "
+                    f"Retries used: {getattr(progress, 'retry_count', 0)}."
+                )
+        elif getattr(progress, "retry_count", 0):
+            st.caption(f"Automatic retries used: {progress.retry_count}.")
     controls = st.columns(2)
     if controls[0].button(
         "Refresh status",
@@ -2798,6 +5353,142 @@ def render_active_hybrid_job_banner(job_id: str) -> None:
     ):
         _hybrid_job_manager().cancel(job_id)
         st.rerun()
+
+
+def _investigation_journey_view_model(
+    result: ResearchResult,
+    *,
+    active_job_id: str,
+):
+    state = _hybrid_job_manager().get(active_job_id) if active_job_id else None
+    if state is not None and state.status in {
+        "queued", "running", "saving_result", "cancelling",
+    }:
+        progress = getattr(state, "progress", None)
+        setup = dict(getattr(state, "saved_setup_summary", {}) or {})
+        try:
+            events = _research_run_service().timeline(state.job_id)
+        except (KeyError, OSError, ValueError):
+            events = []
+        journey_model = build_investigation_journey_view_model(
+            build_investigation_journey(
+                result,
+                operation_kind=str(getattr(state, "operation_kind", "full_research") or "full_research"),
+                operation_label=str(
+                    getattr(state, "operation_label", "") or f"Research for {state.ticker}"
+                ),
+                objective=str(setup.get("operation_objective") or ""),
+                persistence_status="saving" if state.status == "saving_result" else "pending",
+                active_stage=str(
+                    getattr(progress, "journey_stage", "")
+                    or getattr(progress, "current_stage", "")
+                    or state.status
+                ),
+                active=True,
+                elapsed_seconds=float(getattr(progress, "elapsed_seconds", 0) or 0),
+                events=events,
+                research_intent_id=str(setup.get("research_intent_id") or ""),
+                data_cutoff=str(setup.get("data_cutoff") or ""),
+            )
+        )
+        repair_index = int(getattr(progress, "repair_stage_index", 0) or 0)
+        repair_count = int(getattr(progress, "repair_stage_count", 0) or 0)
+        if repair_index and repair_count:
+            journey_model = replace(
+                journey_model,
+                current_stage=str(
+                    getattr(progress, "current_stage", "")
+                    or journey_model.current_stage
+                ),
+                progress_percent=min(
+                    99,
+                    round(100 * (repair_index - 0.5) / repair_count),
+                ),
+                progress_label=(
+                    f"Repair stage {repair_index} of {repair_count} · "
+                    f"{getattr(progress, 'current_stage', 'Working')}"
+                ),
+                execution_state=str(
+                    getattr(progress, "execution_state", "") or ""
+                ),
+                execution_last_activity_at=str(
+                    getattr(
+                        progress,
+                        "execution_last_activity_at",
+                        "",
+                    ) or ""
+                ),
+                execution_hard_deadline_at=str(
+                    getattr(
+                        progress,
+                        "execution_hard_deadline_at",
+                        "",
+                    ) or ""
+                ),
+            )
+        return journey_model
+    setup = dict(st.session_state.get("_displayed_research_setup") or {})
+    displayed_context = st.session_state.get("_displayed_research_context")
+    displayed_reference = st.session_state.get(
+        "_displayed_investigation_reference"
+    ) or displayed_context
+    operation_kind = str(
+        getattr(displayed_reference, "operation_kind", "")
+        or setup.get("operation_kind")
+        or ""
+    )
+    if operation_kind not in {
+        "targeted_investigation", "action_investigation", "event_investigation",
+        "analog_investigation", "repair_recheck", "repair_and_recheck",
+    }:
+        return None
+    persistence_status = (
+        "verified saved result"
+        if st.session_state.get("_displayed_saved_artifact_id")
+        else "session only · not saved"
+    )
+    if getattr(result, "demo_case", None):
+        persistence_status = "frozen demo"
+    return build_investigation_journey_view_model(
+        build_investigation_journey(
+            result,
+            operation_kind=operation_kind,
+            operation_label=str(
+                getattr(displayed_context, "operation_label", "")
+                or getattr(displayed_reference, "operation_label", "")
+                or setup.get("operation_label")
+                or st.session_state.get("_displayed_operation_label")
+                or "Focused investigation"
+            ),
+            objective=str(
+                setup.get("operation_objective")
+                or getattr(displayed_reference, "operation_label", "")
+                or ""
+            ),
+            outcome=str(
+                getattr(displayed_context, "outcome", "")
+                or st.session_state.get("_displayed_outcome")
+                or "completed"
+            ),
+            persistence_status=persistence_status,
+            research_intent_id=str(
+                getattr(displayed_reference, "intent_id", "")
+                or getattr(displayed_context, "research_intent_id", "")
+                or setup.get("research_intent_id")
+                or ""
+            ),
+            data_cutoff=str(
+                getattr(displayed_reference, "data_cutoff", "")
+                or getattr(displayed_context, "data_cutoff", "")
+                or ""
+            ),
+            evidence_hash=str(
+                getattr(displayed_reference, "evidence_hash", "")
+                or getattr(displayed_context, "evidence_hash", "")
+                or ""
+            ),
+        )
+    )
 
 
 def render_header(
@@ -2818,7 +5509,7 @@ def render_header(
         else getattr(result.run_manifest, "generated_at", "")
     )
     st.subheader(f"{identity.name.title()} ({identity.ticker})")
-    render_active_hybrid_job_banner(active_job_id)
+    render_active_hybrid_job_banner(active_job_id, result=result)
     st.caption(
         " · ".join(
             value for value in (
@@ -2829,6 +5520,12 @@ def render_header(
         )
     )
     st.caption(_localized_freshness_summary(freshness))
+    displayed_context = st.session_state.get("_displayed_research_context")
+    if bool(getattr(displayed_context, "is_derived_revision", False)):
+        st.info(
+            "Evidence refreshed from the saved result's original cutoff. "
+            "Independent QA is pending for the affected answer."
+        )
     displayed_setup = st.session_state.get("_displayed_research_setup")
     next_setup = st.session_state.get("_current_research_setup")
     displayed_label = _format_research_setup(
@@ -2839,22 +5536,28 @@ def render_header(
     if displayed_label != next_label:
         st.caption(
             f"Viewing now: {displayed_label}\n\n"
-            f"Next live run: {next_label}"
+            f"Next research setup: {next_label}"
         )
     else:
-        st.caption(f"Viewing now and next live run use: {next_label}")
+        st.caption(f"Viewing now and next research setup use: {next_label}")
     action_cols = st.columns([1.4, 2.6])
     if action_cols[0].button(
-        "Refresh using current setup",
+        "Select full research refresh",
         key=f"refresh-live-{identity.ticker}",
         use_container_width=True,
-        disabled=bool(st.session_state.get("hybrid_job_id")),
+        disabled=_has_active_research_task(),
         help=(
-            "Runs live research for this ticker with the exact setup shown above. "
-            "Change the setup in the sidebar first if needed."
+            "Stages a broad refresh with the exact setup shown above. Review and "
+            "confirm it in the sidebar; selecting it makes no provider calls."
         ),
     ):
-        st.session_state._pending_live_refresh = identity.ticker
+        full_intent = st.session_state.get("_current_full_research_intent")
+        if isinstance(full_intent, ResearchLaunchIntent):
+            _stage_research_intent(full_intent)
+            st.session_state._investigation_queue_notice = (
+                "Full research refresh selected. Review and confirm it in Next "
+                "research task. No providers were called."
+            )
         st.rerun()
     with action_cols[1].expander("All source cutoffs", expanded=False):
         st.caption(
@@ -3636,7 +6339,10 @@ def render_catalyst_clock(result: ResearchResult) -> None:
 
 
 def render_prioritized_research_queue(result: ResearchResult) -> None:
-    queue = getattr(result, "prioritized_research_queue", [])
+    queue = canonicalize_investigation_actions(
+        result.identity.ticker,
+        getattr(result, "prioritized_research_queue", []),
+    ).actions
     if not queue:
         return
     st.markdown("#### Research Queue")
@@ -3733,25 +6439,53 @@ def render_historical_analog_intelligence(result: ResearchResult, *, compact: bo
         return
 
     dossier_ids = {item.analog_id for item in researched}
-    candidates = [
-        item for item in report.assessments
-        if item.analog_id not in dossier_ids
-    ]
+    candidates = sorted(
+        [
+            item for item in report.assessments
+            if item.analog_id not in dossier_ids
+            and int(getattr(item, "applicability_score", 0) or 0) >= 60
+            and str(getattr(item, "scope_status", "") or "") in {"", "in_scope"}
+            and str(getattr(item, "eligibility_code", "") or "") not in {
+                "issuer_scope_violation", "archetype_scope_violation",
+                "mechanism_scope_violation", "core_mechanism_unresolved",
+                "security_profile_unresolved", "scope_not_evaluated",
+            }
+        ],
+        key=lambda item: (
+            bool(
+                int(getattr(item, "source_relevance_score", 0) or 0) >= 60
+                and list(getattr(item, "sources", []) or [])
+            ),
+            int(getattr(item, "applicability_score", 0) or 0),
+            int(getattr(item, "source_relevance_score", 0) or 0),
+        ),
+        reverse=True,
+    )
+    if not researched and not candidates:
+        st.info(
+                "No credible historical playbook is established for this mechanism yet. "
+                "The app will not substitute a different issuer or mechanism merely to fill this section."
+            )
+        return
     visible = candidates[:1] if compact and not researched else candidates if not compact else []
     for assessment in visible:
         with st.container(border=True):
             st.markdown(f"**Candidate analog: {assessment.episode}**")
-            similarity = (
-                f"{assessment.similarity_score}/100"
-                if assessment.similarity_score is not None
-                else f"{assessment.similarity_band}; numeric score withheld pending audit"
+            source_backed = bool(
+                assessment.source_relevance_score >= 60 and assessment.sources
             )
             st.caption(
-                f"{assessment.status} | {assessment.classification} | "
-                f"similarity {similarity} | source relevance "
-                f"{assessment.source_relevance_score}/100 | confidence {assessment.confidence}"
+                (
+                    f"Investigated candidate · {assessment.classification} · "
+                    f"confidence {assessment.confidence}"
+                )
+                if source_backed else
+                "Candidate only · relevant mechanism, but episode evidence is not admitted"
             )
             st.write(assessment.what_it_suggests)
+            reasons = list(getattr(assessment, "applicability_reasons", []) or [])
+            if reasons:
+                st.caption("Why it fits: " + " ".join(reasons[:2]))
             if assessment.material_differences:
                 st.caption("Material difference: " + assessment.material_differences[0])
             st.caption(assessment.what_it_cannot_establish)
@@ -3802,12 +6536,37 @@ def render_historical_analog_intelligence(result: ResearchResult, *, compact: bo
                 "Investigate Further",
                 key=f"investigate-analog-{result.identity.ticker}-{assessment.analog_id}-{compact}",
                 use_container_width=True,
+                disabled=_has_active_research_task(),
             ):
-                st.session_state._pending_analog_investigation = {
-                    "ticker": result.identity.ticker,
-                    "analog_id": assessment.analog_id,
-                    "episode": f"Investigate historical analog: {assessment.episode}",
-                }
+                current_setup = dict(
+                    st.session_state.get("_current_research_setup") or {}
+                )
+                _, workspace_scope = _saved_research_scope()
+                _stage_research_intent(build_research_launch_intent(
+                    ticker=result.identity.ticker,
+                    operation_kind=ResearchOperationKind.ANALOG_INVESTIGATION,
+                    operation_label=(
+                        f"Investigate historical analog: {assessment.episode}"
+                    ),
+                    objective=(
+                        "Test the analog's mechanism, material differences, "
+                        "independent provenance, outcomes, and monitor value."
+                    ),
+                    launch_origin="research_analog_card",
+                    research_profile=str(
+                        current_setup.get("profile") or "adaptive_ic"
+                    ),
+                    preferred_result_route="Research",
+                    analog_id=str(assessment.analog_id or ""),
+                    qa_enabled=bool(current_setup.get("qa_resolved")),
+                    workspace_scope=workspace_scope,
+                    fingerprint_context={"setup": current_setup},
+                    **_displayed_parent_context(result),
+                ))
+                st.session_state._investigation_queue_notice = (
+                    "Historical analog investigation selected. Review and "
+                    "confirm it in Next research task. No providers were called."
+                )
                 st.rerun()
     hidden = max(
         0,

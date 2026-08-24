@@ -275,6 +275,88 @@ def test_ttm_fcf_uses_validated_trailing_values_not_interim_annualization() -> N
     assert "annualized" not in path.formula.casefold()
 
 
+def test_cash_conversion_bridge_separates_current_strength_from_recurrence() -> None:
+    metrics = [
+        FinancialMetric(
+            "Operating Cash Flow", 117.0, "USD", "2026-06-27",
+            trailing_twelve_month_value=146.724e9,
+            trailing_period_end="2026-06-27",
+            filed="2026-07-31",
+        ),
+        FinancialMetric(
+            "Net Income", 98.0, "USD", "2026-06-27",
+            trailing_twelve_month_value=128.930e9,
+            trailing_period_end="2026-06-27",
+            filed="2026-07-31",
+        ),
+        FinancialMetric(
+            "Capital Expenditure", 6.8, "USD", "2026-06-27",
+            trailing_twelve_month_value=10.041e9,
+            trailing_period_end="2026-06-27",
+            filed="2026-07-31",
+        ),
+        FinancialMetric(
+            "Dividends Paid", 11.8, "USD", "2026-06-27",
+            trailing_twelve_month_value=15.640e9,
+            trailing_period_end="2026-06-27",
+            filed="2026-07-31",
+        ),
+        FinancialMetric(
+            "Repurchases", 62.1, "USD", "2026-06-27",
+            trailing_twelve_month_value=82.226e9,
+            trailing_period_end="2026-06-27",
+            filed="2026-07-31",
+        ),
+    ]
+
+    path = next(
+        item for item in build_historical_financial_paths("AAPL", metrics)
+        if item.metric == "Cash Conversion Bridge TTM"
+    )
+    observation = path.observations[0]
+
+    assert path.status == "partial"
+    assert observation["free_cash_flow"] == pytest.approx(136.683e9)
+    assert observation["operating_cash_flow_to_net_income"] == pytest.approx(
+        146.724 / 128.930
+    )
+    assert observation["cash_after_dividends_and_repurchases"] == pytest.approx(
+        38.817e9
+    )
+    assert observation["recurrence_assessment"] == "insufficient_history"
+    assert any("prior same-duration" in item for item in path.data_gaps)
+    assert any("Cash taxes" in item for item in path.data_gaps)
+
+
+def test_cash_conversion_bridge_rejects_mixed_trailing_periods() -> None:
+    metrics = [
+        FinancialMetric(
+            "Operating Cash Flow", 1.0, "USD", "2026-06-27",
+            trailing_twelve_month_value=146.0,
+            trailing_period_end="2026-06-27",
+        ),
+        FinancialMetric(
+            "Net Income", 1.0, "USD", "2026-03-28",
+            trailing_twelve_month_value=128.0,
+            trailing_period_end="2026-03-28",
+        ),
+        FinancialMetric(
+            "Capital Expenditure", 1.0, "USD", "2026-06-27",
+            trailing_twelve_month_value=10.0,
+            trailing_period_end="2026-06-27",
+        ),
+    ]
+
+    path = next(
+        item for item in build_historical_financial_paths("AAPL", metrics)
+        if item.metric == "Cash Conversion Bridge TTM"
+    )
+
+    assert path.status == "unavailable"
+    assert path.observations == []
+    assert "same trailing-period" in path.data_gaps[0]
+
+
 def test_claim_audit_ignores_period_tokens_and_reconciles_derived_margin() -> None:
     records = [
         replace(

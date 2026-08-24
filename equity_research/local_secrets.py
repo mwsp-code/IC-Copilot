@@ -25,6 +25,10 @@ MANAGED_SECRET_KEYS = {
     "BEA_API_KEY",
     "CENSUS_API_KEY",
     "WISBURG_API_KEY",
+    "BLS_API_KEY",
+    "POLYGON_API_KEY",
+    "NEWSAPI_API_KEY",
+    "EVENT_REGISTRY_API_KEY",
     "TIINGO_API_KEY",
     "EODHD_API_KEY",
     "OPENAI_API_KEY",
@@ -52,6 +56,10 @@ SECRET_LABELS = {
     "BEA_API_KEY": "BEA",
     "CENSUS_API_KEY": "Census",
     "WISBURG_API_KEY": "Wisburg",
+    "BLS_API_KEY": "BLS",
+    "POLYGON_API_KEY": "Polygon",
+    "NEWSAPI_API_KEY": "NewsAPI",
+    "EVENT_REGISTRY_API_KEY": "Event Registry",
     "TIINGO_API_KEY": "Tiingo",
     "EODHD_API_KEY": "EODHD",
     "OPENAI_API_KEY": "OpenAI API",
@@ -73,6 +81,54 @@ class KeyringBackend(Protocol):
 
     def delete_password(self, service_name: str, username: str) -> None:
         ...
+
+
+class FallbackKeyringBackend:
+    """Use one stable writer while retaining read compatibility with old vaults.
+
+    Windows installations may run the app and maintainer scripts from Python
+    environments with different optional packages.  Without this boundary, one
+    runtime can write DPAPI-backed secrets while another silently selects the
+    ``keyring`` package and reports those same credentials missing.
+    """
+
+    def __init__(
+        self,
+        primary: KeyringBackend,
+        *fallbacks: KeyringBackend,
+        backend_name: str = "os_keychain",
+    ) -> None:
+        self.primary = primary
+        self.fallbacks = tuple(
+            backend for backend in fallbacks if backend is not primary
+        )
+        self.backend_name = backend_name
+
+    def get_password(self, service_name: str, username: str) -> str | None:
+        for backend in (self.primary, *self.fallbacks):
+            try:
+                value = backend.get_password(service_name, username)
+            except Exception:
+                continue
+            if value:
+                return value
+        return None
+
+    def set_password(
+        self,
+        service_name: str,
+        username: str,
+        password: str,
+    ) -> None:
+        # A single deterministic writer prevents the two stores from drifting.
+        self.primary.set_password(service_name, username, password)
+
+    def delete_password(self, service_name: str, username: str) -> None:
+        for backend in (self.primary, *self.fallbacks):
+            try:
+                backend.delete_password(service_name, username)
+            except Exception:
+                continue
 
 
 @dataclass
@@ -501,11 +557,24 @@ def _dpapi_unprotect(data: bytes) -> bytes:
 
 
 def _default_keyring_backend():
+    optional_keyring = None
     try:
         import keyring  # type: ignore
 
-        return keyring
+        optional_keyring = keyring
     except Exception:
-        if os.name == "nt":
-            return DpapiFileBackend()
-        return None
+        pass
+    if os.name == "nt":
+        # DPAPI is part of the operating system and is available to every
+        # supported Windows Python runtime.  Keep it as the canonical writer;
+        # an installed keyring remains a read/delete fallback for artifacts
+        # saved by older app versions.
+        dpapi = DpapiFileBackend()
+        if optional_keyring is not None:
+            return FallbackKeyringBackend(
+                dpapi,
+                optional_keyring,
+                backend_name="windows_dpapi",
+            )
+        return dpapi
+    return optional_keyring

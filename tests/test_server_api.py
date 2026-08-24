@@ -356,7 +356,7 @@ class ServerApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response["analog_id"], dossier.analog_id)
-        self.assertEqual(response["dossier"]["status"], "Frozen Demo Dossier")
+        self.assertEqual(response["dossier"]["status"], dossier.status)
         self.assertEqual(response["dossier"]["start_date"], "2016-09-24")
 
     def test_market_implied_assumption_routes_save_load_and_reset(self) -> None:

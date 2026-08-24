@@ -10,6 +10,11 @@ from .models import (
     MetricInterpretationPolicy,
 )
 from .research_profiles import event_identifier
+from .domain.research_ontology import (
+    METRIC_MECHANISMS,
+    SecurityResearchProfile,
+    resolve_metric_mechanism,
+)
 
 
 _POLICIES = {
@@ -146,11 +151,48 @@ def metric_policy_for(metric_name: str | None) -> MetricInterpretationPolicy:
     )
 
 
-def apply_metric_policy(event: ChangeEvent) -> MetricInterpretationPolicy:
+def apply_metric_policy(
+    event: ChangeEvent,
+    security_profile: SecurityResearchProfile | None = None,
+) -> MetricInterpretationPolicy:
     metric_name = str(event.metrics.get("metric_name") or event.metrics.get("economic_driver") or event.title)
-    policy = metric_policy_for(metric_name)
+    mechanism = None
+    existing_mechanism_id = str(event.metrics.get("research_mechanism_id") or "")
+    if existing_mechanism_id:
+        mechanism = next(
+            (item for item in METRIC_MECHANISMS if item.mechanism_id == existing_mechanism_id),
+            None,
+        )
+    if mechanism is None and security_profile is not None:
+        mechanism = resolve_metric_mechanism(
+            security_profile,
+            metric_name=metric_name,
+            title=event.title,
+            category=event.category,
+            economic_driver=str(event.metrics.get("economic_driver") or ""),
+            explicit_family=str(event.metrics.get("driver_family") or ""),
+        )
+    policy = (
+        MetricInterpretationPolicy(
+            metric_key=mechanism.metric_key,
+            driver_family=mechanism.driver_family,
+            default_polarity=mechanism.default_polarity,
+            interpretation=mechanism.interpretation,
+            constructive_mechanisms=[
+                f"The {mechanism.metric_key.lower()} signal converts through its archetype-specific causal chain."
+            ],
+            adverse_mechanisms=[mechanism.falsification_tests[0]],
+            required_evidence=list(mechanism.required_evidence),
+            valuation_effects=list(mechanism.valuation_effects),
+            credit_effects=list(mechanism.credit_effects),
+            falsification_tests=list(mechanism.falsification_tests),
+        )
+        if mechanism is not None else metric_policy_for(metric_name)
+    )
     event.metrics["metric_policy_key"] = policy.metric_key
     event.metrics["driver_family"] = policy.driver_family
+    if mechanism is not None:
+        event.metrics["research_mechanism_id"] = mechanism.mechanism_id
     event.metrics["metric_interpretation"] = policy.interpretation
     event.metrics["default_polarity"] = policy.default_polarity
     event.metrics["constructive_mechanisms"] = list(policy.constructive_mechanisms)
@@ -170,6 +212,7 @@ def apply_metric_policy(event: ChangeEvent) -> MetricInterpretationPolicy:
 
 def build_metric_change_assessments(
     events: list[ChangeEvent], metrics: list[FinancialMetric], selected_event_ids: list[str] | None = None,
+    security_profile: SecurityResearchProfile | None = None,
 ) -> list[MetricChangeAssessment]:
     selected = set(selected_event_ids or [])
     metric_history = {item.name: item for item in metrics}
@@ -180,7 +223,7 @@ def build_metric_change_assessments(
         event_id = event_identifier(event)
         if selected and event_id not in selected:
             continue
-        policy = apply_metric_policy(event)
+        policy = apply_metric_policy(event, security_profile)
         metric_name = str(event.metrics.get("metric_name") or policy.metric_key)
         metric = metric_history.get(metric_name)
         observation = event.summary

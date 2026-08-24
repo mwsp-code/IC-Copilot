@@ -74,7 +74,8 @@ def test_dispatcher_selects_registered_connector_then_common_admission() -> None
         ),
     )
 
-    assert execution.status == "resolved"
+    assert execution.status == "evidence_admitted"
+    assert request.status == "evidence_admitted"
     assert execution.candidates[0].status == "admitted"
     assert request.attempted_connector_ids == ["official-regulator"]
     assert request.admitted_evidence_ids

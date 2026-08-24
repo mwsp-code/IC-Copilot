@@ -26,6 +26,13 @@ from .domain.publication_readiness import (
     SemanticQualityEvaluation,
     ScopeInvalidationResult,
 )
+from .domain.agent_research import AgentResearchSession
+from .domain.financial_facts import CashConversionRecurrenceBridge
+from .domain.research_ontology import (
+    CausalBridgeAssessment,
+    LensAssessment,
+    SecurityResearchProfile,
+)
 
 
 @dataclass(frozen=True)
@@ -2446,6 +2453,21 @@ class ICDecisionBrief:
 
 
 @dataclass(frozen=True)
+class DecisionRecommendation:
+    """Public actionability, deliberately separate from a research hypothesis."""
+
+    recommendation: str
+    candidate_direction: str
+    actionable: bool
+    reasons: tuple[str, ...] = ()
+    minimum_expected_return_pct: float = 10.0
+
+    @property
+    def rationale(self) -> str:
+        return " ".join(item for item in self.reasons if item).strip()
+
+
+@dataclass(frozen=True)
 class DemoCase:
     demo_id: str
     ticker: str
@@ -2510,6 +2532,7 @@ class StoryCard:
     body: str
     next_action: str = ""
     evidence: list[EvidenceDrawer] = field(default_factory=list)
+    evidence_count: int | None = None
 
 
 @dataclass
@@ -2709,6 +2732,9 @@ class ResearchAuditFinding:
     affected_claim_ids: list[str] = field(default_factory=list)
     what_would_change_assessment: str = ""
     resolved: bool = False
+    primary_response_state: str = ""
+    primary_response_evidence_ids: list[str] = field(default_factory=list)
+    primary_response_summary: str = ""
 
 
 @dataclass
@@ -2731,6 +2757,7 @@ class ResearchRound:
     retry_count: int = 0
     quality_score: int | None = None
     quality_gain: int | None = None
+    reasoning_effort: str = ""
 
 
 @dataclass
@@ -3004,6 +3031,9 @@ class DiscoveredSourceCandidate:
     research_request_id: str = ""
     proposed_mapping: str = ""
     company_or_expert: str = ""
+    relationship_to_subject: str = "primary"
+    scope_status: str = "unverified"
+    referenced_entities: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -3292,6 +3322,8 @@ class HybridExecutionPreflight:
 class HybridJobProgress:
     status: str = "queued"
     current_stage: str = "Preparing deterministic research"
+    journey_stage: str = "investigation_selected"
+    progress_revision: int = 0
     current_round: int = 0
     attempted_model_calls: int = 0
     completed_model_calls: int = 0
@@ -3302,6 +3334,20 @@ class HybridJobProgress:
     retry_count: int = 0
     failure_class: str = ""
     message: str = ""
+    current_role: str = ""
+    research_question: str = ""
+    source_capabilities_used: list[str] = field(default_factory=list)
+    evidence_admitted: int = 0
+    questions_answered: int = 0
+    questions_total: int = 0
+    tool_actions: int = 0
+    model_turns: int = 0
+    repair_stage_index: int = 0
+    repair_stage_count: int = 0
+    repair_deadline_at: str = ""
+    execution_state: str = ""
+    execution_last_activity_at: str = ""
+    execution_hard_deadline_at: str = ""
 
 
 @dataclass
@@ -3447,6 +3493,15 @@ class HybridResearchRun:
     canonical_publication_revisions: list[CanonicalPublicationRevision] = field(
         default_factory=list
     )
+    agent_research_session: AgentResearchSession | None = None
+    agent_research_sessions: list[AgentResearchSession] = field(
+        default_factory=list
+    )
+    cash_conversion_recurrence: CashConversionRecurrenceBridge | None = None
+    security_profile_id: str = ""
+    core_mechanism_ids: list[str] = field(default_factory=list)
+    research_ontology_version: str = ""
+    lens_assessment_statuses: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -4445,6 +4500,20 @@ class HistoricalAnalogCandidate:
     expected_outcomes: list[str] = field(default_factory=list)
     required_source_types: list[str] = field(default_factory=list)
     reference_tickers: list[str] = field(default_factory=list)
+    # Applicability is deliberately separate from evidence quality.  It answers
+    # whether an episode is worth investigating for this security; it never
+    # promotes the episode into conclusion-eligible evidence.
+    applicability_score: int = 0
+    applicability_reasons: list[str] = field(default_factory=list)
+    transfer_role: str = "mechanism_candidate"
+    scope_status: str = "in_scope"
+    current_mechanism_id: str = ""
+    discovery_relevance_score: int = 0
+    eligibility_code: str = "legacy_unchecked"
+    eligibility_summary: str = ""
+    transfer_dimension: str = ""
+    research_state: str = "discovered_candidate"
+    analog_policy_version: str = "legacy"
 
 
 @dataclass
@@ -4472,6 +4541,17 @@ class HistoricalAnalogAssessment:
     sources: list[AnalogSourceObservation] = field(default_factory=list)
     source_quality: str = "Exploratory"
     confidence: str = "Low"
+    applicability_score: int = 0
+    applicability_reasons: list[str] = field(default_factory=list)
+    transfer_role: str = "mechanism_candidate"
+    scope_status: str = "in_scope"
+    current_mechanism_id: str = ""
+    discovery_relevance_score: int = 0
+    eligibility_code: str = "legacy_unchecked"
+    eligibility_summary: str = ""
+    transfer_dimension: str = ""
+    research_state: str = "discovered_candidate"
+    analog_policy_version: str = "legacy"
 
 
 @dataclass
@@ -4527,6 +4607,12 @@ class HistoricalEpisodeDossier:
     hidden_risks: list[str] = field(default_factory=list)
     quality_scorecard: AnalogQualityScorecard | None = None
     generation_provenance: dict[str, str] = field(default_factory=dict)
+    current_mechanism_id: str = ""
+    eligibility_code: str = "legacy_unchecked"
+    scope_status: str = "legacy_unchecked"
+    transfer_dimension: str = ""
+    research_state: str = "investigated_draft"
+    analog_policy_version: str = "legacy"
 
 
 @dataclass
@@ -4858,6 +4944,18 @@ class PrioritizedResearchAction:
     resolution_summary: str = ""
     origin_labels: list[str] = field(default_factory=list)
     semantic_key: str = ""
+    canonical_action_id: str = ""
+    semantic_key_version: str = "investigation-action-key-v2"
+    intent_id: str = ""
+    mechanism_key: str = ""
+    alias_action_ids: list[str] = field(default_factory=list)
+    alias_semantic_keys: list[str] = field(default_factory=list)
+    target_type: str = "issuer"
+    target_id: str = ""
+    period_scope: str = ""
+    decision_dependency: str = ""
+    answer_status: str = ""
+    remaining_work: list[str] = field(default_factory=list)
 
 
 @dataclass

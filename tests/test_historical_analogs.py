@@ -6,10 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 from equity_research.historical_analogs import (
+    _link_source_to_candidate,
     build_historical_analog_intelligence,
     retrieve_registered_historical_sources,
 )
 from equity_research.models import (
+    AnalogSourceObservation,
     FilingRecord,
     HistoricalAnalogCandidate,
     NewsArticleObservation,
@@ -234,6 +236,42 @@ def test_unrelated_market_articles_are_rejected_with_exact_reasons() -> None:
     )
 
 
+def test_reference_company_episode_rejects_wrong_issuer_source() -> None:
+    candidate = HistoricalAnalogCandidate(
+        analog_id="aws-cycle",
+        analog_class="Same economic or financial mechanism",
+        episode="AWS capacity conversion and operating leverage, 2017-2019",
+        companies=["Amazon Web Services"],
+        selection_rationale="Test utilization and operating leverage.",
+        search_terms=["AWS", "capacity", "utilization", "operating leverage"],
+        mechanism="cloud capacity utilization operating leverage",
+        period_start="2017",
+        period_end="2019",
+        period_precision="year",
+        reference_tickers=["AMZN"],
+    )
+    apple_source = AnalogSourceObservation(
+        source_id="apple-source",
+        provider="SEC EDGAR",
+        title="Apple 2019 annual report",
+        source_class="historical_filing",
+        source_origin_group="sec_edgar",
+        published_at="2019-10-31",
+        url="https://www.sec.gov/example/apple",
+        evidence_id="apple-evidence",
+        source_tier=1,
+        licensing_policy="public_primary_source_excerpt",
+        excerpt=(
+            "Apple Services capacity and operating leverage improved during 2019."
+        ),
+    )
+
+    link = _link_source_to_candidate(candidate, apple_source)
+
+    assert link.status == "rejected"
+    assert "reference_entity_mismatch" in link.rejection_reasons
+
+
 def test_aapl_benchmark_splits_exact_same_company_episodes() -> None:
     report = demo_result("AAPL").historical_analogs
     episodes = [item.episode for item in report.assessments]
@@ -298,12 +336,20 @@ def test_aapl_demo_has_frozen_source_backed_episode() -> None:
     assert any("FY2016-FY2020" in item.episode for item in report.dossiers)
     assert any("FY2013-FY2016" in item.episode for item in report.dossiers)
     for dossier in report.dossiers:
-        assert dossier.status == "Frozen Demo Dossier"
+        assert dossier.status in {
+            "Frozen Demo Dossier",
+            "Historical analog candidate",
+        }
         assert "Source retrieval must" not in dossier.operating_outcome
         assert len({source.source_origin_group for source in dossier.sources}) >= 2
         assert dossier.linked_monitor_rules
-        assert dossier.quality_scorecard is not None
-        assert dossier.quality_scorecard.total_score >= 85
+        if dossier.status == "Frozen Demo Dossier":
+            assert dossier.quality_scorecard is not None
+            assert dossier.quality_scorecard.total_score >= 85
+        else:
+            assert dossier.generation_provenance.get("publication_status") == (
+                "non_concluding_candidate"
+            )
         assert dossier.generation_provenance["live_model"] == "no"
 
 
@@ -340,6 +386,38 @@ def test_mechanism_candidates_remain_discoverable_without_fake_scores(
         for item in report.assessments
         if item.status != "Audited Research Analog"
     )
+
+
+def test_nvda_candidates_are_ranked_by_issuer_mechanism_not_catalog_order() -> None:
+    report = demo_result("NVDA").historical_analogs
+    visible = [
+        item for item in report.assessments
+        if item.scope_status == "in_scope" and item.applicability_score >= 60
+    ]
+
+    assert visible
+    assert all("Apple" not in item.episode for item in visible)
+    assert "Cisco supplier commitments" in visible[0].episode
+    assert any("Intel owned-fab" in item.episode for item in visible[:4])
+    assert any("AWS capacity conversion" in item.episode for item in visible[:4])
+    assert [item.applicability_score for item in visible] == sorted(
+        [item.applicability_score for item in visible],
+        reverse=True,
+    )
+    assert all(item.applicability_reasons for item in visible)
+
+
+def test_unmatched_catalog_uses_same_issuer_discovery_instead_of_tech_filler() -> None:
+    report = demo_result("GS").historical_analogs
+    visible = [
+        item for item in report.assessments
+        if item.scope_status == "in_scope" and item.applicability_score >= 60
+    ]
+
+    assert visible
+    assert visible[0].companies == ["The Goldman Sachs Group, Inc."]
+    assert visible[0].transfer_role == "same_issuer_discovery"
+    assert all("AWS" not in item.episode for item in visible)
 
 
 def test_fast_profile_discovers_without_calling_llm() -> None:

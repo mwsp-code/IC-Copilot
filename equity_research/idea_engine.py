@@ -1244,6 +1244,71 @@ def _causal_bridge_payload(
                 "Capex remains elevated without a credible revenue, cost, or strategic payoff.",
             ],
         },
+        "aum_fee_earnings_conversion": {
+            "primary_driver": "AUM to fee earnings conversion",
+            "mechanism": "Beginning AUM plus net flows, market/FX effects, acquisitions, and other changes must reconcile to ending fee-earning AUM, then to fee rate, revenue, expenses, margin, cash generation, and per-share value.",
+            "evidence_needed": [
+                "Beginning and ending AUM split by product and client type.",
+                "Net flows, market/FX effects, acquisitions, and other AUM changes.",
+                "Organic base-fee growth, effective fee rate, revenue mix, adjusted margin, and diluted shares.",
+            ],
+            "peer_metric_checks": ["Peer organic flows", "Peer fee realization", "Peer adjusted operating margin"],
+            "valuation_implication": "Fee growth, normalized margin, FCF, dilution, and market-implied AUM assumptions determine per-share value.",
+            "credit_implication": "Only corporate cash, obligations, acquisition funding, commitments, and capital returns enter the credit lens.",
+            "falsification_tests": [
+                "AUM growth is market-driven and fails to convert into organic base-fee growth.",
+                "Fee compression or expenses prevent AUM growth from converting into per-share cash earnings.",
+            ],
+        },
+        "organic_flow_generation": {
+            "primary_driver": "Organic flow generation",
+            "mechanism": "Client demand and product/channel mix must convert into net inflows, organic AUM growth, and organic base-fee growth.",
+            "evidence_needed": ["Long-term net flows", "Product and channel flow mix", "Organic AUM and base-fee growth"],
+            "peer_metric_checks": ["Peer net flows", "Peer organic AUM growth", "Peer base-fee growth"],
+            "valuation_implication": "Durable organic flows support fee growth and earnings persistence.",
+            "credit_implication": "Flow resilience may stabilize corporate fee earnings but does not make client assets corporate liquidity.",
+            "falsification_tests": ["Reported AUM growth is primarily market appreciation rather than client demand."],
+        },
+        "fee_realization": {
+            "primary_driver": "Fee realization",
+            "mechanism": "Fee-earning AUM and product mix must reconcile to effective fee rate and organic base-fee revenue.",
+            "evidence_needed": ["Fee-earning AUM", "Product mix", "Effective fee rate and base-fee revenue"],
+            "peer_metric_checks": ["Peer fee rate", "Peer base-fee growth", "Peer product mix"],
+            "valuation_implication": "Fee realization determines how AUM becomes revenue and margin.",
+            "credit_implication": "Fee realization affects corporate cash generation, not ownership of client assets.",
+            "falsification_tests": ["Mix shift or fee compression prevents AUM growth from converting to revenue."],
+        },
+        "asset_manager_operating_leverage": {
+            "primary_driver": "Asset-manager operating leverage",
+            "mechanism": "Fee revenue must bridge through compensation, platform, integration, and other expenses to adjusted operating margin and cash earnings.",
+            "evidence_needed": ["Base-fee and technology revenue", "Compensation and platform costs", "Adjusted operating margin"],
+            "peer_metric_checks": ["Peer adjusted margin", "Peer expense growth", "Peer fee-growth conversion"],
+            "valuation_implication": "Normalized operating leverage determines earnings, FCF, and multiple durability.",
+            "credit_implication": "Margin conversion affects interest coverage and corporate funding capacity.",
+            "falsification_tests": ["Expense growth absorbs organic fee growth."],
+        },
+        "per_share_capital_allocation": {
+            "primary_driver": "Per-share capital allocation",
+            "mechanism": "Corporate cash generation, dividends, repurchases, issuance, and diluted shares must reconcile to per-share value creation.",
+            "evidence_needed": ["Corporate cash flow", "Dividends and repurchases", "Diluted share-count reconciliation"],
+            "peer_metric_checks": ["Peer buyback yield", "Peer dilution", "Peer FCF per share"],
+            "valuation_implication": "Capital allocation affects FCF per share and fair value only after dilution is reconciled.",
+            "credit_implication": "Capital returns consume corporate liquidity and must be tested against obligations.",
+            "falsification_tests": ["Repurchases fail to offset dilution or are funded by weakening corporate liquidity."],
+        },
+        "cloud_ai_investment_cycle": {
+            "primary_driver": "Cloud and AI investment cycle",
+            "mechanism": "Cloud and AI investment must convert through capacity and utilization into demand, monetization, segment revenue and EBITA, then through capex and depreciation into FCF.",
+            "evidence_needed": [
+                "Cloud capacity, utilization, and customer-demand evidence.",
+                "Cloud revenue, monetization, segment EBITA, and depreciation.",
+                "Capex intensity, commitments, operating cash flow, and FCF.",
+            ],
+            "peer_metric_checks": ["Peer cloud growth", "Peer utilization and margin", "Peer capex-to-FCF conversion"],
+            "valuation_implication": "The investment supports value only if monetization and incremental returns exceed the near-term FCF burden.",
+            "credit_implication": "Capex and commitments consume liquidity until cloud cash returns are demonstrated.",
+            "falsification_tests": ["Utilization, monetization, segment returns, or FCF fail to justify the investment cycle."],
+        },
         "unmapped": {
             "primary_driver": "Unmapped metric",
             "mechanism": "The metric must be defined and mapped to an operating or accounting mechanism before directional interpretation.",
@@ -1254,8 +1319,16 @@ def _causal_bridge_payload(
             "falsification_tests": ["The metric cannot be reconciled to a comparable operating or accounting basis."],
         },
     }
-    spec = specs.get(family, specs["unmapped"])
-    gaps = _bridge_data_gaps(family, factors, event)
+    semantic_family = {
+        "revenue_demand_conversion": "revenue",
+        "operating_margin_conversion": "margin",
+        "operating_cash_conversion": "liquidity",
+        "balance_sheet_financing": "debt",
+        "accelerated_compute_capacity_cycle": "investment_cycle",
+        "acquisition_integration": "acquisition_accounting",
+    }.get(family, family)
+    spec = specs.get(semantic_family, specs["unmapped"])
+    gaps = _bridge_data_gaps(semantic_family, factors, event)
     status = _bridge_status(event, factors, gaps)
     return {
         "bridge_status": status,
@@ -1301,6 +1374,19 @@ def _bridge_data_gaps(family: str, factors: list[DriverFactor], event: ChangeEve
         gaps.append("Cash bridge needs cash-flow statement and financing/capital-return detail.")
     if family == "share_count" and event.metrics.get("normalization_required"):
         gaps.append("Share/security basis must be normalized before interpreting dilution or buybacks.")
+    if family in {
+        "aum_fee_earnings_conversion", "organic_flow_generation", "fee_realization",
+        "asset_manager_operating_leverage",
+    }:
+        gaps.append(
+            "Complete the beginning-AUM, net-flow, market/FX, acquisition, fee-rate, "
+            "expense, margin, and diluted-share bridge."
+        )
+    if family == "cloud_ai_investment_cycle":
+        gaps.append(
+            "Complete the capacity, utilization, cloud revenue, segment EBITA, "
+            "depreciation, capex, commitments, and FCF bridge."
+        )
     return _dedupe_strings(gaps)
 
 
@@ -2399,12 +2485,46 @@ def _financial_driver_factors(
 
     lower_metric = metric_name.lower()
     family = _driver_family(metric_name, event)
+    family = {
+        "revenue_demand_conversion": "revenue",
+        "operating_margin_conversion": "margin",
+        "operating_cash_conversion": "liquidity",
+        "balance_sheet_financing": "debt",
+        "accelerated_compute_capacity_cycle": "investment_cycle",
+        "acquisition_integration": "acquisition_accounting",
+    }.get(family, family)
     is_net_income_bridge = family == "net_income"
     is_operating_bridge = family == "operating"
     is_margin_bridge = family == "margin"
     is_liquidity_bridge = family == "liquidity"
     is_debt_bridge = family == "debt"
     is_per_share_bridge = any(token in lower_metric for token in ("eps", "per share"))
+
+    if family in {
+        "aum_fee_earnings_conversion", "organic_flow_generation", "fee_realization",
+        "asset_manager_operating_leverage", "per_share_capital_allocation",
+        "cloud_ai_investment_cycle",
+    }:
+        matched_metric = next(
+            (
+                item for item in metrics
+                if item.name.casefold() in lower_metric
+                or lower_metric in item.name.casefold()
+            ),
+            None,
+        )
+        factors.append(_factor(
+            metric_name or family.replace("_", " ").title(),
+            str(event.direction or "neutral"),
+            "Medium" if matched_metric or event.citations else "Low",
+            (
+                f"{matched_metric.name} {matched_metric.value:g} {matched_metric.unit}"
+                if matched_metric else event.summary
+            ),
+            "This observation is mapped to the issuer archetype's canonical mechanism; complete the remaining mechanism components before directional use.",
+            event,
+        ))
+        return factors
 
     if family in {"acquisition_accounting", "investment_cycle", "unmapped"}:
         policy = metric_policy_for(metric_name)

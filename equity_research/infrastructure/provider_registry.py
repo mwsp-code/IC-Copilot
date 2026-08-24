@@ -89,11 +89,14 @@ def resolve_research_providers(
     primary_research = profile_to_provider(
         request.primary_profile,
         request.secrets_manager,
-        enabled=request.enable_independent_qa,
+        # Lead agent research is useful with or without an independent
+        # auditor. QA controls the secondary roles, not whether the selected
+        # primary model can use application-owned research tools.
+        enabled=request.enable_llm,
     )
     if (
         primary_research is None
-        and request.enable_independent_qa
+        and request.enable_llm
         and request.primary_fallback_key
     ):
         primary_research = OpenAICompatibleProvider(
@@ -117,9 +120,15 @@ def resolve_research_providers(
         auditor = CodexLocalProvider(
             model=config.HYBRID_OPENAI_MODEL,
             reasoning_effort="max",
+            closure_reasoning_effort=(
+                config.HYBRID_CODEX_CLOSURE_REASONING_EFFORT
+            ),
             timeout_seconds=config.HYBRID_RESEARCH_TIMEOUT_SECONDS,
             executable=config.CODEX_EXECUTABLE,
             enabled=True,
+            event_stream_enabled=config.CODEX_EVENT_STREAM_EXECUTION,
+            startup_timeout_seconds=config.CODEX_STARTUP_TIMEOUT_SECONDS,
+            quiet_after_seconds=config.CODEX_QUIET_AFTER_SECONDS,
         )
         backend = CODEX_LOCAL_BACKEND
     elif (

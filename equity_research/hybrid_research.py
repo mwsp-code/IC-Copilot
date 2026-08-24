@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import copy
 import math
 import os
 import re
@@ -12,8 +13,8 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -66,6 +67,275 @@ from .models import (
     SourceAdmissionDecision,
     SourceRetrievalLifecycle,
 )
+
+
+class FrozenArtifactReplayProvider:
+    """Replay immutable role outputs, then delegate only genuinely new work."""
+
+    def __init__(self, delegate: Any, payloads_by_role: dict[str, dict[str, Any]]) -> None:
+        self.delegate = delegate
+        self.payloads_by_role = copy.deepcopy(payloads_by_role)
+        self.provider_name = str(getattr(delegate, "provider_name", "replay"))
+        self.model = str(getattr(delegate, "model", ""))
+        self.enabled = bool(getattr(delegate, "enabled", True))
+        self.last_usage: dict[str, Any] = {}
+        self.last_cost_usd = 0.0
+        self.replayed_roles: list[str] = []
+
+    def complete_json(self, prompt: dict[str, Any]) -> dict[str, Any]:
+        role = str(prompt.get("role") or "")
+        if role in self.payloads_by_role:
+            self.replayed_roles.append(role)
+            self.last_usage = {"replayed_artifact": 1}
+            self.last_cost_usd = 0.0
+            return copy.deepcopy(self.payloads_by_role[role])
+        result = self.delegate.complete_json(prompt)
+        self.last_usage = dict(getattr(self.delegate, "last_usage", {}) or {})
+        self.last_cost_usd = getattr(self.delegate, "last_cost_usd", None)
+        return result
+
+
+def _canonical_closure_finding_id(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(
+            value.get("finding_id")
+            or value.get("contrary_id")
+            or value.get("id")
+            or ""
+        ).strip()
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"[A-Za-z0-9_.:-]+", text):
+        return text
+    matched = re.search(
+        r"(?:audit\s+)?(?:finding|item)\s+([A-Za-z0-9_.:-]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return matched.group(1).rstrip(".,;:") if matched else ""
+
+
+def _unresolved_closure_findings(
+    prior_run: HybridResearchRun,
+) -> dict[str, dict[str, Any]]:
+    """Return material closure findings that require a fresh primary response.
+
+    Prefer the model-authored closure round because the final artifact may
+    replace its audit decision with a readable deterministic failure sentence.
+    Both forms remain supported for historical saved runs.
+    """
+
+    payloads: list[dict[str, Any]] = []
+    for item in reversed(list(getattr(prior_run, "rounds", ()) or ())):
+        if str(getattr(item, "role", "") or "") != "closure_checker":
+            continue
+        payload = getattr(getattr(item, "artifact", None), "payload", None)
+        if isinstance(payload, dict):
+            payloads.append(payload)
+            break
+    final_payload = getattr(
+        getattr(prior_run, "final_artifact", None), "payload", None
+    )
+    if isinstance(final_payload, dict):
+        closure = final_payload.get("closure_audit")
+        if isinstance(closure, dict):
+            payloads.append(closure)
+
+    unresolved: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        details: dict[str, dict[str, Any]] = {}
+        for raw in payload.get("findings", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            finding_id = _canonical_closure_finding_id(raw)
+            if finding_id:
+                details[finding_id] = raw
+        audit = payload.get("audit_decision")
+        if not isinstance(audit, dict):
+            continue
+        for raw in audit.get("unaddressed_contrary_items", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            finding_id = _canonical_closure_finding_id(raw)
+            if finding_id:
+                details[finding_id] = raw
+        closure_failed = (
+            str(payload.get("closure_state") or "")
+            in {
+                "failed_material_findings_unaddressed",
+                "indeterminate_provider_or_evidence_failure",
+            }
+            or str(audit.get("status") or "") in {"failed", "rejected"}
+        )
+        if closure_failed:
+            # A failed closure may return a structured material finding while
+            # omitting (or emitting an empty value in) ``unresolved_findings``.
+            # The finding is still an explicit request for a primary response;
+            # do not replay an obsolete revision merely because the model's
+            # redundant ID list was malformed.
+            for finding_id, detail in details.items():
+                if str(
+                    detail.get("severity")
+                    or detail.get("materiality")
+                    or "High"
+                ).casefold() in {"high", "critical", "material"}:
+                    normalized_detail = dict(detail)
+                    normalized_detail.setdefault("finding_id", finding_id)
+                    unresolved.setdefault(finding_id, normalized_detail)
+        values = [
+            *(audit.get("unresolved_findings", []) or []),
+            *(audit.get("unaddressed_contrary_item_ids", []) or []),
+        ]
+        for raw in values:
+            finding_id = _canonical_closure_finding_id(raw)
+            if not finding_id:
+                continue
+            detail = dict(details.get(finding_id) or {})
+            detail.setdefault("finding_id", finding_id)
+            unresolved.setdefault(finding_id, detail)
+    return unresolved
+
+
+def closure_requires_primary_revision(prior_run: HybridResearchRun) -> bool:
+    """Whether a closure repair must regenerate, rather than replay, revision."""
+
+    unresolved = _unresolved_closure_findings(prior_run)
+    if not unresolved:
+        return False
+    revision_payload: dict[str, Any] | None = None
+    for item in reversed(list(getattr(prior_run, "rounds", ()) or ())):
+        if str(getattr(item, "role", "") or "") != "primary_revision":
+            continue
+        payload = getattr(getattr(item, "artifact", None), "payload", None)
+        if isinstance(payload, dict):
+            revision_payload = _normalize_primary_response_contract(
+                payload,
+                role="primary_revision",
+            )
+            break
+    if revision_payload is None:
+        return True
+    responses = {
+        str(item.get("finding_id") or ""): item
+        for item in revision_payload.get("primary_responses", [])
+        if isinstance(item, dict) and item.get("finding_id")
+    }
+    for finding_id in unresolved:
+        response = responses.get(finding_id)
+        if response is None:
+            return True
+        state = str(response.get("state") or response.get("status") or "")
+        if state == "accepted" and str(
+            response.get("change_summary")
+            or response.get("revised_conclusion")
+            or ""
+        ).strip():
+            continue
+        if state == "rejected_with_evidence" and any(
+            response.get("evidence_ids", []) or []
+        ):
+            continue
+        return True
+    return False
+
+
+def build_quality_repair_replay_provider(
+    delegate: Any,
+    prior_run: HybridResearchRun,
+    *,
+    roles: tuple[str, ...],
+) -> FrozenArtifactReplayProvider:
+    """Build a role-aware replay provider from one immutable saved run."""
+
+    payloads = {
+        str(item.role): dict(item.artifact.payload)
+        for item in list(getattr(prior_run, "rounds", ()) or ())
+        if str(getattr(item, "role", "")) in roles
+        and getattr(item, "artifact", None) is not None
+        and isinstance(getattr(item.artifact, "payload", None), dict)
+    }
+    if "independent_research_auditor" in payloads:
+        unresolved = _unresolved_closure_findings(prior_run)
+        findings = _normalize_replayed_audit_findings(
+            payloads["independent_research_auditor"].get("findings") or [],
+            ticker=str(getattr(prior_run, "ticker", "") or ""),
+        )
+        known = {
+            str(item.get("finding_id") or "")
+            for item in findings if isinstance(item, dict)
+        }
+        for finding_id, detail in unresolved.items():
+            if finding_id and finding_id not in known:
+                findings.append({
+                    "finding_id": finding_id,
+                    "severity": "High",
+                    "summary": (
+                        str(
+                            detail.get("finding")
+                            or detail.get("claim")
+                            or detail.get("summary")
+                            or ""
+                        )
+                        or "Final closure identified this material finding as "
+                        "unaddressed; primary revision is required before recheck."
+                    ),
+                    "evidence_ids": list(detail.get("evidence_ids") or []),
+                    "required_response": (
+                        "Accept and revise/narrow the affected conclusion or "
+                        "reject with admitted evidence. Preserve material residual "
+                        "risk as a limitation and monitor when it cannot be resolved."
+                    ),
+                })
+        payloads["independent_research_auditor"]["findings"] = findings
+    return FrozenArtifactReplayProvider(delegate, payloads)
+
+
+def _normalize_replayed_audit_findings(
+    raw_findings: Any,
+    *,
+    ticker: str,
+) -> list[dict[str, Any]]:
+    """Restore the current finding identity contract on immutable old runs.
+
+    Historical model outputs occasionally serialized ``finding_id`` as an
+    empty string. ``dict.setdefault`` does not replace an existing empty
+    value, so closure could see a material finding that the primary response
+    contract could never reference. Derive the same stable identity used by
+    fresh audit validation, including scoped evidence so generic compatibility
+    summaries remain distinct when they refer to different observations.
+    """
+
+    findings: list[dict[str, Any]] = []
+    for raw in raw_findings if isinstance(raw_findings, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        finding = dict(raw)
+        summary = str(
+            finding.get("summary")
+            or finding.get("finding")
+            or finding.get("claim")
+            or ""
+        ).strip()
+        evidence_ids = sorted(set(_string_list(finding.get("evidence_ids"))))
+        finding_id = str(finding.get("finding_id") or "").strip()
+        if not finding_id:
+            finding_id = _stable_id(
+                "finding",
+                ticker,
+                "independent_research_auditor",
+                summary,
+                "|".join(evidence_ids),
+            )
+        finding["finding_id"] = finding_id
+        finding["summary"] = summary
+        finding["severity"] = str(
+            finding.get("severity")
+            or finding.get("materiality")
+            or "High"
+        )
+        findings.append(finding)
+    return findings
 from .auditable_retrieval import (
     audit_artifact_claims,
     build_historical_financial_paths,
@@ -111,14 +381,132 @@ from .application.publication_readiness import (
     canonicalize_artifact_for_publication,
     invalidate_derived_artifacts,
 )
+from .application.agent_runtime import (
+    ResearchAgentRuntime,
+    agent_session_artifact_payload,
+    budget_for_research,
+    session_from_payload,
+)
+from .application.research_agenda import ResearchAgendaBuilder
+from .application.cash_conversion import cash_conversion_bridge_from_dict
+from .application.investigation_journey import (
+    InvestigationStage,
+    advance_investigation_stage,
+    resolve_investigation_stage,
+)
+from .application.repair_stage_execution import RepairStage
+from .application.codex_execution import (
+    CODEX_EXECUTION_TRANSPORT_VERSION,
+    CodexExecutionEvent,
+    CodexExecutionFailure,
+    CodexExecutionPolicy,
+    CodexExecutionState,
+)
+from .domain.agent_research import (
+    ResearchAnswer,
+    ResearchQuestionStatus,
+    ResearchToolCall,
+)
 
 
-HYBRID_PROMPT_VERSION = "hybrid-research-v12-balanced-repair-evidence"
+def _is_cash_conversion_objective(objective: str) -> bool:
+    text = str(objective or "").casefold().replace("-", " ")
+    if any(token in text for token in (
+        "cash conversion", "operating cash flow", "free cash flow",
+    )):
+        return True
+    components = sum(token in text for token in (
+        "working capital", "capex", "capital expenditure", "cash taxes",
+        "financing", "capital returns", "repurchases", "dividends",
+    ))
+    return ("cash generation" in text or "cash flow" in text) and components >= 2
+
+
+def _apply_deterministic_cash_conversion_answer(
+    session: Any,
+    bridge: Any,
+) -> None:
+    """Make the validated bridge authoritative when a model leaves a weaker answer."""
+
+    if bridge is None:
+        return
+    assessment = getattr(bridge, "assessment", None)
+    periods = tuple(getattr(bridge, "periods", ()) or ())
+    evidence_ids = sorted({
+        str(evidence_id)
+        for period in periods
+        for evidence_id in (getattr(period, "evidence_ids", ()) or ())
+        if evidence_id
+    })
+    status = (
+        ResearchQuestionStatus.ANSWERED.value
+        if str(getattr(bridge, "status", "")) == "answered"
+        and not tuple(getattr(assessment, "material_gaps", ()) or ())
+        else ResearchQuestionStatus.PARTIALLY_ANSWERED.value
+    )
+    matched = False
+    for item in list(getattr(getattr(session, "agenda", None), "items", ()) or ()):
+        if not (
+            str(getattr(item, "intent_id", "") or "")
+            == str(getattr(bridge, "intent_id", "") or "")
+            or str(getattr(item, "question_key", "") or "")
+            == "cash_generation_capital_allocation"
+            or str(getattr(item, "mechanism_key", "") or "")
+            == "recurring_cash_conversion"
+        ):
+            continue
+        item.status = status
+        item.answer = ResearchAnswer(
+            question_id=item.question_id,
+            status=status,
+            answer=str(getattr(assessment, "direct_answer", "") or ""),
+            confidence=str(getattr(assessment, "confidence", "Unknown") or "Unknown"),
+            confidence_reason=(
+                f"{getattr(assessment, 'comparison_periods', 0)} comparable TTM "
+                f"period(s) with {float(getattr(assessment, 'coverage_ratio', 0) or 0) * 100:.0f}% "
+                "material component coverage."
+            ),
+            mechanism=(
+                "Annual plus current comparable YTD minus prior comparable YTD, "
+                "with operating cash flow, reinvestment, financing, and capital returns."
+            ),
+            evidence_ids=evidence_ids,
+            key_findings=[
+                str(getattr(assessment, "strongest_support", "") or "")
+            ],
+            strongest_limitation=str(
+                getattr(assessment, "strongest_limitation", "") or ""
+            ),
+            remaining_work=list(getattr(assessment, "material_gaps", ()) or ()),
+            changed_conclusions=[
+                "Replaced the incomplete model interpretation with the validated comparable-TTM bridge."
+            ],
+            intent_id=str(getattr(bridge, "intent_id", "") or item.intent_id),
+            evidence_hash=str(getattr(bridge, "evidence_hash", "") or ""),
+        )
+        item.coverage.coverage_score = round(
+            float(getattr(assessment, "coverage_ratio", 0) or 0) * 100
+        )
+        item.coverage.material_gaps = list(
+            getattr(assessment, "material_gaps", ()) or ()
+        )
+        matched = True
+    if matched:
+        session.answers = [
+            item.answer
+            for item in session.agenda.items
+            if item.answer is not None
+        ]
+
+
+HYBRID_PROMPT_VERSION = "hybrid-research-v14-focused-answer-closure"
 _RESUMABLE_PROMPT_VERSIONS = {
     "hybrid-research-v7-bounded-evidence-index",
     "hybrid-research-v8-auditable-dossiers",
     "hybrid-research-v10-auditable-projection-and-repair",
     "hybrid-research-v11-claim-bound-auto-repair",
+    "hybrid-research-v12-balanced-repair-evidence",
+    "hybrid-research-v13-agent-led-agenda-tools",
     HYBRID_PROMPT_VERSION,
 }
 
@@ -467,20 +855,51 @@ class CodexLocalProvider:
         *,
         model: str = "gpt-5.6-sol",
         reasoning_effort: str = "max",
+        closure_reasoning_effort: str = "medium",
         timeout_seconds: int = 1200,
         executable: str = "codex",
         enabled: bool = False,
         runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+        event_stream_enabled: bool = True,
+        startup_timeout_seconds: int = 60,
+        quiet_after_seconds: int = 180,
+        event_callback: Callable[[CodexExecutionEvent], None] | None = None,
+        event_stream_runner: Any | None = None,
     ) -> None:
         self.model = model
         self.reasoning_effort = reasoning_effort
+        self.closure_reasoning_effort = closure_reasoning_effort
+        self.last_reasoning_effort = reasoning_effort
         self.timeout_seconds = timeout_seconds
         self.executable = executable
         self.enabled = enabled
         self.runner = runner
+        self.event_stream_enabled = event_stream_enabled
+        self.startup_timeout_seconds = startup_timeout_seconds
+        self.quiet_after_seconds = quiet_after_seconds
+        self.event_callback = event_callback
+        self.event_stream_runner = event_stream_runner
         self.last_usage: dict[str, int] = {}
         self.last_cost_usd: float | None = None
         self._process: subprocess.Popen[str] | None = None
+        self.last_execution_state = ""
+        self.last_execution_event: CodexExecutionEvent | None = None
+
+    def set_execution_event_callback(
+        self,
+        callback: Callable[[CodexExecutionEvent], None] | None,
+    ) -> Callable[[CodexExecutionEvent], None] | None:
+        previous = self.event_callback
+        self.event_callback = callback
+        return previous
+
+    def _handle_execution_event(self, event: CodexExecutionEvent) -> None:
+        self.last_execution_event = event
+        self.last_execution_state = event.state
+        if event.usage:
+            self.last_usage = dict(event.usage)
+        if self.event_callback is not None:
+            self.event_callback(event)
 
     def complete_json(self, prompt_pack: dict[str, Any]) -> dict[str, Any]:
         if not self.enabled:
@@ -496,6 +915,12 @@ class CodexLocalProvider:
         research_schema = (
             prompt_pack.get("_output_schema") or _round_output_schema()
         )
+        effective_reasoning_effort = (
+            self.closure_reasoning_effort
+            if str(prompt_pack.get("role") or "") == "closure_checker"
+            else self.reasoning_effort
+        )
+        self.last_reasoning_effort = effective_reasoning_effort
         schema = _codex_wrapper_schema()
         clean_pack = {
             key: value for key, value in prompt_pack.items()
@@ -527,7 +952,7 @@ class CodexLocalProvider:
                 "-c",
                 'approval_policy="never"',
                 "-c",
-                f'model_reasoning_effort="{self.reasoning_effort}"',
+                f'model_reasoning_effort="{effective_reasoning_effort}"',
                 "exec",
                 "--ephemeral",
                 "--sandbox",
@@ -554,7 +979,67 @@ class CodexLocalProvider:
                         timeout=self.timeout_seconds,
                         check=False,
                     )
+                elif self.event_stream_enabled:
+                    if self.event_stream_runner is None:
+                        # Import lazily so the infrastructure package can keep
+                        # importing this provider through its registry without
+                        # creating a module-initialization cycle.
+                        from .infrastructure.codex_event_stream import (
+                            JsonlCodexExecutionRunner,
+                        )
+
+                        self.event_stream_runner = JsonlCodexExecutionRunner()
+                    jsonl_command = list(command)
+                    exec_index = jsonl_command.index("exec") + 1
+                    jsonl_command[exec_index:exec_index] = [
+                        "--json",
+                        "--ignore-user-config",
+                        "--ignore-rules",
+                    ]
+                    policy = CodexExecutionPolicy(
+                        startup_timeout_seconds=min(
+                            self.startup_timeout_seconds,
+                            self.timeout_seconds,
+                        ),
+                        quiet_after_seconds=min(
+                            self.quiet_after_seconds,
+                            self.timeout_seconds,
+                        ),
+                        hard_timeout_seconds=self.timeout_seconds,
+                    )
+                    try:
+                        execution = self.event_stream_runner.run(
+                            jsonl_command,
+                            prompt=prompt,
+                            cwd=temp_dir,
+                            policy=policy,
+                            on_event=self._handle_execution_event,
+                        )
+                    except CodexExecutionFailure as exc:
+                        if exc.failure_class == "hard_deadline_exceeded":
+                            raise TimeoutError(str(exc)) from exc
+                        raise
+                    self.last_usage = dict(execution.usage)
+                    if not execution.turn_completed:
+                        raise HybridResearchError(
+                            "Local Codex exited without a completed turn event."
+                        )
+                    completed = subprocess.CompletedProcess(
+                        jsonl_command,
+                        execution.returncode,
+                        "",
+                        execution.stderr_summary,
+                    )
                 else:
+                    popen_options: dict[str, Any] = {}
+                    if os.name == "nt":
+                        popen_options["creationflags"] = getattr(
+                            subprocess,
+                            "CREATE_NEW_PROCESS_GROUP",
+                            0,
+                        )
+                    else:
+                        popen_options["start_new_session"] = True
                     self._process = subprocess.Popen(
                         command,
                         stdin=subprocess.PIPE,
@@ -564,6 +1049,7 @@ class CodexLocalProvider:
                         encoding="utf-8",
                         errors="replace",
                         cwd=temp_dir,
+                        **popen_options,
                     )
                     try:
                         stdout, stderr = self._process.communicate(
@@ -571,8 +1057,7 @@ class CodexLocalProvider:
                             timeout=self.timeout_seconds,
                         )
                     except subprocess.TimeoutExpired as exc:
-                        self._process.kill()
-                        self._process.communicate()
+                        _terminate_process_tree(self._process)
                         raise TimeoutError(
                             "Local Codex run exceeded "
                             f"{self.timeout_seconds} seconds."
@@ -602,11 +1087,71 @@ class CodexLocalProvider:
             )
             if not text.strip():
                 raise HybridResearchError("Local Codex returned no final output.")
-            return _unwrap_codex_payload(_parse_json_text(text))
+            try:
+                payload = _unwrap_codex_payload(_parse_json_text(text))
+            except Exception:
+                if self.event_stream_enabled and self.runner is None:
+                    self._handle_execution_event(CodexExecutionEvent(
+                        state=CodexExecutionState.OUTPUT_SCHEMA_FAILED.value,
+                        event_type="output.validation_failed",
+                        occurred_at=_utc_now(),
+                        transport_version=CODEX_EXECUTION_TRANSPORT_VERSION,
+                    ))
+                raise
+            if self.event_stream_enabled and self.runner is None:
+                self._handle_execution_event(CodexExecutionEvent(
+                    state=CodexExecutionState.COMPLETED.value,
+                    event_type="output.validated",
+                    occurred_at=_utc_now(),
+                    usage=dict(self.last_usage),
+                    transport_version=CODEX_EXECUTION_TRANSPORT_VERSION,
+                ))
+            return payload
 
     def cancel(self) -> None:
+        if self.event_stream_runner is not None:
+            cancel = getattr(self.event_stream_runner, "cancel", None)
+            if callable(cancel):
+                cancel()
         if self._process and self._process.poll() is None:
-            self._process.terminate()
+            _terminate_process_tree(self._process)
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    """Terminate an exact Codex subprocess tree and reap the parent."""
+
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                [
+                    "taskkill",
+                    "/PID",
+                    str(process.pid),
+                    "/T",
+                    "/F",
+                ],
+                text=True,
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            process.kill()
+    else:
+        try:
+            import signal
+
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            process.kill()
+    try:
+        process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
 
 
 def local_codex_readiness(
@@ -1238,6 +1783,11 @@ def build_hybrid_research_context(
             "similarity_score": item.similarity_score,
             "similarity_band": item.similarity_band,
             "source_relevance_score": item.source_relevance_score,
+            "scope_status": getattr(item, "scope_status", "legacy_unchecked"),
+            "eligibility_code": getattr(item, "eligibility_code", "legacy_unchecked"),
+            "current_mechanism_id": getattr(item, "current_mechanism_id", ""),
+            "transfer_dimension": getattr(item, "transfer_dimension", ""),
+            "research_state": getattr(item, "research_state", ""),
             "mechanism": item.selection_rationale,
             "material_differences": item.material_differences,
             "source_ids": [
@@ -1252,7 +1802,19 @@ def build_hybrid_research_context(
         "company": identity.name,
         "exchange": identity.exchange,
         "sic": identity.sic,
+        "security_key": (
+            f"cik:{identity.cik}"
+            if str(getattr(identity, "cik", "") or "") else
+            f"{identity.exchange}:{identity.ticker}"
+        ),
+        "permitted_related_entities": _permitted_related_entities(
+            supplemental_context or {},
+            historical_analogs=historical_analogs,
+        ),
         "research_profile": research_profile_id,
+        "security_research_profile": _compact_dataclass(
+            (supplemental_context or {}).get("security_research_profile"), 5_000
+        ),
         "company_economics": _compact_dataclass(company_economics, 12_000),
         "analog_signature": _compact_dataclass(
             historical_analogs.signature, 5_000
@@ -1260,6 +1822,25 @@ def build_hybrid_research_context(
         "analog_candidates": analogs,
         "news_status": news_intelligence.status,
         "news_coverage": news_intelligence.coverage_status,
+        "news_discovery_catalog": [
+            {
+                "source_id": item.observation_id,
+                "ticker": item.ticker,
+                "provider": item.provider,
+                "publisher": item.publisher,
+                "source_origin_group": item.source_origin_group,
+                "source_type": "public_news_metadata",
+                "headline": item.headline,
+                "url": item.url,
+                "published_at": item.published_at,
+                "excerpt": item.excerpt,
+                "licensing_policy": item.licensing_policy,
+                "full_text_status": item.full_text_status,
+                "metadata_only": not bool(item.evidence_id),
+                "evidence_id": item.evidence_id,
+            }
+            for item in news_intelligence.articles[:80]
+        ],
         "source_requests": source_requests,
         "evidence_closure": closure,
         "evidence_catalog": core_catalog,
@@ -1282,9 +1863,22 @@ def build_hybrid_research_context(
         ],
         "allowed_source_types": sorted(_allowed_source_types()),
         "allowed_research_tools": [
-            "search_evidence_catalog",
-            "open_cached_evidence",
-            "request_registered_source",
+            "list_source_capabilities",
+            "search_sources",
+            "open_source",
+            "find_in_source",
+            "extract_table",
+            "query_sec_facts",
+            "query_market_data",
+            "query_consensus_history",
+            "query_macro_series",
+            "compare_periods",
+            "compute_financial_bridge",
+            "compute_reverse_valuation",
+            "compute_event_attribution",
+            "propose_evidence",
+            "record_research_note",
+            "submit_research_answer",
         ],
         "source_registry_version": SOURCE_REGISTRY_VERSION,
         "require_historical_dossiers": (
@@ -1311,6 +1905,46 @@ def build_hybrid_research_context(
     context["evidence_hash"] = evidence_hash
     context["evidence_fingerprints"] = fingerprints
     return context
+
+
+def _permitted_related_entities(
+    context: dict[str, Any],
+    *,
+    historical_analogs: HistoricalAnalogIntelligence | None = None,
+) -> list[str]:
+    """Derive related-security scope from deterministic peer inputs.
+
+    A model cannot authorize its own off-issuer candidate merely by labelling it
+    a peer. The entity must already exist in the run's registered peer context.
+    """
+
+    permitted: set[str] = set()
+    readthrough = context.get("peer_metric_readthrough") or {}
+    collections = (
+        readthrough.values()
+        if isinstance(readthrough, dict)
+        else [readthrough]
+    )
+    for collection in collections:
+        values = collection if isinstance(collection, (list, tuple, set)) else [collection]
+        for item in values:
+            ticker = str(
+                getattr(item, "peer_ticker", "")
+                or (item.get("peer_ticker", "") if isinstance(item, dict) else "")
+                or ""
+            ).strip().upper()
+            if ticker:
+                permitted.add(ticker)
+    for dossier in list(getattr(historical_analogs, "dossiers", ()) or ()):
+        permitted.update(
+            str(value or "").strip().upper()
+            for value in list(getattr(dossier, "securities", ()) or ())
+            if str(value or "").strip()
+        )
+    # The broad market benchmark is a deterministic comparison entity, not a
+    # model-selected company lead.
+    permitted.add("SPY")
+    return sorted(permitted)
 
 
 def run_hybrid_research(
@@ -1681,6 +2315,10 @@ def run_quality_first_research(
             provider=str(getattr(provider, "provider_name", "") or "deterministic"),
             model=str(getattr(provider, "model", "") or ""),
             attempted_increment=1,
+            current_role=role,
+            execution_state="",
+            execution_last_activity_at="",
+            execution_hard_deadline_at="",
         )
         research_round = _run_round_with_retry(
             round_number,
@@ -1692,6 +2330,7 @@ def run_quality_first_research(
             retries=1,
             retry_any_failure=False,
             retry_malformed_json=True,
+            progress_callback=progress_callback,
         )
         run.rounds.append(research_round)
         run.audit_findings.extend(research_round.findings)
@@ -1751,14 +2390,221 @@ def run_quality_first_research(
             run, context, retrieval, progress_callback
         )
 
-    planner_prompt = _round_prompt(1, "research_planner", context, [], retrieval)
-    if execute_round(1, "research_planner", primary_provider, planner_prompt) is None:
-        return _finish_quality_run(run, context, retrieval, progress_callback)
-
-    retrieval["initial"] = _execute_registered_requests(
-        context,
-        artifacts["research_planner"].payload,
+    repair_execution_mode = str(context.get("repair_execution_mode") or "")
+    revision_and_closure_only = (
+        repair_execution_mode == "revision_and_closure_only"
     )
+    # A frozen-snapshot repair must not re-enter the agent-led planning loop.
+    # That loop uses the ``primary_research_agent`` role, so role-based replay
+    # providers cannot intercept it and an ostensibly narrow repair becomes a
+    # fresh, expensive research run.  Repair mode deliberately reuses the
+    # immutable planner/primary/audit/scout artifacts and delegates only the
+    # primary revision and final closure roles.
+    research_gateway = (
+        None if revision_and_closure_only
+        else context.get("_research_tool_gateway")
+    )
+    if research_gateway is not None:
+        decision_context = context.get("decision_context") or {}
+        targeted = (
+            decision_context.get("targeted_investigation")
+            if isinstance(decision_context, dict) else None
+        ) or {}
+        focused_objective = str(targeted.get("objective") or "")
+        existing_questions = (
+            decision_context.get("research_questions", [])
+            if isinstance(decision_context, dict) else []
+        )
+        agenda = ResearchAgendaBuilder().build(
+            ticker=ticker,
+            company_name=str(context.get("company") or ticker),
+            research_profile=str(context.get("research_profile") or "deep_initiation"),
+            security_archetype=str(context.get("security_archetype") or "operating_company"),
+            cik=(
+                str(context.get("security_key") or "").split(":", 1)[1]
+                if str(context.get("security_key") or "").startswith("cik:")
+                else ""
+            ),
+            exchange=str(context.get("exchange") or ""),
+            selected_objective=focused_objective,
+            existing_questions=existing_questions if isinstance(existing_questions, list) else [],
+        )
+        context["research_agenda"] = asdict(agenda)
+        budget = budget_for_research(
+            depth=str(context.get("agent_research_depth") or "answer_oriented"),
+            focused=bool(focused_objective),
+        )
+        deterministic_focus_observation = None
+        if _is_cash_conversion_objective(focused_objective):
+            deterministic_focus_observation = research_gateway.execute(
+                ResearchToolCall(
+                    call_id=_stable_id(
+                        "cash-conversion-preflight", ticker, agenda.agenda_id
+                    ),
+                    tool_name="compute_financial_bridge",
+                    question_id=(
+                        agenda.items[0].question_id
+                        if agenda.items else "cash_generation_capital_allocation"
+                    ),
+                    objective=focused_objective,
+                    arguments={
+                        "bridge_kind": "cash_conversion_recurrence",
+                        "comparison_periods": 2,
+                        "period_basis": "comparable_ttm",
+                        "component_detail": "full",
+                        "data_cutoff": str(context.get("data_cutoff") or ""),
+                        "security_archetype": str(
+                            context.get("security_archetype") or "operating_company"
+                        ),
+                    },
+                )
+            )
+        agent_started = time.monotonic()
+        agent_session = ResearchAgentRuntime(
+            research_gateway,
+            budget=budget,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        ).run(
+            provider=primary_provider,
+            agenda=agenda,
+            role="primary_research_agent",
+            context_summary={
+                "company_economics": context.get("company_economics", {}),
+                "input_sufficiency": context.get("input_sufficiency", {}),
+                "decision_context": decision_context,
+                "source_capability_summary": (
+                    context.get("_source_capability_registry").summary()
+                    if context.get("_source_capability_registry") is not None
+                    else {}
+                ),
+                "evidence_metadata": context.get("evidence_metadata_catalog", [])[:80],
+                "claim_eligible_evidence_ids": list(
+                    context.get("claim_eligible_evidence_ids", [])
+                ),
+                "focused_deterministic_calculation": (
+                    deterministic_focus_observation.content[0]
+                    if deterministic_focus_observation is not None
+                    and deterministic_focus_observation.content
+                    else {}
+                ),
+            },
+        )
+        if deterministic_focus_observation is not None:
+            agent_session.observations.insert(0, deterministic_focus_observation)
+            if deterministic_focus_observation.content:
+                try:
+                    run.cash_conversion_recurrence = cash_conversion_bridge_from_dict(
+                        deterministic_focus_observation.content[0]
+                    )
+                    context["cash_conversion_recurrence"] = asdict(
+                        run.cash_conversion_recurrence
+                    )
+                    run.generation_provenance[
+                        "cash_conversion_audit_scope_evidence_hash"
+                    ] = run.cash_conversion_recurrence.evidence_hash
+                    _apply_deterministic_cash_conversion_answer(
+                        agent_session,
+                        run.cash_conversion_recurrence,
+                    )
+                except (TypeError, ValueError, KeyError):
+                    run.data_gaps.append(
+                        "The deterministic cash-conversion bridge could not be restored."
+                    )
+        run.agent_research_session = agent_session
+        run.agent_research_sessions.append(agent_session)
+        agent_payload = agent_session_artifact_payload(agent_session)
+        agent_evidence_ids = list(agent_payload.get("evidence_ids") or [])
+        agent_artifact = ResearchRoundArtifact(
+            artifact_id=_stable_id("agent-led-research", ticker, run.run_id),
+            artifact_type="agent_led_research_plan_and_answers",
+            status=(
+                "validated"
+                if agent_session.status == "completed" and agent_evidence_ids
+                else "accepted_with_gaps"
+            ),
+            summary=str(agent_payload.get("summary") or "Agent-led research completed."),
+            payload=agent_payload,
+            evidence_ids=agent_evidence_ids,
+            citation_ids=[],
+            source_request_ids=[],
+            validation_gaps=list(agent_session.data_gaps),
+        )
+        agent_round = ResearchRound(
+            round_number=1,
+            role="research_planner",
+            provider=agent_session.provider,
+            model=agent_session.model,
+            backend="agent_research_runtime",
+            status=(
+                "completed"
+                if agent_session.status in {"completed", "partial"}
+                else agent_session.status
+            ),
+            started_at=agent_session.started_at,
+            completed_at=agent_session.completed_at,
+            latency_ms=int((time.monotonic() - agent_started) * 1000),
+            prompt_hash=_stable_id(
+                "agent-runtime-prompt", agenda.agenda_id, budget.budget_id
+            ),
+            artifact=agent_artifact,
+            message=agent_session.stopping_reason,
+            token_usage=dict(agent_session.token_usage),
+            provider_cost_usd=agent_session.estimated_cost_usd,
+            quality_score=_round_quality_score(agent_artifact),
+        )
+        run.rounds.append(agent_round)
+        if agent_round.status != "completed":
+            run.status = "investigated_draft"
+            run.lifecycle_state = "failed_provider_or_connector"
+            run.data_gaps.extend(agent_session.data_gaps)
+            return _finish_quality_run(run, context, retrieval, progress_callback)
+        artifacts["research_planner"] = agent_artifact
+        retrieval["initial"] = [
+            {
+                "request_id": item.call_id,
+                "source_type": item.source_family or item.tool_name,
+                "status": item.status,
+                "failure_code": item.failure_code,
+                "evidence_ids": list(item.evidence_ids),
+                "returned_match_count": len(item.content),
+                "message": item.summary,
+                "agent_question_id": item.question_id,
+                "decision_eligible": item.decision_eligible,
+            }
+            for item in agent_session.observations
+        ]
+        run.generation_provenance.update({
+            "research_runtime": "agent_led_iterative",
+            "research_agenda_version": agenda.library_version,
+            "research_budget": budget.budget_id,
+            "agent_model_turns": str(agent_session.model_turns),
+            "agent_tool_actions": str(agent_session.tool_actions),
+            "agent_stopping_reason": agent_session.stopping_reason,
+        })
+        # Tool use can admit evidence after the deterministic bootstrap. Use
+        # the resulting graph for validation and for the frozen primary audit.
+        run.evidence_hash = str(
+            context.get("evidence_hash") or run.evidence_hash
+        )
+        run.evidence_fingerprints = dict(
+            context.get("evidence_fingerprints") or run.evidence_fingerprints
+        )
+        run.normalized_sources = _normalized_sources_from_context(context)
+        run.historical_financial_paths = _historical_paths_from_context(context)
+    else:
+        planner_prompt = _round_prompt(1, "research_planner", context, [], retrieval)
+        if execute_round(1, "research_planner", primary_provider, planner_prompt) is None:
+            return _finish_quality_run(run, context, retrieval, progress_callback)
+
+        retrieval["initial"] = (
+            []
+            if revision_and_closure_only
+            else _execute_registered_requests(
+                context,
+                artifacts["research_planner"].payload,
+            )
+        )
     primary_prompt = _round_prompt(
         2,
         "primary_investment_analyst",
@@ -1814,6 +2660,12 @@ def run_quality_first_research(
         run.generation_provenance["pre_audit_repair_evidence_count"] = str(
             prior_count + len(changed_ids)
         )
+        run.evidence_hash = str(
+            context.get("evidence_hash") or run.evidence_hash
+        )
+        run.evidence_fingerprints = dict(
+            context.get("evidence_fingerprints") or run.evidence_fingerprints
+        )
     if not validation_passed:
         canonicalized = canonicalize_artifact_for_publication(
             run,
@@ -1844,6 +2696,8 @@ def run_quality_first_research(
         )
         return _finish_quality_run(run, context, retrieval, progress_callback)
     run.deterministic_validation_status = "passed"
+    run.evidence_hash = str(context.get("evidence_hash") or run.evidence_hash)
+    run.generation_provenance["frozen_primary_evidence_hash"] = run.evidence_hash
     primary_artifact = artifacts["primary_investment_analyst"]
     run.derived_artifact_dependencies.append(
         _artifact_dependency_record(
@@ -1928,13 +2782,21 @@ def run_quality_first_research(
             "Independent QA stopped at the configured model-cost limit; no closure pass is asserted.",
         )
 
-    configured_cycles = max(
-        0,
-        min(2, int(policy.get("max_investigation_cycles", 1) or 0)),
+    configured_cycles = (
+        0
+        if revision_and_closure_only
+        else max(
+            0,
+            min(2, int(policy.get("max_investigation_cycles", 1) or 0)),
+        )
     )
-    mapping_escalation_limit = max(
-        0,
-        min(1, int(policy.get("focused_mapping_escalation_limit", 0) or 0)),
+    mapping_escalation_limit = (
+        0
+        if revision_and_closure_only
+        else max(
+            0,
+            min(1, int(policy.get("focused_mapping_escalation_limit", 0) or 0)),
+        )
     )
     stop_on_no_new_evidence = bool(
         policy.get("stop_on_no_new_evidence", True)
@@ -1955,48 +2817,219 @@ def run_quality_first_research(
         ]
         if previous_revision is not None:
             prior_for_scout.append(previous_revision)
-        scout_prompt = _round_prompt(
-            3,
-            "adversarial_evidence_scout",
-            context,
-            prior_for_scout,
-            retrieval,
+        cycle_outcomes: list[dict[str, Any]] = []
+        agent_scout_session = None
+        use_agent_scout = bool(
+            research_gateway is not None and cycle_index < configured_cycles
         )
-        scout_prompt["round_number"] = next_round_number
-        scout_prompt["investigation_cycle"] = cycle_index + 1
-        scout_prompt["task"] = (
-            "Generate bounded evidence, contradiction, mapping, source, and specialist candidates "
-            "for the frozen auditor's findings. Candidates are metadata-only leads and cannot "
-            "support conclusions or create evidence IDs."
-        )
-        scout_prompt["audit_artifact"] = _prompt_artifact_payload(
-            [artifacts["independent_research_auditor"]], 0
-        )
-        scout_prompt["instruction"] = (
-            "Act as an adversarial evidence scout after the independent audit. Express what "
-            "registered source families, confirming evidence, and contradicting evidence should "
-            "be retrieved. You may propose URLs or snippets only as untrusted candidate metadata."
-        )
-        scout_prompt["candidate_types"] = [
-            "evidence_candidate",
-            "contradiction_candidate",
-            "mapping_candidate",
-            "source_candidate",
-            "expert_specialist_candidate",
-        ]
-        if execute_round(
-            next_round_number,
-            "adversarial_evidence_scout",
-            auditor_provider,
-            scout_prompt,
-        ) is None:
-            return _finish_quality_run(run, context, retrieval, progress_callback)
+        if use_agent_scout:
+            audit_payload = artifacts["independent_research_auditor"].payload
+            audit_findings = [
+                item for item in audit_payload.get("findings", [])
+                if isinstance(item, dict)
+            ]
+            model_additions = []
+            for finding_index, finding in enumerate(audit_findings[:12]):
+                objective = " ".join(
+                    value for value in (
+                        str(finding.get("summary") or ""),
+                        str(finding.get("what_would_change_assessment") or ""),
+                    ) if value
+                ).strip()
+                if not objective:
+                    continue
+                model_additions.append({
+                    "question_id": str(
+                        finding.get("finding_id")
+                        or _stable_id("audit-scout-question", run.run_id, finding_index)
+                    ),
+                    "question_key": f"audit_finding_{finding_index}",
+                    "domain": "Independent QA challenge",
+                    "title": str(finding.get("summary") or "Test an audit finding"),
+                    "objective": objective,
+                    "decision_relevance": (
+                        "Independent QA identified this as a material threat to the frozen primary artifact."
+                    ),
+                    "materiality": str(
+                        finding.get("severity")
+                        or finding.get("materiality")
+                        or "High"
+                    ),
+                    "priority": max(60, 100 - finding_index),
+                    "source_families": list(
+                        finding.get("recommended_source_types")
+                        or finding.get("required_source_families")
+                        or []
+                    ),
+                    "confirming_evidence": list(
+                        finding.get("desired_confirming_evidence") or []
+                    ),
+                    "contradicting_evidence": list(
+                        finding.get("desired_contradicting_evidence") or []
+                    ),
+                    "analytical_tools": [
+                        "search_sources", "open_source", "compare_periods",
+                        "compute_financial_bridge", "compute_reverse_valuation",
+                    ],
+                })
+            scout_objective = (
+                str(model_additions[0]["objective"])
+                if model_additions else
+                "Challenge agenda coverage, seek contrary evidence, and test whether the primary conclusions survive."
+            )
+            scout_agenda = ResearchAgendaBuilder().build(
+                ticker=ticker,
+                company_name=str(context.get("company") or ticker),
+                research_profile=str(context.get("research_profile") or "deep_initiation"),
+                security_archetype=str(context.get("security_archetype") or "operating_company"),
+                cik=(
+                    str(context.get("security_key") or "").split(":", 1)[1]
+                    if str(context.get("security_key") or "").startswith("cik:")
+                    else ""
+                ),
+                exchange=str(context.get("exchange") or ""),
+                selected_objective=scout_objective,
+                model_additions=model_additions,
+            )
+            prior_evidence_ids = set(context.get("claim_eligible_evidence_ids", []))
+            scout_started = time.monotonic()
+            agent_scout_session = ResearchAgentRuntime(
+                research_gateway,
+                budget=budget_for_research(
+                    depth=str(context.get("agent_research_depth") or "answer_oriented"),
+                    focused=True,
+                ),
+                progress_callback=progress_callback,
+                cancel_event=cancel_event,
+            ).run(
+                provider=auditor_provider,
+                agenda=scout_agenda,
+                role="adversarial_evidence_scout",
+                context_summary={
+                    "frozen_evidence_hash": run.evidence_hash,
+                    "source_capabilities": context.get("source_capabilities", []),
+                    "audit_findings": audit_findings,
+                    "independence_boundary": (
+                        "The frozen audit completed before this scouting session."
+                    ),
+                },
+                prior_artifact={
+                    "primary_summary": artifacts["primary_investment_analyst"].summary,
+                    "audit": _prompt_artifact_payload(
+                        [artifacts["independent_research_auditor"]], 0
+                    ),
+                },
+            )
+            run.agent_research_sessions.append(agent_scout_session)
+            scout_payload = agent_session_artifact_payload(agent_scout_session)
+            scout_artifact = ResearchRoundArtifact(
+                artifact_id=_stable_id(
+                    "agent-adversarial-scout", ticker, run.run_id, cycle_index
+                ),
+                artifact_type="agent_led_adversarial_evidence_scout",
+                status=(
+                    "validated"
+                    if agent_scout_session.status == "completed"
+                    else "accepted_with_gaps"
+                ),
+                summary=str(
+                    scout_payload.get("summary")
+                    or "Adversarial evidence scouting completed."
+                ),
+                payload=scout_payload,
+                evidence_ids=list(scout_payload.get("evidence_ids") or []),
+                validation_gaps=list(agent_scout_session.data_gaps),
+            )
+            scout_round = ResearchRound(
+                round_number=next_round_number,
+                role="adversarial_evidence_scout",
+                provider=agent_scout_session.provider,
+                model=agent_scout_session.model,
+                backend="agent_research_runtime",
+                status=(
+                    "completed"
+                    if agent_scout_session.status in {"completed", "partial"}
+                    else agent_scout_session.status
+                ),
+                started_at=agent_scout_session.started_at,
+                completed_at=agent_scout_session.completed_at,
+                latency_ms=int((time.monotonic() - scout_started) * 1000),
+                prompt_hash=_stable_id(
+                    "agent-scout-prompt", scout_agenda.agenda_id, cycle_index
+                ),
+                artifact=scout_artifact,
+                message=agent_scout_session.stopping_reason,
+                token_usage=dict(agent_scout_session.token_usage),
+                provider_cost_usd=agent_scout_session.estimated_cost_usd,
+                quality_score=_round_quality_score(scout_artifact),
+            )
+            run.rounds.append(scout_round)
+            if scout_round.status != "completed":
+                return stop_before_closure(
+                    "adversarial_scout_provider_failure",
+                    "Adversarial evidence scouting did not complete; the validated primary and frozen audit were preserved.",
+                )
+            artifacts["adversarial_evidence_scout"] = scout_artifact
+            new_ids = set(context.get("claim_eligible_evidence_ids", [])) - prior_evidence_ids
+            cycle_outcomes = [
+                {
+                    "request_id": item.call_id,
+                    "source_type": item.source_family or item.tool_name,
+                    "status": item.status,
+                    "failure_code": item.failure_code,
+                    "evidence_ids": list(item.evidence_ids),
+                    "new_evidence_ids": sorted(set(item.evidence_ids) & new_ids),
+                    "returned_match_count": len(item.content),
+                    "message": item.summary,
+                    "agent_question_id": item.question_id,
+                    "decision_eligible": item.decision_eligible,
+                }
+                for item in agent_scout_session.observations
+            ]
+            material_mapping = False
+        else:
+            scout_prompt = _round_prompt(
+                3,
+                "adversarial_evidence_scout",
+                context,
+                prior_for_scout,
+                retrieval,
+            )
+            scout_prompt["round_number"] = next_round_number
+            scout_prompt["investigation_cycle"] = cycle_index + 1
+            scout_prompt["task"] = (
+                "Generate bounded evidence, contradiction, mapping, source, and specialist candidates "
+                "for the frozen auditor's findings. Candidates are metadata-only leads and cannot "
+                "support conclusions or create evidence IDs."
+            )
+            scout_prompt["audit_artifact"] = _prompt_artifact_payload(
+                [artifacts["independent_research_auditor"]], 0
+            )
+            scout_prompt["instruction"] = (
+                "Act as an adversarial evidence scout after the independent audit. Express what "
+                "registered source families, confirming evidence, and contradicting evidence should "
+                "be retrieved. You may propose URLs or snippets only as untrusted candidate metadata."
+            )
+            scout_prompt["candidate_types"] = [
+                "evidence_candidate",
+                "contradiction_candidate",
+                "mapping_candidate",
+                "source_candidate",
+                "expert_specialist_candidate",
+            ]
+            if execute_round(
+                next_round_number,
+                "adversarial_evidence_scout",
+                auditor_provider,
+                scout_prompt,
+            ) is None:
+                return _finish_quality_run(run, context, retrieval, progress_callback)
+            scout_artifact = artifacts["adversarial_evidence_scout"]
+            material_mapping = _has_material_mapping_candidate(
+                scout_artifact.payload
+            )
         next_round_number += 1
 
-        scout_artifact = artifacts["adversarial_evidence_scout"]
-        material_mapping = _has_material_mapping_candidate(
-            scout_artifact.payload
-        )
         retrieval_permitted = (
             cycle_index < configured_cycles
             or (
@@ -2005,8 +3038,7 @@ def run_quality_first_research(
                 and material_mapping
             )
         )
-        cycle_outcomes: list[dict[str, Any]] = []
-        if retrieval_permitted:
+        if retrieval_permitted and not use_agent_scout:
             admitted_candidate_requests = _admit_artifact_source_candidates(
                 context,
                 scout_artifact.payload,
@@ -2021,6 +3053,7 @@ def run_quality_first_research(
                     )
                 },
             )
+        if retrieval_permitted:
             all_follow_up.extend(cycle_outcomes)
             retrieval["follow_up"] = list(all_follow_up)
             completed_investigation_cycles += 1
@@ -2051,6 +3084,26 @@ def run_quality_first_research(
             "rejected_with_evidence",
             "unresolved",
         ]
+        revision_prompt["required_primary_response_contract"] = {
+            "finding_id": "copy the exact finding_id from audit_artifact",
+            "state": "accepted|rejected_with_evidence|unresolved",
+            "explanation": "readable disposition",
+            "change_summary": (
+                "required when accepted; state how the conclusion was revised, "
+                "qualified, or removed"
+            ),
+            "evidence_ids": (
+                "required when rejected_with_evidence; admitted IDs only"
+            ),
+        }
+        revision_prompt["instruction"] = str(
+            revision_prompt.get("instruction") or ""
+        ) + (
+            " Return exactly one primary_responses item for every material "
+            "audit_artifact finding. Copy its finding_id exactly; do not use "
+            "the finding prose as an identifier. Accepted findings must name "
+            "the resulting revision, qualification, or removal."
+        )
         if execute_round(
             next_round_number,
             "primary_revision",
@@ -2077,10 +3130,19 @@ def run_quality_first_research(
         new_evidence_ids = {
             str(evidence_id)
             for outcome in cycle_outcomes
-            for evidence_id in outcome.get("evidence_ids", [])
+            for evidence_id in (
+                outcome.get("new_evidence_ids")
+                or outcome.get("evidence_ids", [])
+            )
             if evidence_id
         }
         if new_evidence_ids:
+            run.evidence_hash = str(
+                context.get("evidence_hash") or run.evidence_hash
+            )
+            run.evidence_fingerprints = dict(
+                context.get("evidence_fingerprints") or run.evidence_fingerprints
+            )
             invalidation = invalidate_derived_artifacts(
                 run.derived_artifact_dependencies,
                 changed_evidence_ids=new_evidence_ids,
@@ -2102,11 +3164,20 @@ def run_quality_first_research(
             workflow_stopping_reason = "configured_depth_limit"
 
     revision = artifacts["primary_revision"]
-    revision_validation_passed = _apply_retrieval_and_claim_audit(
+    repair_supervisor = context.get("_repair_stage_supervisor")
+    validation_operation = lambda: _apply_retrieval_and_claim_audit(
         run,
         context,
         revision,
     )
+    if repair_supervisor is not None:
+        revision_validation_passed = repair_supervisor.record_deterministic_stage(
+            RepairStage.DETERMINISTIC_VALIDATION,
+            operation=validation_operation,
+            result_payload=lambda passed: {"value": bool(passed)},
+        )
+    else:
+        revision_validation_passed = validation_operation()
     if not revision_validation_passed:
         canonicalized = canonicalize_artifact_for_publication(
             run,
@@ -2131,6 +3202,10 @@ def run_quality_first_research(
             "The revised primary artifact still contains unsupported material claims; closure was not run.",
         )
     run.deterministic_validation_status = "passed"
+    _apply_primary_response_states(run, revision)
+    # Closure covers the revised post-scout graph. The independently audited
+    # primary snapshot remains available as frozen_primary_evidence_hash.
+    run.evidence_hash = str(context.get("evidence_hash") or run.evidence_hash)
 
     closure_prompt = _round_prompt(
         5,
@@ -2356,6 +3431,53 @@ def _quality_first_material_findings_unresolved(
     )
 
 
+def _apply_primary_response_states(
+    run: HybridResearchRun,
+    revision: ResearchRoundArtifact,
+) -> None:
+    """Attach validated primary responses to their durable audit findings."""
+
+    responses = {
+        str(item.get("finding_id") or ""): item
+        for item in revision.payload.get("primary_responses", [])
+        if isinstance(item, dict) and item.get("finding_id")
+    }
+    for finding in run.audit_findings:
+        response = responses.get(finding.finding_id)
+        if response is None:
+            continue
+        requested_state = str(
+            response.get("state") or response.get("status") or ""
+        ).strip()
+        evidence_ids = [
+            str(value) for value in response.get("evidence_ids", []) if value
+        ]
+        explanation = str(
+            response.get("explanation")
+            or response.get("rationale")
+            or response.get("change_summary")
+            or ""
+        ).strip()
+        accepted_changed = bool(
+            response.get("conclusion_changed")
+            or str(response.get("revised_conclusion") or "").strip()
+            or str(response.get("change_summary") or "").strip()
+        )
+        if requested_state == "accepted" and accepted_changed:
+            state = "accepted"
+            resolved = True
+        elif requested_state == "rejected_with_evidence" and evidence_ids:
+            state = "rejected_with_evidence"
+            resolved = True
+        else:
+            state = "unresolved"
+            resolved = False
+        finding.primary_response_state = state
+        finding.primary_response_evidence_ids = evidence_ids
+        finding.primary_response_summary = explanation
+        finding.resolved = resolved
+
+
 def _quality_first_closure_failures(
     audit_payload: dict[str, Any],
     revision: ResearchRoundArtifact,
@@ -2484,6 +3606,12 @@ def _finish_quality_run(
     retrieval: dict[str, list[dict[str, Any]]],
     progress_callback: Callable[[dict[str, Any]], None] | None,
 ) -> HybridResearchRun:
+    run.evidence_hash = str(context.get("evidence_hash") or run.evidence_hash)
+    run.evidence_fingerprints = dict(
+        context.get("evidence_fingerprints") or run.evidence_fingerprints
+    )
+    run.normalized_sources = _normalized_sources_from_context(context)
+    run.historical_financial_paths = _historical_paths_from_context(context)
     run.source_candidates = _source_candidates_from_context(context)
     run.source_admission_decisions = _source_admission_decisions_from_context(context)
     run.retrieval_lifecycles = [
@@ -2506,6 +3634,23 @@ def _finish_quality_run(
             *retrieval.get("follow_up", []),
         ],
     )
+    bridge = getattr(run, "cash_conversion_recurrence", None)
+    closure_state = _closure_state_for_run(run)
+    scope_hash = str(
+        run.generation_provenance.get(
+            "cash_conversion_audit_scope_evidence_hash"
+        )
+        or ""
+    )
+    if (
+        bridge is not None
+        and scope_hash == str(getattr(bridge, "evidence_hash", "") or "")
+        and closure_state in {"closed", "closed_with_residual_risk"}
+    ):
+        run.generation_provenance[
+            "cash_conversion_closure_evidence_hash"
+        ] = scope_hash
+    reconcile_cash_conversion_qa_freshness(run)
     _notify_progress(
         progress_callback,
         status=run.status,
@@ -2517,6 +3662,59 @@ def _finish_quality_run(
         ),
     )
     return run
+
+
+def reconcile_cash_conversion_qa_freshness(run: HybridResearchRun) -> None:
+    """Bind a focused bridge to the closure snapshot that actually reviewed it."""
+
+    bridge = getattr(run, "cash_conversion_recurrence", None)
+    closure_state = _closure_state_for_run(run)
+    reviewed_hash = str(
+        run.generation_provenance.get(
+            "cash_conversion_closure_evidence_hash"
+        )
+        or ""
+    )
+    if (
+        bridge is not None
+        and run.status == "completed"
+        and reviewed_hash == str(getattr(bridge, "evidence_hash", "") or "")
+        and closure_state in {"closed", "closed_with_residual_risk"}
+    ):
+        run.cash_conversion_recurrence = replace(
+            bridge,
+            qa_freshness=closure_state,
+        )
+    elif bridge is not None and str(getattr(bridge, "qa_freshness", "")) in {
+        "closed",
+        "closed_with_residual_risk",
+    }:
+        run.cash_conversion_recurrence = replace(
+            bridge,
+            qa_freshness="not_reviewed",
+        )
+
+
+def _closure_state_for_run(run: HybridResearchRun) -> str:
+    payloads: list[dict[str, Any]] = []
+    artifact = getattr(run, "final_artifact", None)
+    payload = getattr(artifact, "payload", None)
+    if isinstance(payload, dict):
+        payloads.append(payload)
+    for round_item in reversed(list(getattr(run, "rounds", ()) or ())):
+        if str(getattr(round_item, "role", "") or "") != "closure_checker":
+            continue
+        round_payload = getattr(getattr(round_item, "artifact", None), "payload", None)
+        if isinstance(round_payload, dict):
+            payloads.append(round_payload)
+    for item in payloads:
+        state = str(item.get("closure_state") or "")
+        closure = item.get("closure_audit")
+        if not state and isinstance(closure, dict):
+            state = str(closure.get("closure_state") or "")
+        if state:
+            return state
+    return ""
 
 
 def run_dual_choreography_research(
@@ -2687,6 +3885,10 @@ def run_dual_choreography_research(
             provider=str(getattr(provider, "provider_name", "") or ""),
             model=str(getattr(provider, "model", "") or ""),
             attempted_increment=1,
+            current_role=role,
+            execution_state="",
+            execution_last_activity_at="",
+            execution_hard_deadline_at="",
         )
         if cancel_event and cancel_event.is_set():
             _cancel_provider(provider)
@@ -2723,6 +3925,7 @@ def run_dual_choreography_research(
             retries=1 if retry_sol_audit or retry_malformed_json else 0,
             retry_any_failure=retry_sol_audit,
             retry_malformed_json=retry_malformed_json,
+            progress_callback=progress_callback,
         )
         result = _reject_non_progressing_round(result, artifacts)
         _notify_progress(
@@ -3596,6 +4799,7 @@ def _run_round_with_retry(
     retries: int,
     retry_any_failure: bool = False,
     retry_malformed_json: bool = False,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> ResearchRound:
     prompt = dict(prompt)
     prompt["idempotency_key"] = _stable_id(
@@ -3614,15 +4818,24 @@ def _run_round_with_retry(
     while attempts < max_attempts:
         attempts += 1
         semaphore = _provider_semaphore(provider)
-        with semaphore:
-            result = _run_round(
-                round_number,
-                role,
-                provider,
-                backend,
-                prompt,
-                context,
-            )
+        restore_execution_progress = _bind_execution_progress(
+            provider,
+            progress_callback=progress_callback,
+            role=role,
+            round_number=round_number,
+        )
+        try:
+            with semaphore:
+                result = _run_round(
+                    round_number,
+                    role,
+                    provider,
+                    backend,
+                    prompt,
+                    context,
+                )
+        finally:
+            restore_execution_progress()
         total_latency += result.latency_ms or 0
         if result.status == "completed":
             break
@@ -3648,6 +4861,74 @@ def _run_round_with_retry(
             f"{result.message}; " if result.message else ""
         ) + f"Provider retry count: {attempts - 1}."
     return result
+
+
+def _bind_execution_progress(
+    provider: Any,
+    *,
+    progress_callback: Callable[[dict[str, Any]], None] | None,
+    role: str,
+    round_number: int,
+) -> Callable[[], None]:
+    setter = getattr(provider, "set_execution_event_callback", None)
+    if progress_callback is None or not callable(setter):
+        return lambda: None
+    previous = setter(None)
+    deadline = (
+        datetime.now(timezone.utc)
+        + timedelta(
+            seconds=max(
+                1,
+                int(getattr(provider, "timeout_seconds", 0) or 1),
+            )
+        )
+    ).isoformat()
+
+    def report(event: Any) -> None:
+        if callable(previous):
+            previous(event)
+        state = str(getattr(event, "state", "") or "active")
+        _notify_progress(
+            progress_callback,
+            status="running",
+            current_stage=role.replace("_", " ").title(),
+            current_role=role,
+            current_round=round_number,
+            provider=str(getattr(provider, "provider_name", "") or ""),
+            model=str(getattr(provider, "model", "") or ""),
+            message=_codex_execution_message(role, state),
+            execution_state=state,
+            execution_last_activity_at=str(
+                getattr(event, "occurred_at", "") or ""
+            ),
+            execution_hard_deadline_at=deadline,
+        )
+
+    setter(report)
+
+    def restore() -> None:
+        try:
+            setter(previous)
+        except Exception:
+            return
+
+    return restore
+
+
+def _codex_execution_message(role: str, state: str) -> str:
+    role_label = role.replace("_", " ").title()
+    return {
+        "starting": f"{role_label}: starting local Codex.",
+        "active": f"{role_label}: Codex is reviewing the scoped evidence.",
+        "quiet_but_running": (
+            f"{role_label}: Codex is still running; no new progress event "
+            "has arrived recently."
+        ),
+        "validating_output": (
+            f"{role_label}: validating the structured response."
+        ),
+        "completed": f"{role_label}: structured response accepted.",
+    }.get(state, f"{role_label}: local Codex status updated.")
 
 
 def _is_transient_round_failure(result: ResearchRound) -> bool:
@@ -4434,6 +5715,9 @@ def hybrid_run_from_payload(payload: dict[str, Any]) -> HybridResearchRun:
     dependency_payload = payload.get("derived_artifact_dependencies")
     invalidation_payload = payload.get("scope_invalidations")
     canonical_revision_payload = payload.get("canonical_publication_revisions")
+    agent_session_payload = payload.get("agent_research_session")
+    agent_sessions_payload = payload.get("agent_research_sessions")
+    cash_conversion_payload = payload.get("cash_conversion_recurrence")
     base = {
         key: value for key, value in payload.items()
         if key not in {
@@ -4468,6 +5752,9 @@ def hybrid_run_from_payload(payload: dict[str, Any]) -> HybridResearchRun:
             "derived_artifact_dependencies",
             "scope_invalidations",
             "canonical_publication_revisions",
+            "agent_research_session",
+            "agent_research_sessions",
+            "cash_conversion_recurrence",
         }
     }
     repair_queue = None
@@ -4619,6 +5906,19 @@ def hybrid_run_from_payload(payload: dict[str, Any]) -> HybridResearchRun:
             for item in canonical_revision_payload or []
             if isinstance(item, dict)
         ],
+        agent_research_session=(
+            session_from_payload(agent_session_payload)
+            if isinstance(agent_session_payload, dict) else None
+        ),
+        agent_research_sessions=[
+            session_from_payload(item)
+            for item in agent_sessions_payload or []
+            if isinstance(item, dict)
+        ],
+        cash_conversion_recurrence=(
+            cash_conversion_bridge_from_dict(cash_conversion_payload)
+            if isinstance(cash_conversion_payload, dict) else None
+        ),
     )
     primary = next(
         (
@@ -4639,6 +5939,7 @@ def hybrid_run_from_payload(payload: dict[str, Any]) -> HybridResearchRun:
         )
         if primary.final_artifact is not None:
             run.final_artifact = primary.final_artifact
+    reconcile_cash_conversion_qa_freshness(run)
     return run
 
 
@@ -4862,6 +6163,17 @@ class HybridJobState:
     investigation_action_kind: str = ""
     investigation_semantic_key: str = ""
     result_route: str = "Decision"
+    originating_artifact_id: str = ""
+    saved_artifact_id: str = ""
+    result_save_error: str = ""
+    result_save_error_reason: str = ""
+    result_save_failure_path: str = ""
+    result_save_annotation: str = ""
+    result_terminal_status: str = ""
+    saved_setup_summary: dict[str, Any] = field(default_factory=dict)
+    saved_storage_scope: str = "local_workspace"
+    saved_scope_id: str = "local"
+    last_persisted_progress_key: str = ""
 
     def __post_init__(self) -> None:
         if self.progress is None:
@@ -4872,12 +6184,17 @@ class HybridJobState:
 
 
 class HybridResearchJobManager:
-    def __init__(self, lifecycle_service: Any | None = None) -> None:
+    def __init__(
+        self,
+        lifecycle_service: Any | None = None,
+        result_persister: Callable[[HybridJobState], str] | None = None,
+    ) -> None:
         self._jobs: dict[str, HybridJobState] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._providers: dict[str, list[Any]] = {}
         self._lock = threading.Lock()
         self._lifecycle_service = lifecycle_service
+        self._result_persister = result_persister
 
     def start(
         self,
@@ -4894,6 +6211,10 @@ class HybridResearchJobManager:
         investigation_action_kind: str = "",
         investigation_semantic_key: str = "",
         result_route: str = "Decision",
+        originating_artifact_id: str = "",
+        saved_setup_summary: dict[str, Any] | None = None,
+        saved_storage_scope: str = "local_workspace",
+        saved_scope_id: str = "local",
         job_id: str = "",
     ) -> HybridJobState:
         if preflight is not None and preflight.status != "ready":
@@ -4918,6 +6239,10 @@ class HybridResearchJobManager:
             investigation_action_kind=investigation_action_kind,
             investigation_semantic_key=investigation_semantic_key,
             result_route=result_route,
+            originating_artifact_id=originating_artifact_id,
+            saved_setup_summary=dict(saved_setup_summary or {}),
+            saved_storage_scope=saved_storage_scope,
+            saved_scope_id=saved_scope_id,
         )
         cancel_event = threading.Event()
         with self._lock:
@@ -4971,6 +6296,23 @@ class HybridResearchJobManager:
                 pass
         return state
 
+    def clear(self, job_id: str) -> bool:
+        """Release terminal in-memory job payloads after durable handoff."""
+
+        with self._lock:
+            state = self._jobs.get(job_id)
+            if state is None or state.status in {
+                "queued",
+                "running",
+                "cancelling",
+                "saving_result",
+            }:
+                return False
+            self._jobs.pop(job_id, None)
+            self._cancel_events.pop(job_id, None)
+            self._providers.pop(job_id, None)
+        return True
+
     def _run_worker(
         self,
         job_id: str,
@@ -4983,6 +6325,8 @@ class HybridResearchJobManager:
         state.status = "running"
         state.progress.status = "running"
         state.progress.current_stage = "Deterministic evidence preparation"
+        state.progress.journey_stage = InvestigationStage.EVIDENCE.value
+        state.progress.progress_revision += 1
         state.updated_at = _utc_now()
         if self._lifecycle_service is not None:
             try:
@@ -5010,23 +6354,50 @@ class HybridResearchJobManager:
             )
             state.result = result
             hybrid_result = getattr(result, "hybrid_research", None)
-            state.status = str(
+            terminal_status = str(
                 getattr(result, "status", "")
                 or getattr(hybrid_result, "status", "")
                 or "completed"
             )
-            state.progress.status = state.status
+            state.result_terminal_status = terminal_status
+            if self._result_persister is not None and result is not None:
+                state.status = "saving_result"
+                state.progress.status = "saving_result"
+                state.progress.current_stage = "Saving completed research"
+                state.progress.journey_stage = InvestigationStage.RESULT_READY.value
+                state.progress.progress_revision += 1
+                state.progress.message = (
+                    "Writing a durable result for zero-call loading."
+                )
+                try:
+                    state.saved_artifact_id = str(
+                        self._result_persister(state) or ""
+                    )
+                except Exception as exc:
+                    state.result_save_error = _safe_error(str(exc))
+                    state.result_save_error_reason = str(
+                        getattr(exc, "reason", "") or "verification_failed"
+                    )
+                    state.result_save_failure_path = _safe_error(
+                        str(getattr(exc, "failure_path", "") or "")
+                    )
+                    state.result_save_annotation = _safe_error(
+                        str(getattr(exc, "annotation", "") or "")
+                    )
+            state.status = terminal_status
+            state.progress.status = terminal_status
+            if terminal_status == "completed":
+                state.progress.journey_stage = InvestigationStage.RESULT_READY.value
+                state.progress.progress_revision += 1
             if self._lifecycle_service is not None:
                 manifest = getattr(result, "run_manifest", None)
                 hybrid_result = getattr(result, "hybrid_research", None)
-                completed = state.status == "completed"
+                completed = terminal_status == "completed"
                 try:
                     self._lifecycle_service.finish(
                         job_id,
                         status="completed" if completed else "partial",
-                        result_reference=str(
-                            getattr(manifest, "run_id", "") or ""
-                        ),
+                        result_reference=state.saved_artifact_id,
                         evidence_hash=str(
                             getattr(manifest, "admitted_evidence_hash", "")
                             or getattr(hybrid_result, "evidence_hash", "")
@@ -5039,7 +6410,7 @@ class HybridResearchJobManager:
                                 "generation_provenance",
                                 {},
                             ).get("stopping_reason", "")
-                            or ("completed" if completed else state.status)
+                            or ("completed" if completed else terminal_status)
                         ),
                     )
                 except (KeyError, ValueError, OSError):
@@ -5079,6 +6450,16 @@ class HybridResearchJobManager:
         progress.current_stage = str(
             payload.get("current_stage") or progress.current_stage
         )
+        proposed_stage = resolve_investigation_stage(
+            progress.current_stage,
+            str(payload.get("current_role") or progress.current_role),
+            str(payload.get("message") or progress.message),
+        )
+        progress.journey_stage = advance_investigation_stage(
+            progress.journey_stage,
+            proposed_stage,
+        ).value
+        progress.progress_revision += 1
         progress.current_round = int(
             payload.get("current_round") or progress.current_round or 0
         )
@@ -5104,34 +6485,120 @@ class HybridResearchJobManager:
             progress.failure_class = ""
         if payload.get("message"):
             progress.message = _safe_error(str(payload["message"]))
+        progress.current_role = str(
+            payload.get("current_role") or progress.current_role
+        )
+        progress.research_question = str(
+            payload.get("research_question") or progress.research_question
+        )
+        if payload.get("source_capabilities_used") is not None:
+            progress.source_capabilities_used = [
+                str(value) for value in payload.get(
+                    "source_capabilities_used", []
+                ) if value
+            ]
+        progress.evidence_admitted = max(
+            progress.evidence_admitted,
+            int(payload.get("evidence_admitted") or 0),
+        )
+        progress.questions_answered = max(
+            progress.questions_answered,
+            int(payload.get("questions_answered") or 0),
+        )
+        progress.questions_total = max(
+            progress.questions_total,
+            int(payload.get("questions_total") or 0),
+        )
+        progress.tool_actions = max(
+            progress.tool_actions,
+            int(payload.get("tool_actions") or 0),
+        )
+        progress.model_turns = max(
+            progress.model_turns,
+            int(payload.get("model_turns") or 0),
+        )
+        progress.repair_stage_index = max(
+            progress.repair_stage_index,
+            int(payload.get("repair_stage_index") or 0),
+        )
+        progress.repair_stage_count = max(
+            progress.repair_stage_count,
+            int(payload.get("repair_stage_count") or 0),
+        )
+        if payload.get("repair_deadline_at"):
+            progress.repair_deadline_at = str(payload["repair_deadline_at"])
+        if "execution_state" in payload:
+            progress.execution_state = str(
+                payload.get("execution_state") or ""
+            )
+        if "execution_last_activity_at" in payload:
+            progress.execution_last_activity_at = str(
+                payload.get("execution_last_activity_at") or ""
+            )
+        if "execution_hard_deadline_at" in payload:
+            progress.execution_hard_deadline_at = str(
+                payload.get("execution_hard_deadline_at") or ""
+            )
         state.updated_at = _utc_now()
         if self._lifecycle_service is not None:
+            evidence_bucket = progress.evidence_admitted // 5
+            progress_key = "|".join((
+                progress.journey_stage,
+                progress.status,
+                str(progress.current_round),
+                str(progress.questions_answered),
+                str(progress.questions_total),
+                str(evidence_bucket),
+                progress.failure_class,
+                progress.execution_state,
+            ))
+            if progress_key == state.last_persisted_progress_key:
+                return
             try:
                 self._lifecycle_service.record_event(
                     job_id,
-                    stage=progress.current_stage or "research",
+                    stage=progress.journey_stage or "research",
                     status=progress.status or "running",
                     summary=progress.message or "Research stage updated.",
                     details={
+                        "activity": progress.current_stage,
+                        "progress_revision": progress.progress_revision,
                         "round": progress.current_round,
                         "attempted_model_calls": progress.attempted_model_calls,
                         "completed_model_calls": progress.completed_model_calls,
                         "retry_count": progress.retry_count,
                         "failure_class": progress.failure_class,
+                        "current_role": progress.current_role,
+                        "research_question": progress.research_question,
+                        "source_capabilities_used": list(
+                            progress.source_capabilities_used
+                        ),
+                        "evidence_admitted": progress.evidence_admitted,
+                        "questions_answered": progress.questions_answered,
+                        "questions_total": progress.questions_total,
+                        "tool_actions": progress.tool_actions,
+                        "model_turns": progress.model_turns,
+                        "repair_stage_index": progress.repair_stage_index,
+                        "repair_stage_count": progress.repair_stage_count,
+                        "repair_deadline_at": progress.repair_deadline_at,
+                        "execution_state": progress.execution_state,
+                        "execution_last_activity_at": (
+                            progress.execution_last_activity_at
+                        ),
+                        "execution_hard_deadline_at": (
+                            progress.execution_hard_deadline_at
+                        ),
                     },
                     provider=progress.provider,
                     model=progress.model,
                     idempotency_key=_stable_id(
                         "job-progress",
                         job_id,
-                        progress.current_stage,
+                        progress_key,
                         progress.status,
-                        progress.current_round,
-                        progress.attempted_model_calls,
-                        progress.completed_model_calls,
-                        progress.retry_count,
                     ),
                 )
+                state.last_persisted_progress_key = progress_key
             except (KeyError, ValueError):
                 pass
 
@@ -5151,6 +6618,15 @@ def _run_round(
     ).hexdigest()
     try:
         payload = provider.complete_json(prompt)
+        payload = _normalize_primary_response_contract(
+            payload,
+            role=role,
+            audit_findings=(
+                (prompt.get("audit_artifact") or {}).get("findings") or []
+                if isinstance(prompt.get("audit_artifact"), dict)
+                else []
+            ),
+        )
         artifact, findings = _validate_round_artifact(
             round_number, role, payload, context
         )
@@ -5189,7 +6665,110 @@ def _run_round(
         token_usage=dict(getattr(provider, "last_usage", {}) or {}),
         provider_cost_usd=getattr(provider, "last_cost_usd", None),
         quality_score=_round_quality_score(artifact),
+        reasoning_effort=_provider_reasoning_effort(provider),
     )
+
+
+def _normalize_primary_response_contract(
+    payload: dict[str, Any],
+    *,
+    role: str,
+    audit_findings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Adapt the legacy revision response name to the canonical QA contract.
+
+    Some providers emit ``audit_finding_responses`` with
+    ``status``/``rationale`` even though deterministic closure consumes
+    ``primary_responses`` with ``state`` and an explicit change description.
+    Normalize only primary revisions, preserve the original field for
+    reproducibility, and never invent a response when neither shape exists.
+    """
+
+    if role != "primary_revision" or not isinstance(payload, dict):
+        return payload
+    primary_responses = payload.get("primary_responses")
+    legacy_source_key = next(
+        (
+            key
+            for key in ("audit_finding_responses", "audit_responses")
+            if isinstance(payload.get(key), list) and payload.get(key)
+        ),
+        "",
+    )
+    source_key = (
+        "primary_responses"
+        if isinstance(primary_responses, list) and primary_responses
+        else legacy_source_key
+        or ("primary_responses" if isinstance(primary_responses, list) else "")
+    )
+    legacy = payload.get(source_key) if source_key else None
+    if not isinstance(legacy, list):
+        return payload
+
+    finding_ids_by_text: dict[str, str] = {}
+    for finding in audit_findings or []:
+        if not isinstance(finding, dict):
+            continue
+        finding_id = str(finding.get("finding_id") or "").strip()
+        finding_text = " ".join(
+            str(
+                finding.get("summary")
+                or finding.get("finding")
+                or finding.get("claim")
+                or ""
+            ).split()
+        ).casefold()
+        if finding_id and finding_text:
+            finding_ids_by_text[finding_text] = finding_id
+
+    normalized = dict(payload)
+    responses: list[dict[str, Any]] = []
+    for raw in legacy:
+        if not isinstance(raw, dict):
+            continue
+        finding_id = str(raw.get("finding_id") or "").strip()
+        if not finding_id:
+            response_finding_text = " ".join(
+                str(
+                    raw.get("audit_finding")
+                    or raw.get("finding")
+                    or raw.get("summary")
+                    or ""
+                ).split()
+            ).casefold()
+            finding_id = finding_ids_by_text.get(response_finding_text, "")
+        if not finding_id:
+            continue
+        state = str(
+            raw.get("state")
+            or raw.get("status")
+            or raw.get("response")
+            or ""
+        ).strip()
+        explanation = str(
+            raw.get("explanation")
+            or raw.get("rationale")
+            or raw.get("reason")
+            or raw.get("response")
+            or ""
+        ).strip()
+        response = dict(raw)
+        response["finding_id"] = finding_id
+        response["state"] = state
+        if explanation:
+            response["explanation"] = explanation
+            if state == "accepted" and not any(
+                str(response.get(key) or "").strip()
+                for key in ("revised_conclusion", "change_summary")
+            ) and not response.get("conclusion_changed"):
+                response["change_summary"] = explanation
+        responses.append(response)
+    normalized["primary_responses"] = responses
+    if source_key != "primary_responses" or responses != legacy:
+        normalized["primary_response_contract_migration"] = (
+            f"{source_key}-v1-to-primary_responses-v1"
+        )
+    return normalized
 
 
 def _round_prompt(
@@ -5257,6 +6836,10 @@ def _round_prompt(
             "untrusted discovery leads. Do not claim that you fetched, read, "
             "or validated them; deterministic admission and retrieval decide "
             "whether they become evidence.",
+            "Every source candidate must identify relationship_to_subject as "
+            "primary, peer, analog, benchmark, expert, contradiction, or "
+            "market_context and list referenced_entities. Unrelated companies "
+            "must be marked scope_mismatch and cannot be used as evidence.",
             "Do not assign fair value, price targets, calibrated probabilities, or promotion status.",
             "Distinguish fact, validated inference, external opinion, and exploratory hypothesis.",
             "Every numerical or dated claim must cite at least one supplied evidence ID.",
@@ -5410,6 +6993,98 @@ def _round_prompt(
             base["audit_repair_retrieval"] = _prompt_retrieval_outcomes(
                 repair_outcomes
             )
+    elif role == "closure_checker":
+        # Closure is a bounded verification task, not another research round.
+        # Supplying the full company context and every evidence excerpt made
+        # local Codex reread hundreds of kilobytes and repeatedly hit its
+        # timeout. Keep only the frozen audit, revised response contract, and
+        # evidence explicitly referenced by either artifact or admitted after
+        # the audit snapshot.
+        audit_payload = _closure_audit_projection(
+            _artifact_payload(prior_artifacts, 2)
+        )
+        revision_payload = _closure_revision_projection(
+            _artifact_payload(prior_artifacts, 3)
+        )
+        response_evidence_ids = {
+            str(evidence_id)
+            for response in revision_payload.get("primary_responses", [])
+            if isinstance(response, dict)
+            and str(response.get("state") or "") == "rejected_with_evidence"
+            for evidence_id in response.get("evidence_ids", [])
+            if evidence_id
+        }
+        relevant_ids = {
+            *response_evidence_ids,
+            *(
+                str(item)
+                for item in context.get("_audit_repair_evidence_ids", [])
+                if item
+            ),
+        }
+        closure_evidence = [
+            {
+                "evidence_id": item.get("evidence_id"),
+                "source_type": item.get("source_type"),
+                "period": item.get("period"),
+                "summary": _cap_text(str(item.get("summary") or ""), 300),
+                "exact_excerpt": _cap_text(
+                    str(item.get("exact_excerpt") or ""), 400
+                ),
+                "validation_status": item.get("validation_status"),
+                "retrieval_status": item.get("retrieval_status"),
+            }
+            for item in prompt_catalog
+            if str(item.get("evidence_id") or "") in relevant_ids
+        ]
+        base["current_context"] = {
+            "ticker": context.get("ticker"),
+            "company": context.get("company"),
+            "research_profile": context.get("research_profile"),
+            "evidence_hash": context.get("evidence_hash"),
+        }
+        base["audit_artifact"] = audit_payload
+        base["reconciled_draft"] = revision_payload
+        base["closure_evidence"] = closure_evidence
+        base["allowed_evidence_ids"] = sorted(relevant_ids)
+        base["eligible_historical_source_ids"] = [
+            item["evidence_id"]
+            for item in closure_evidence
+            if item.get("source_type") == "historical_source"
+        ]
+        base["evidence_reference_index"] = [
+            {
+                "evidence_id": item.get("evidence_id"),
+                "source_type": item.get("source_type"),
+                "period": item.get("period"),
+            }
+            for item in closure_evidence
+        ]
+        base["searchable_evidence_index"] = []
+        base["searchable_evidence_index_status"] = {
+            "status": "not_applicable_to_closure",
+            "reason": "Closure cannot initiate discovery or retrieval.",
+        }
+        base["evidence_projection_status"] = {
+            "stored_permitted_count": len(prompt_catalog),
+            "prompt_evidence_count": len(closure_evidence),
+            "omitted_count": max(0, len(prompt_catalog) - len(closure_evidence)),
+            "status": "closure_scoped",
+        }
+        base["_output_schema"] = _closure_output_schema()
+        base["instruction"] = (
+            "Perform closure only. Verify every material frozen-audit finding "
+            "has an accepted change, an admitted-evidence rejection, or a "
+            "truthful unresolved state; verify contrary evidence was not "
+            "ignored. Do not rewrite the report, discover sources, or repeat "
+            "the investment narrative. Return one concise closure decision."
+        )
+        base["required_audit_decision"] = {
+            "status": "passed|failed",
+            "critical_failures": ["string"],
+            "unresolved_findings": ["finding_id"],
+            "unaddressed_contrary_item_ids": ["evidence_id"],
+        }
     else:
         base["current_context"] = _context_projection(
             context,
@@ -5546,20 +7221,56 @@ def _validate_round_artifact(
     _downgrade_unsupported_claims(cleaned, allowed_evidence, validation_gaps)
     raw_findings = cleaned.get("findings")
     if isinstance(raw_findings, list):
+        normalized_findings: list[Any] = []
         for index, item in enumerate(raw_findings[:20]):
             if not isinstance(item, dict):
+                normalized_findings.append(item)
                 continue
+            normalized_item = dict(item)
+            finding_summary = _cap_text(
+                str(
+                    item.get("summary")
+                    or item.get("finding")
+                    or item.get("claim")
+                    or ""
+                ),
+                500,
+            )
+            finding_identity_evidence = sorted(set(
+                _string_list(item.get("evidence_ids"))
+            ))
+            finding_id = str(
+                item.get("finding_id")
+                or _stable_id(
+                    "finding",
+                    str(context.get("ticker") or ""),
+                    role,
+                    finding_summary,
+                    "|".join(finding_identity_evidence),
+                )
+            )
+            finding_severity = str(
+                item.get("severity")
+                or item.get("materiality")
+                or (
+                    "High"
+                    if role == "independent_research_auditor"
+                    else "Medium"
+                )
+            )
+            normalized_item["finding_id"] = finding_id
+            normalized_item["summary"] = finding_summary
+            normalized_item["severity"] = finding_severity
+            normalized_findings.append(normalized_item)
             finding_evidence = [
                 value for value in _string_list(item.get("evidence_ids"))
                 if value in allowed_evidence
             ]
             findings.append(ResearchAuditFinding(
-                finding_id=str(item.get("finding_id") or _stable_id(
-                    "finding", round_number, index, item.get("summary")
-                )),
+                finding_id=finding_id,
                 category=str(item.get("category") or "research_gap"),
-                severity=str(item.get("severity") or "Medium"),
-                summary=_cap_text(str(item.get("summary") or ""), 500),
+                severity=finding_severity,
+                summary=finding_summary,
                 evidence_ids=finding_evidence,
                 recommended_source_types=[
                     source_type for source_type in _string_list(
@@ -5578,6 +7289,8 @@ def _validate_round_artifact(
                 ),
                 resolved=bool(item.get("resolved", False)),
             ))
+        normalized_findings.extend(raw_findings[20:])
+        cleaned["findings"] = normalized_findings
     summary = _cap_text(str(cleaned.get("summary") or ""), 2_000)
     if not summary:
         validation_gaps.append("Round output did not include a summary.")
@@ -5922,6 +7635,11 @@ def _admit_retrieved_candidate_records(
             source_policy.get("licensing_rules") or ()
         ),
         data_cutoff=str(source_policy.get("data_cutoff") or ""),
+        target_ticker=str(context.get("ticker") or "").upper(),
+        target_security_key=str(context.get("security_key") or ""),
+        permitted_related_entities=tuple(
+            context.get("permitted_related_entities") or ()
+        ),
     )
     sandbox_candidate = CandidateDiscoveryItem(
         candidate_id=candidate_id,
@@ -5950,6 +7668,19 @@ def _admit_retrieved_candidate_records(
         materiality=str(candidate_payload.get("materiality") or "Medium"),
         discovered_at=str(candidate_payload.get("publication_date") or ""),
         connector_id=str(lifecycle.source_type or "registered_connector"),
+        target_security_key=str(context.get("security_key") or ""),
+        related_request_ids=tuple(
+            value for value in (
+                str(candidate_payload.get("research_request_id") or ""),
+            ) if value
+        ),
+        relationship_to_subject=str(
+            candidate_payload.get("relationship_to_subject") or "primary"
+        ),
+        scope_status=str(candidate_payload.get("scope_status") or "unverified"),
+        referenced_entities=tuple(
+            candidate_payload.get("referenced_entities") or ()
+        ),
     )
     gateway = EvidenceAdmissionGateway()
     admitted_records: list[NormalizedSourceRecord] = []
@@ -6183,7 +7914,7 @@ def _normalize_source_candidates(
                     "model-source-candidate", ticker, url, title, index
                 )
             ),
-            ticker=ticker.upper(),
+            ticker=str(item.get("ticker") or ticker).upper(),
             url=url,
             title=title,
             publisher=_cap_text(
@@ -6244,6 +7975,33 @@ def _normalize_source_candidates(
             company_or_expert=_cap_text(
                 str(item.get("company_or_expert") or ""), 240
             ),
+            relationship_to_subject=(
+                str(item.get("relationship_to_subject") or "primary").casefold()
+                if str(item.get("relationship_to_subject") or "primary").casefold() in {
+                    "primary", "peer", "analog", "benchmark", "expert",
+                    "contradiction", "market_context",
+                }
+                else "primary"
+            ),
+            scope_status=(
+                {
+                    "scope mismatch": "scope_mismatch",
+                    "out_of_scope": "scope_mismatch",
+                }.get(
+                    str(item.get("scope_status") or "unverified").casefold(),
+                    str(item.get("scope_status") or "unverified").casefold(),
+                )
+                if str(item.get("scope_status") or "unverified").casefold() in {
+                    "unverified", "in_scope", "in_scope_related_entity",
+                    "scope_mismatch", "scope mismatch", "out_of_scope",
+                }
+                else "unverified"
+            ),
+            referenced_entities=[
+                _cap_text(str(value), 160)
+                for value in list(item.get("referenced_entities") or [])[:12]
+                if value
+            ],
         ))
     return candidates
 
@@ -6654,6 +8412,8 @@ def _context_projection(
         "evidence_closure",
         "quality_first_execution",
         "decision_context",
+        "research_agenda",
+        "cash_conversion_recurrence",
     ]
     projection = {key: context.get(key) for key in keys}
     if include_evidence:
@@ -6779,9 +8539,10 @@ def _prompt_metadata_index(
     """Bound model metadata without reducing deterministic search coverage.
 
     The complete catalog remains in ``searchable_evidence_catalog`` for
-    deterministic evidence queries between rounds. The prompt receives every
-    permitted factual item first, followed by the highest-ranked metadata that
-    fits the model-input budget.
+    deterministic evidence queries between rounds. The prompt receives a
+    compact, ranked metadata projection. Permitted factual items that do not
+    fit remain citable through ``allowed_evidence_ids`` and the evidence
+    reference index; they do not bypass this metadata budget.
     """
     complete = list(context.get("evidence_metadata_catalog", []) or [])
     permitted_ids = {
@@ -6797,36 +8558,64 @@ def _prompt_metadata_index(
             str(item.get("evidence_id") or ""),
         ),
     )
+    prompt_keys = (
+        "evidence_id",
+        "citation_id",
+        "kind",
+        "source_type",
+        "source_tier",
+        "period",
+        "driver",
+        "metric",
+        "retrieval_status",
+        "parser_status",
+        "validation_status",
+        "selection_score",
+        "pair_id",
+        "pair_role",
+    )
+
+    def compact_item(raw: dict[str, Any]) -> dict[str, Any]:
+        projected: dict[str, Any] = {}
+        for key in prompt_keys:
+            value = raw.get(key)
+            if value in (None, "", [], {}):
+                continue
+            projected[key] = (
+                _cap_text(str(value), 320)
+                if isinstance(value, str)
+                else value
+            )
+        return projected
+
     selected: list[dict[str, Any]] = []
     used_chars = 2
-    for item in ordered:
+    for raw in ordered:
         if len(selected) >= max_items:
             break
+        item = compact_item(raw)
         encoded = json.dumps(item, ensure_ascii=True, default=str)
-        if selected and used_chars + len(encoded) + 1 > max_chars:
+        if used_chars + len(encoded) + (1 if selected else 0) > max_chars:
             break
         selected.append(item)
-        used_chars += len(encoded) + 1
+        used_chars += len(encoded) + (1 if len(selected) > 1 else 0)
     selected_ids = {
         str(item.get("evidence_id") or "") for item in selected
     }
     missing_permitted = permitted_ids - selected_ids
-    if missing_permitted:
-        # Permitted factual evidence must never be crowded out by metadata.
-        for item in ordered:
-            evidence_id = str(item.get("evidence_id") or "")
-            if evidence_id not in missing_permitted:
-                continue
-            selected.append(item)
-            missing_permitted.remove(evidence_id)
-            if not missing_permitted:
-                break
     omitted = max(0, len(complete) - len(selected))
     return selected, {
         "complete_catalog_count": len(complete),
         "prompt_index_count": len(selected),
         "omitted_from_prompt_index": omitted,
+        "permitted_count": len(permitted_ids),
+        "permitted_in_prompt_index": len(permitted_ids & selected_ids),
+        "permitted_omitted_from_prompt_index": len(missing_permitted),
+        "permitted_omitted_evidence_ids": sorted(missing_permitted)[:80],
+        "projection_chars": used_chars,
+        "projection_limit_chars": max_chars,
         "complete_catalog_searchable_between_rounds": True,
+        "omitted_permitted_items_remain_in_reference_index": True,
         "instruction": (
             "Use a free-text evidence_query when the bounded prompt index does "
             "not expose a needed item. Deterministic code searches the complete "
@@ -7021,6 +8810,54 @@ def _round_output_schema() -> dict[str, Any]:
             "audit_decision": generic_object,
         },
         "required": ["summary"],
+        "additionalProperties": True,
+    }
+
+
+def _closure_output_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "closure_state": {
+                "type": "string",
+                "enum": [
+                    "closed",
+                    "closed_with_residual_risk",
+                    "failed_material_findings_unaddressed",
+                    "indeterminate_provider_or_evidence_failure",
+                ],
+            },
+            "audit_decision": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["passed", "failed"]},
+                    "critical_failures": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "unresolved_findings": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "unaddressed_contrary_item_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": [
+                    "status",
+                    "critical_failures",
+                    "unresolved_findings",
+                ],
+                "additionalProperties": True,
+            },
+            "findings": {
+                "type": "array",
+                "items": {"type": "object", "additionalProperties": True},
+            },
+        },
+        "required": ["summary", "closure_state", "audit_decision"],
         "additionalProperties": True,
     }
 
@@ -7917,6 +9754,112 @@ def _prompt_artifact_payload(
     )
 
 
+def _closure_audit_projection(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "summary": _cap_text(str(payload.get("summary") or ""), 1_000),
+        "findings": [
+            {
+                "finding_id": item.get("finding_id"),
+                "severity": item.get("severity") or item.get("materiality"),
+                "classification": item.get("classification"),
+                "summary": _cap_text(
+                    str(item.get("summary") or item.get("finding") or ""),
+                    500,
+                ),
+                "audit_implication": _cap_text(
+                    str(item.get("audit_implication") or ""), 500
+                ),
+                # Closure verifies the response contract and the revised
+                # conclusion. A small lineage sample is sufficient here;
+                # deterministic claim validation already covered the complete
+                # evidence arrays before this model stage.
+                "evidence_ids": _string_list(item.get("evidence_ids"))[:4],
+            }
+            for item in (payload.get("findings") or [])[:30]
+            if isinstance(item, dict)
+        ],
+        "unsupported_claims": [
+            {
+                "claim": _cap_text(str(item.get("claim") or ""), 500),
+                "reason": _cap_text(str(item.get("reason") or ""), 500),
+                "evidence_ids": _string_list(item.get("evidence_ids"))[:12],
+            }
+            for item in (payload.get("unsupported_claims") or [])[:20]
+            if isinstance(item, dict)
+        ],
+        "missing_contradictions": _project_prompt_value(
+            payload.get("missing_contradictions") or [],
+            max_string=400,
+            max_list=20,
+        ),
+        "hidden_risks": _project_prompt_value(
+            payload.get("hidden_risks") or [],
+            max_string=400,
+            max_list=20,
+        ),
+    }
+
+
+def _closure_revision_projection(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "summary": _cap_text(str(payload.get("summary") or ""), 1_000),
+        "verdict": _cap_text(str(payload.get("verdict") or ""), 500),
+        "leading_thesis": _cap_text(
+            str(payload.get("leading_thesis") or ""), 500
+        ),
+        "claims": _project_prompt_value(
+            payload.get("claims") or [], max_string=500, max_list=20
+        ),
+        "established_observations": _project_prompt_value(
+            payload.get("established_observations") or [],
+            max_string=500,
+            max_list=20,
+        ),
+        "findings": _project_prompt_value(
+            payload.get("findings") or [], max_string=500, max_list=20
+        ),
+        "primary_responses": [
+            {
+                "finding_id": item.get("finding_id"),
+                "state": item.get("state") or item.get("status"),
+                "conclusion_changed": bool(item.get("conclusion_changed")),
+                "change_summary": _cap_text(
+                    str(
+                        item.get("change_summary")
+                        or item.get("revised_conclusion")
+                        or ""
+                    ),
+                    600,
+                ),
+                "evidence_ids": _string_list(item.get("evidence_ids"))[:8],
+            }
+            for item in (payload.get("primary_responses") or [])[:30]
+            if isinstance(item, dict)
+        ],
+        "historical_analog_dossiers": [
+            {
+                "analog_id": item.get("analog_id") or item.get("dossier_id"),
+                "status": item.get("status"),
+                "source_ids": _string_list(item.get("source_ids"))[:20],
+            }
+            for item in (payload.get("historical_analog_dossiers") or [])[:8]
+            if isinstance(item, dict)
+        ],
+        "publication_scope": _project_prompt_value(
+            payload.get("publication_scope") or {},
+            max_string=500,
+            max_list=20,
+        ),
+        "limitations": _project_prompt_value(
+            payload.get("limitations") or [], max_string=500, max_list=20
+        ),
+    }
+
+
 def _prompt_retrieval_outcomes(
     outcomes: Any,
     *,
@@ -8079,6 +10022,20 @@ def _provider_label(provider: Any) -> str:
         f"{getattr(provider, 'provider_name', 'unknown')}:"
         f"{getattr(provider, 'model', 'unknown')}"
     )
+
+
+def _provider_reasoning_effort(provider: Any) -> str:
+    """Expose the effective role policy without leaking provider internals."""
+
+    if provider is None:
+        return ""
+    value = str(getattr(provider, "last_reasoning_effort", "") or "")
+    if value:
+        return value
+    delegate = getattr(provider, "delegate", None)
+    if delegate is not None and delegate is not provider:
+        return _provider_reasoning_effort(delegate)
+    return str(getattr(provider, "reasoning_effort", "") or "")
 
 
 def _notify_progress(

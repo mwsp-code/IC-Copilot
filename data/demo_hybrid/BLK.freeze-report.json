@@ -1,0 +1,47 @@
+{
+  "ticker": "BLK",
+  "status": "published",
+  "policy_version": "demo-quality-policy-v3",
+  "candidate_count": 1,
+  "selection_policy": "newest_completed_closed_and_gate_passing",
+  "sanitization_status": "passed_secrets_and_licensing",
+  "candidates": [
+    {
+      "source_run_id": "f9ad1f78-2255-461d-9932-3aa94e879300",
+      "source_run_completed_at": "2026-08-23T22:48:08.908223+00:00",
+      "status": "pass_with_residual_diligence",
+      "allowed": true,
+      "publication_label": "Research completed with residual diligence",
+      "canonical_revision_id": "canonical-publication-revision-be747e12e53e469329f3",
+      "validation_status": "passed",
+      "qa_closure_state": "closed_with_residual_risk",
+      "evidence_hash": "fa384a4224ee023a991781334fef7e1239e572791c2058bd5940d104b9828213",
+      "policy_version": "demo-quality-policy-v3",
+      "failure_codes": [],
+      "qualification_codes": [
+        "closure_with_residual_risk",
+        "unsupported_claim_removed",
+        "counter_thesis_diligence_gap"
+      ],
+      "repair_kinds": [],
+      "blockers": [],
+      "next_actions": []
+    }
+  ],
+  "published_artifact_preserved": true,
+  "built_in_fallback_available": true,
+  "provider_action_required": null,
+  "repair_stages": [],
+  "source_run_id": "f9ad1f78-2255-461d-9932-3aa94e879300",
+  "published_at": "2026-08-23T22:48:15+00:00",
+  "evidence_hash": "fa384a4224ee023a991781334fef7e1239e572791c2058bd5940d104b9828213",
+  "qa_closure_state": "closed_with_residual_risk",
+  "research_ontology_version": "research-ontology-v1",
+  "security_profile_id": "asset-manager-v1",
+  "core_mechanism_ids": [
+    "aum_fee_earnings_conversion",
+    "asset_manager_operating_leverage",
+    "acquisition_integration",
+    "per_share_capital_allocation"
+  ]
+}

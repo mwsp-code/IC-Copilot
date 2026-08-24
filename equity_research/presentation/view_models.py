@@ -3,7 +3,25 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import re
+import unicodedata
 from typing import Any, Iterable
+
+from ..application.investigation_journey import InvestigationJourney
+from ..application.investigation_action_canonicalization import (
+    canonicalize_investigation_actions,
+)
+from ..application.research_request_outcomes import (
+    ResearchIntentAnswerResolver,
+    build_research_request_outcome,
+    research_request_topic,
+)
+from ..application.cash_conversion import validate_cash_conversion_recurrence_bridge
+from ..decision_intelligence import build_decision_recommendation
+from ..domain.research_ontology import (
+    AnalogResearchState,
+    SecurityResearchProfileResolver,
+    build_research_assessments,
+)
 
 
 _RAW_ID = re.compile(r"\b[a-f0-9]{10,64}\b", re.I)
@@ -133,6 +151,88 @@ class DecisionPageIntent:
     uploaded_csv: bytes = b""
 
 
+@dataclass(frozen=True)
+class ResearchLaunchIntentViewModel:
+    ticker: str
+    operation_kind: str
+    operation_type_label: str
+    operation_label: str
+    objective: str
+    status: str
+    research_profile: str
+    source_summary: str
+    qa_summary: str
+    preferred_result_route: str
+    primary_cta: str
+    can_launch: bool
+    needs_source_setup: bool
+    blocking_reason: str = ""
+
+
+def build_research_launch_intent_view_model(
+    intent: Any,
+) -> ResearchLaunchIntentViewModel:
+    operation_kind = str(
+        getattr(getattr(intent, "operation_kind", ""), "value", None)
+        or getattr(intent, "operation_kind", "")
+        or "full_research"
+    )
+    status = str(
+        getattr(getattr(intent, "status", ""), "value", None)
+        or getattr(intent, "status", "")
+        or "selected"
+    )
+    type_label = {
+        "full_research": "Full research refresh",
+        "event_investigation": "Focused event investigation",
+        "action_investigation": "Action investigation",
+        "targeted_investigation": "Action investigation",
+        "analog_investigation": "Historical analog investigation",
+        "repair_recheck": "Repair and recheck",
+    }.get(operation_kind, operation_kind.replace("_", " ").title())
+    primary_cta = {
+        "full_research": "Run full research",
+        "event_investigation": "Run selected event investigation",
+        "action_investigation": "Run selected investigation",
+        "targeted_investigation": "Run selected investigation",
+        "analog_investigation": "Run selected analog investigation",
+        "repair_recheck": "Run repair and recheck",
+    }.get(operation_kind, "Run selected research task")
+    source_families = tuple(
+        str(item).replace("_", " ")
+        for item in (getattr(intent, "required_source_families", ()) or ())
+    )
+    needs_source_setup = status == "needs_source_setup"
+    return ResearchLaunchIntentViewModel(
+        ticker=str(getattr(intent, "ticker", "") or ""),
+        operation_kind=operation_kind,
+        operation_type_label=type_label,
+        operation_label=str(getattr(intent, "operation_label", "") or type_label),
+        objective=str(getattr(intent, "objective", "") or ""),
+        status=status,
+        research_profile=str(
+            getattr(intent, "research_profile", "") or "adaptive_ic"
+        ),
+        source_summary=(
+            ", ".join(source_families)
+            if source_families
+            else "Configured and entitled sources"
+        ),
+        qa_summary=(
+            "Independent QA enabled"
+            if bool(getattr(intent, "qa_enabled", False))
+            else "Independent QA not requested"
+        ),
+        preferred_result_route=str(
+            getattr(intent, "preferred_result_route", "") or "Decision"
+        ),
+        primary_cta=primary_cta,
+        can_launch=status in {"selected", "ready"},
+        needs_source_setup=needs_source_setup,
+        blocking_reason=str(getattr(intent, "blocking_reason", "") or ""),
+    )
+
+
 class ResearchSubroute(str, Enum):
     THESIS_DRIVERS = "Thesis & Drivers"
     MODEL_VALUATION = "Model & Valuation"
@@ -181,6 +281,32 @@ class AnalogsPeersViewModel(ResearchRouteViewModel):
 
 
 @dataclass(frozen=True)
+class ResearchQuestionAnswerViewModel:
+    question_id: str
+    domain: str
+    title: str
+    status: str
+    answer: str
+    confidence: str
+    evidence_count: int
+    strongest_limitation: str = ""
+    remaining_work: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ResearchSessionViewModel:
+    session_status: str
+    role: str
+    provider_label: str
+    budget_label: str
+    answered_count: int
+    partial_count: int
+    total_count: int
+    stopping_reason: str
+    questions: tuple[ResearchQuestionAnswerViewModel, ...] = ()
+
+
+@dataclass(frozen=True)
 class DecisionBriefViewModel:
     ticker: str
     company_name: str
@@ -190,6 +316,8 @@ class DecisionBriefViewModel:
     verdict: str
     stage: str
     direction: str
+    candidate_direction: str
+    recommendation_reason: str
     confidence: str
     thesis: str
     why_now: str
@@ -246,6 +374,12 @@ class RepairActionCardViewModel:
 
 
 @dataclass(frozen=True)
+class RepairProgressStageViewModel:
+    label: str
+    status: str
+
+
+@dataclass(frozen=True)
 class PublicationReadinessViewModel:
     research_status: str
     validation_status: str
@@ -259,12 +393,16 @@ class PublicationReadinessViewModel:
     can_repair: bool = False
     publication_eligible: bool = False
     qualification_summaries: tuple[str, ...] = ()
+    repair_progress: tuple[RepairProgressStageViewModel, ...] = ()
+    primary_action_label: str = "Repair and recheck"
+    execution_note: str = ""
 
 
 @dataclass(frozen=True)
 class PublicationRepairIntent:
     intent_type: str
     action_ids: tuple[str, ...] = ()
+    retry_stages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -278,6 +416,20 @@ class ResearchRequestCardViewModel:
     contradicting_evidence: tuple[str, ...] = ()
     attempted_connectors: tuple[str, ...] = ()
     stopping_rule: str = ""
+    resolution_summary: str = ""
+    answer_status: str = "planned"
+    answer: str = ""
+    evidence_found: tuple[str, ...] = ()
+    evidence_missing: tuple[str, ...] = ()
+    next_step: str = ""
+    admitted_evidence_count: int = 0
+    confidence: str = "Unknown"
+    confidence_reason: str = ""
+    blocking_reason: str = ""
+    search_summary: str = ""
+    reading_summary: str = ""
+    extraction_summary: str = ""
+    calculation_summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -291,6 +443,73 @@ class CandidateStatusViewModel:
     source_family: str = ""
     url: str = ""
     decision_reason: str = ""
+    research_request_id: str = ""
+    scope_status: str = "unverified"
+    relationship_to_subject: str = "primary"
+    relevant: bool = True
+
+
+@dataclass(frozen=True)
+class InvestigationJourneyStageViewModel:
+    label: str
+    status: str
+
+
+@dataclass(frozen=True)
+class InvestigationJourneyViewModel:
+    operation_label: str
+    objective: str
+    ticker: str
+    current_stage: str
+    stages: tuple[InvestigationJourneyStageViewModel, ...]
+    active: bool
+    elapsed_label: str = ""
+    qa_label: str = "Independent QA not active"
+    progress_percent: int = 0
+    completed_stage_count: int = 0
+    progress_label: str = ""
+    outcome: str = ""
+    persistence_status: str = ""
+    admitted_evidence_count: int = 0
+    change_summaries: tuple[str, ...] = ()
+    remaining_actions: tuple[str, ...] = ()
+    answer_status: str = ""
+    direct_answer: str = ""
+    confidence: str = "Unknown"
+    key_evidence: tuple[str, ...] = ()
+    strongest_limitation: str = ""
+    run_status: str = ""
+    qa_state: str = "not_run"
+    execution_state: str = ""
+    execution_last_activity_at: str = ""
+    execution_hard_deadline_at: str = ""
+
+
+@dataclass(frozen=True)
+class EvidenceTrailStepViewModel:
+    label: str
+    status: str
+    summary: str
+
+
+@dataclass(frozen=True)
+class EvidenceInvestigationTrailViewModel:
+    question: str
+    outcome: str
+    steps: tuple[EvidenceTrailStepViewModel, ...]
+    answer_status: str = "unanswered"
+    answer: str = ""
+    evidence_found: tuple[str, ...] = ()
+    evidence_missing: tuple[str, ...] = ()
+    next_step: str = ""
+    relevant_candidate_count: int = 0
+    hidden_candidate_count: int = 0
+    confidence: str = "Unknown"
+    coverage: str = "Unknown"
+    answer_basis: str = ""
+    qa_freshness: str = "not_reviewed"
+    period_comparison: tuple[dict[str, str], ...] = ()
+    component_sections: tuple[tuple[str, tuple[dict[str, str], ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -301,19 +520,123 @@ class EvidencePageViewModel:
     evidence_hash: str
     requests: tuple[ResearchRequestCardViewModel, ...] = ()
     candidates: tuple[CandidateStatusViewModel, ...] = ()
+    request_groups: tuple[tuple[str, tuple[ResearchRequestCardViewModel, ...]], ...] = ()
+    investigation_trail: EvidenceInvestigationTrailViewModel | None = None
+    relevant_candidate_count: int = 0
+    hidden_candidate_count: int = 0
 
 
-def build_evidence_page_view_model(result: Any) -> EvidencePageViewModel:
+@dataclass(frozen=True)
+class SavedResearchItemViewModel:
+    artifact_id: str
+    ticker: str
+    company_name: str
+    operation_label: str
+    research_profile: str
+    status: str
+    outcome: str
+    completed_at: str
+    qa_status: str
+    publication_status: str
+    preferred_route: str
+    pinned: bool = False
+    health: str = "unchecked"
+
+
+@dataclass(frozen=True)
+class SavedResearchLibraryViewModel:
+    completed: tuple[SavedResearchItemViewModel, ...]
+    drafts: tuple[SavedResearchItemViewModel, ...]
+    current_ticker: str
+    session_only: bool
+
+
+def build_saved_research_library_view_model(
+    artifacts: list[Any] | tuple[Any, ...],
+    *,
+    current_ticker: str,
+    session_only: bool,
+) -> SavedResearchLibraryViewModel:
+    items = tuple(
+        SavedResearchItemViewModel(
+            artifact_id=str(getattr(item, "artifact_id", "") or ""),
+            ticker=str(getattr(item, "ticker", "") or ""),
+            company_name=str(getattr(item, "company_name", "") or ""),
+            operation_label=str(getattr(item, "operation_label", "") or "Research"),
+            research_profile=str(getattr(item, "research_profile", "") or "Standard"),
+            status=str(
+                getattr(getattr(item, "status", ""), "value", None)
+                or getattr(item, "status", "")
+                or "draft"
+            ),
+            outcome=str(getattr(item, "outcome", "") or "unknown"),
+            completed_at=str(getattr(item, "completed_at", "") or ""),
+            qa_status=str(getattr(item, "independent_qa_status", "") or "not_run"),
+            publication_status=str(getattr(item, "publication_status", "") or "not_evaluated"),
+            preferred_route=str(getattr(item, "preferred_route", "") or "Decision"),
+            pinned=bool(getattr(item, "pinned", False)),
+            health=str(
+                getattr(getattr(item, "health", ""), "value", None)
+                or getattr(item, "health", "")
+                or "unchecked"
+            ),
+        )
+        for item in artifacts
+    )
+    completed = tuple(
+        item for item in items
+        if item.status in {"completed", "residual_diligence"}
+    )
+    drafts = tuple(item for item in items if item not in completed)
+    return SavedResearchLibraryViewModel(
+        completed=completed,
+        drafts=drafts,
+        current_ticker=current_ticker.upper(),
+        session_only=session_only,
+    )
+
+
+def build_evidence_page_view_model(
+    result: Any,
+    *,
+    displayed_context: Any | None = None,
+    operation_kind: str = "",
+    operation_label: str = "",
+    operation_action_id: str = "",
+    outcome: str = "",
+) -> EvidencePageViewModel:
+    if displayed_context is not None:
+        operation_kind = str(
+            getattr(displayed_context, "operation_kind", "") or operation_kind
+        )
+        operation_label = str(
+            getattr(displayed_context, "operation_label", "") or operation_label
+        )
+        operation_action_id = str(
+            getattr(displayed_context, "operation_action_id", "")
+            or operation_action_id
+        )
+        outcome = str(getattr(displayed_context, "outcome", "") or outcome)
+    displayed_intent_id = str(
+        getattr(displayed_context, "research_intent_id", "") or ""
+    )
     graph = getattr(result, "evidence_graph", None)
     qa = getattr(result, "independent_research_qa", None)
-    requests = tuple(
-        ResearchRequestCardViewModel(
+    request_items = list(
+        getattr(qa, "research_requests", [])
+        or getattr(qa, "evidence_requests", [])
+        or []
+    )[:20]
+    request_models = []
+    for item in request_items:
+        request_outcome = build_research_request_outcome(result, item)
+        request_models.append(ResearchRequestCardViewModel(
             request_id=str(getattr(item, "request_id", "") or ""),
-            objective=str(
+            objective=_normalize_display_text(str(
                 getattr(item, "objective", "")
                 or getattr(item, "question", "")
                 or "Targeted investigation"
-            ),
+            )),
             status=str(getattr(item, "status", "planned") or "planned"),
             priority=str(getattr(item, "priority", "Medium") or "Medium"),
             source_families=tuple(
@@ -330,14 +653,43 @@ def build_evidence_page_view_model(result: Any) -> EvidencePageViewModel:
             attempted_connectors=tuple(
                 getattr(item, "attempted_connector_ids", ()) or ()
             ),
-            stopping_rule=str(getattr(item, "stopping_rule", "") or ""),
-        )
-        for item in list(
-            getattr(qa, "research_requests", [])
-            or getattr(qa, "evidence_requests", [])
-            or []
-        )[:20]
-    )
+            stopping_rule=_normalize_display_text(str(getattr(item, "stopping_rule", "") or "")),
+            resolution_summary=_normalize_display_text(str(
+                getattr(item, "resolution_summary", "") or ""
+            )),
+            answer_status=request_outcome.status,
+            answer=_normalize_display_text(request_outcome.answer),
+            evidence_found=tuple(
+                _normalize_display_text(value)
+                for value in request_outcome.evidence_found
+            ),
+            evidence_missing=tuple(
+                _normalize_display_text(value)
+                for value in request_outcome.evidence_missing
+            ),
+            next_step=_normalize_display_text(request_outcome.next_step),
+            admitted_evidence_count=request_outcome.admitted_evidence_count,
+            confidence=str(getattr(item, "confidence", "Unknown") or "Unknown"),
+            confidence_reason=_normalize_display_text(str(
+                getattr(item, "confidence_reason", "") or ""
+            )),
+            blocking_reason=_normalize_display_text(str(
+                getattr(item, "blocking_reason", "") or ""
+            )),
+            search_summary=_normalize_display_text(str(
+                getattr(item, "search_summary", "") or ""
+            )),
+            reading_summary=_normalize_display_text(str(
+                getattr(item, "reading_summary", "") or ""
+            )),
+            extraction_summary=_normalize_display_text(str(
+                getattr(item, "extraction_summary", "") or ""
+            )),
+            calculation_summary=_normalize_display_text(str(
+                getattr(item, "calculation_summary", "") or ""
+            )),
+        ))
+    requests = tuple(request_models)
     decisions = {
         str(getattr(item, "candidate_id", "")): item
         for item in list(getattr(graph, "admission_decisions", []) or [])
@@ -346,11 +698,34 @@ def build_evidence_page_view_model(result: Any) -> EvidencePageViewModel:
     for item in list(getattr(qa, "candidate_discovery_items", []) or [])[:40]:
         candidate_id = str(getattr(item, "candidate_id", "") or "")
         decision = decisions.get(candidate_id)
+        decision_reason = _normalize_display_text(str(getattr(decision, "reason", "") or ""))
+        scope_status = str(getattr(item, "scope_status", "unverified") or "unverified")
+        if _is_scope_mismatch(scope_status, decision_reason):
+            scope_status = "scope_mismatch"
+        candidate_status = str(
+            getattr(item, "status", "quarantined") or "quarantined"
+        )
+        request_id = str(getattr(item, "research_request_id", "") or "")
+        relationship = str(
+            getattr(item, "relationship_to_subject", "primary") or "primary"
+        )
+        routine_relevant = (
+            scope_status != "scope_mismatch"
+            and (
+                candidate_status.casefold()
+                not in {"rejected", "expired", "retrieval_failed"}
+                or bool(request_id)
+            )
+        )
         candidates.append(CandidateStatusViewModel(
             candidate_id=candidate_id,
             candidate_type=str(getattr(item, "candidate_type", "source_candidate") or "source_candidate"),
-            title=str(getattr(item, "title", "") or getattr(item, "objective", "") or "Research candidate"),
-            status=str(getattr(item, "status", "quarantined") or "quarantined"),
+            title=_normalize_display_text(str(
+                getattr(item, "title", "")
+                or getattr(item, "objective", "")
+                or "Research candidate"
+            )),
+            status=candidate_status,
             origin=" / ".join(
                 value for value in (
                     str(getattr(item, "origin_role", "") or ""),
@@ -360,7 +735,11 @@ def build_evidence_page_view_model(result: Any) -> EvidencePageViewModel:
             materiality=str(getattr(item, "materiality", "Medium") or "Medium"),
             source_family=str(getattr(item, "proposed_source_family", "") or ""),
             url=str(getattr(item, "url", "") or ""),
-            decision_reason=str(getattr(decision, "reason", "") or ""),
+            decision_reason=decision_reason,
+            research_request_id=request_id,
+            scope_status=scope_status,
+            relationship_to_subject=relationship,
+            relevant=routine_relevant,
         ))
         if not candidates[-1].decision_reason:
             history = list(getattr(item, "status_history", ()) or ())
@@ -368,11 +747,205 @@ def build_evidence_page_view_model(result: Any) -> EvidencePageViewModel:
                 candidates[-1] = CandidateStatusViewModel(
                     **{
                         **candidates[-1].__dict__,
-                        "decision_reason": str(
+                        "decision_reason": _normalize_display_text(str(
                             getattr(history[-1], "reason", "") or ""
-                        ),
+                        )),
                     }
                 )
+                if _is_scope_mismatch(
+                    candidates[-1].scope_status,
+                    candidates[-1].decision_reason,
+                ):
+                    candidates[-1] = CandidateStatusViewModel(
+                        **{
+                            **candidates[-1].__dict__,
+                            "scope_status": "scope_mismatch",
+                            "relevant": False,
+                        }
+                    )
+    canonical_actions = _canonical_investigation_actions(result)
+    queue = list(canonical_actions.actions)
+    canonical_operation_action_id = (
+        canonical_actions.resolve_action_id(operation_action_id)
+        or operation_action_id
+    )
+    selected_action = next((
+        item for item in queue
+        if canonical_operation_action_id and (
+            str(getattr(item, "action_id", "") or "")
+            == canonical_operation_action_id
+            or operation_action_id in list(
+                getattr(item, "related_research_request_ids", ()) or ()
+            )
+        )
+    ), None)
+    focused_request_ids = set(
+        getattr(selected_action, "related_research_request_ids", ()) or ()
+    )
+    if operation_action_id:
+        focused_request_ids.add(operation_action_id)
+    focused_requests = tuple(
+        item for item in requests if item.request_id in focused_request_ids
+    )
+    if not focused_requests and (
+        operation_action_id or operation_label or selected_action is not None
+    ):
+        focused_requests = _infer_focused_research_requests(
+            requests,
+            operation_label=operation_label,
+            action_kind=str(
+                getattr(selected_action, "action_kind", "") or ""
+            ),
+            action_objective=str(
+                getattr(selected_action, "objective", "")
+                or getattr(selected_action, "title", "")
+                or ""
+            ),
+        )
+        focused_request_ids.update(
+            item.request_id for item in focused_requests if item.request_id
+        )
+    focused_operation = bool(
+        operation_action_id or operation_label or selected_action is not None
+    )
+    focused_candidates = tuple(
+        item for item in candidates
+        if item.relevant and (
+            not focused_operation
+            or item.research_request_id in focused_request_ids
+        )
+    )
+    hidden_candidates = tuple(
+        item for item in candidates if item not in focused_candidates
+    )
+    request_groups = _group_research_requests(requests)
+    investigation_trail = None
+    if operation_kind in {
+        "targeted_investigation", "action_investigation", "event_investigation",
+        "analog_investigation", "repair_recheck", "repair_and_recheck",
+    } or operation_action_id:
+        trail_requests = focused_requests
+        trail_candidates = focused_candidates
+        candidate_admitted = sum(
+            item.status == "admitted" for item in trail_candidates
+        )
+        rejected = sum(item.status == "rejected" for item in trail_candidates)
+        attempted_connectors = sorted({
+            connector
+            for request in trail_requests
+            for connector in request.attempted_connectors
+            if connector
+        })
+        action_status = str(getattr(selected_action, "status", "") or outcome or "completed")
+        original_focused_requests = tuple(
+            item for item in request_items
+            if str(getattr(item, "request_id", "") or "") in focused_request_ids
+        )
+        answer_state = ResearchIntentAnswerResolver().resolve_state(
+            result,
+            original_focused_requests,
+            intent_id=(
+                displayed_intent_id
+                or _cash_conversion_intent_id(result)
+            ),
+            question=(
+                operation_label
+                or str(getattr(selected_action, "objective", "") or "")
+            ),
+            run_status=(
+                "completed" if action_status.casefold() in {"completed", "resolved", "closed"}
+                else "partial" if action_status.casefold() in {"partial", "unresolved"}
+                else "failed" if action_status.casefold() in {"failed", "cancelled"}
+                else "completed"
+            ),
+            expected_cutoff=str(
+                getattr(displayed_context, "data_cutoff", "") or ""
+            ),
+        )
+        admitted = sum(
+            item.admitted_evidence_count for item in trail_requests
+        ) + candidate_admitted
+        evidence_found = answer_state.evidence_found
+        evidence_missing = answer_state.evidence_missing
+        answer_status = answer_state.answer_status
+        answer = answer_state.direct_answer
+        next_step = answer_state.remaining_action
+        period_comparison, component_sections = _cash_conversion_answer_views(
+            answer_state.bridge,
+            expected_cutoff=str(
+                getattr(displayed_context, "data_cutoff", "") or ""
+            ),
+        )
+        investigation_trail = EvidenceInvestigationTrailViewModel(
+            question=_normalize_display_text(
+                operation_label
+                or str(getattr(selected_action, "objective", "") or "Focused investigation")
+            ),
+            outcome=action_status.replace("_", " ").title(),
+            steps=(
+                EvidenceTrailStepViewModel(
+                    "Question", "completed",
+                    _normalize_display_text(operation_label or "Focused investigation"),
+                ),
+                EvidenceTrailStepViewModel(
+                    "Research Requests",
+                    "completed" if trail_requests else "not attempted",
+                    (
+                        f"{len(trail_requests)} targeted request(s) linked to this investigation."
+                        if trail_requests else
+                        "No request link was stored or could be inferred for this investigation."
+                    ),
+                ),
+                EvidenceTrailStepViewModel(
+                    "Connectors attempted",
+                    "completed" if attempted_connectors else "not attempted",
+                    ", ".join(attempted_connectors) if attempted_connectors else "No connector attempt recorded.",
+                ),
+                EvidenceTrailStepViewModel(
+                    "Candidate discovery",
+                    "completed" if trail_candidates else "not needed",
+                    f"{len(trail_candidates)} relevant candidate(s); {len(hidden_candidates)} rejected or hidden.",
+                ),
+                EvidenceTrailStepViewModel(
+                    "Evidence admission",
+                    "completed" if admitted or evidence_found else "unresolved",
+                    (
+                        f"{admitted} request-linked admission(s); "
+                        f"{len(evidence_found)} validated financial fact(s) reused; "
+                        f"{rejected} candidate(s) rejected."
+                    ),
+                ),
+                EvidenceTrailStepViewModel(
+                    "Conclusion or action change",
+                    "completed" if action_status.casefold() in {"resolved", "completed", "closed"} else "unresolved",
+                    str(
+                        getattr(selected_action, "resolution_summary", "")
+                        or f"Current action status: {action_status.replace('_', ' ')}."
+                    ),
+                ),
+            ),
+            answer_status=answer_status,
+            answer=answer,
+            evidence_found=evidence_found,
+            evidence_missing=evidence_missing,
+            next_step=next_step,
+            relevant_candidate_count=len(focused_candidates),
+            hidden_candidate_count=len(hidden_candidates),
+            confidence=answer_state.confidence,
+            coverage=answer_state.coverage,
+            answer_basis=answer_state.answer_basis,
+            # Preserve the legacy Evidence label while the canonical answer
+            # state retains the more explicit ``not_run`` value.
+            qa_freshness=(
+                "not_reviewed"
+                if answer_state.qa_state == "not_run"
+                else "pending"
+                if answer_state.qa_state == "pending_due_to_new_evidence"
+                else answer_state.qa_state
+            ),
+            period_comparison=period_comparison,
+            component_sections=component_sections,
+        )
     relationships = list(getattr(graph, "relationships", []) or [])
     return EvidencePageViewModel(
         admitted_count=len(getattr(graph, "admitted_evidence_ids", []) or []),
@@ -383,8 +956,251 @@ def build_evidence_page_view_model(result: Any) -> EvidencePageViewModel:
         ),
         evidence_hash=str(getattr(graph, "evidence_hash", "") or ""),
         requests=requests,
-        candidates=tuple(candidates),
+        candidates=tuple(item for item in candidates if item.relevant),
+        request_groups=request_groups,
+        investigation_trail=investigation_trail,
+        relevant_candidate_count=sum(item.relevant for item in candidates),
+        hidden_candidate_count=sum(not item.relevant for item in candidates),
     )
+
+
+def _cash_conversion_intent_id(result: Any) -> str:
+    """Read the bridge from either current root or hybrid result storage."""
+
+    bridge = getattr(result, "cash_conversion_recurrence", None)
+    if bridge is None:
+        bridge = getattr(
+            getattr(result, "hybrid_research", None),
+            "cash_conversion_recurrence",
+            None,
+        )
+    return str(getattr(bridge, "intent_id", "") or "")
+
+
+def build_investigation_journey_view_model(
+    journey: InvestigationJourney,
+) -> InvestigationJourneyViewModel:
+    outcome = journey.outcome_summary
+    stage_rows = tuple(
+        InvestigationJourneyStageViewModel(stage.label, status)
+        for stage, status in journey.stages
+    )
+    completed_count = sum(
+        stage.status == "completed" for stage in stage_rows
+    )
+    active_count = sum(stage.status == "active" for stage in stage_rows)
+    total_stages = max(1, len(stage_rows))
+    progress_percent = (
+        100
+        if outcome is not None
+        else min(
+            99,
+            round(
+                100
+                * (completed_count + (0.5 if active_count else 0))
+                / total_stages
+            ),
+        )
+    )
+    progress_label = (
+        "Research result ready"
+        if outcome is not None
+        else (
+            f"Stage {min(completed_count + 1, total_stages)} of "
+            f"{total_stages} · approximately {progress_percent}%"
+        )
+    )
+    return InvestigationJourneyViewModel(
+        operation_label=_normalize_display_text(journey.operation_label),
+        objective=_normalize_display_text(journey.objective),
+        ticker=journey.ticker,
+        current_stage=journey.current_stage.label,
+        stages=stage_rows,
+        active=outcome is None,
+        elapsed_label=_duration_label(journey.elapsed_seconds),
+        qa_label=(
+            "Independent QA is active"
+            if journey.independent_qa_running
+            else _qa_state_label(getattr(outcome, "qa_state", "not_run"))
+        ),
+        progress_percent=progress_percent,
+        completed_stage_count=completed_count,
+        progress_label=progress_label,
+        outcome=(outcome.outcome.replace("_", " ").title() if outcome else ""),
+        persistence_status=(
+            outcome.persistence_status.replace("_", " ").title()
+            if outcome else ""
+        ),
+        admitted_evidence_count=(outcome.admitted_evidence_count if outcome else 0),
+        change_summaries=(outcome.changes.change_summaries if outcome else ()),
+        remaining_actions=(outcome.remaining_actions if outcome else ()),
+        answer_status=(outcome.answer_status if outcome else ""),
+        direct_answer=(outcome.direct_answer if outcome else ""),
+        confidence=(outcome.confidence if outcome else "Unknown"),
+        key_evidence=(outcome.key_evidence if outcome else ()),
+        strongest_limitation=(
+            outcome.strongest_limitation if outcome else ""
+        ),
+        run_status=("active" if outcome is None else outcome.run_status),
+        qa_state=("in_progress" if journey.independent_qa_running else getattr(outcome, "qa_state", "not_run")),
+    )
+
+
+def _qa_state_label(value: str) -> str:
+    labels = {
+        "not_requested": "Not requested",
+        "not_run": "Not run",
+        "pending_due_to_new_evidence": "Pending for refreshed evidence",
+        "in_progress": "In progress",
+        "closed": "Closed",
+        "closed_with_residual_risk": "Closed with residual diligence",
+        "failed": "Failed",
+        "indeterminate": "Indeterminate",
+    }
+    return labels.get(str(value or "").casefold(), "Not run")
+
+
+def _infer_focused_research_requests(
+    requests: tuple[ResearchRequestCardViewModel, ...],
+    *,
+    operation_label: str,
+    action_kind: str,
+    action_objective: str,
+) -> tuple[ResearchRequestCardViewModel, ...]:
+    """Repair missing historical links without mutating the saved artifact."""
+
+    focus_text = " ".join(
+        value for value in (operation_label, action_objective) if value
+    )
+    inferred_topic = research_request_topic(focus_text)
+    target_topic = (
+        inferred_topic
+        if inferred_topic != "primary_source_validation"
+        else action_kind or inferred_topic
+    )
+    topic_matches = [
+        item for item in requests
+        if research_request_topic(item.objective) == target_topic
+    ]
+    if topic_matches:
+        answer_rank = {
+            "answered": 0,
+            "partially_answered": 1,
+            "unanswered_after_attempt": 2,
+            "blocked": 3,
+            "planned": 4,
+        }
+        topic_matches.sort(key=lambda item: (
+            answer_rank.get(item.answer_status, 5),
+            item.priority.casefold() != "critical",
+            item.request_id,
+        ))
+        return tuple(topic_matches[:3])
+
+    focus_tokens = _semantic_text_tokens(focus_text)
+    scored = []
+    for item in requests:
+        request_tokens = _semantic_text_tokens(item.objective)
+        shared = focus_tokens.intersection(request_tokens)
+        denominator = max(1, min(len(focus_tokens), len(request_tokens)))
+        score = len(shared) / denominator
+        if len(shared) >= 2 and score >= 0.2:
+            scored.append((score, item))
+    scored.sort(key=lambda row: (-row[0], row[1].request_id))
+    return tuple(item for _score, item in scored[:1])
+
+
+def _semantic_text_tokens(value: str) -> set[str]:
+    stopwords = {
+        "a", "an", "and", "around", "build", "determine", "for", "from",
+        "in", "is", "of", "or", "the", "this", "to", "whether", "with",
+    }
+    return {
+        token for token in re.findall(r"[a-z0-9]+", str(value).casefold())
+        if len(token) > 2 and token not in stopwords
+    }
+
+
+def _group_research_requests(
+    requests: tuple[ResearchRequestCardViewModel, ...],
+) -> tuple[tuple[str, tuple[ResearchRequestCardViewModel, ...]], ...]:
+    buckets: dict[str, list[ResearchRequestCardViewModel]] = {
+        "Answered": [],
+        "Partially answered": [],
+        "Attempted but unanswered": [],
+        "Planned": [],
+        "Blocked": [],
+    }
+    for request in requests:
+        answer_status = request.answer_status.casefold().replace(" ", "_")
+        status = request.status.casefold().replace(" ", "_")
+        if answer_status == "answered":
+            bucket = "Answered"
+        elif answer_status == "partially_answered":
+            bucket = "Partially answered"
+        elif answer_status == "unanswered_after_attempt":
+            bucket = "Attempted but unanswered"
+        elif answer_status == "blocked":
+            bucket = "Blocked"
+        elif answer_status == "planned":
+            bucket = "Planned"
+        elif status in {"resolved", "completed", "closed", "admitted"}:
+            bucket = "Answered"
+        elif status in {"blocked", "failed", "unavailable", "retrieval_failed"}:
+            bucket = "Blocked"
+        elif request.attempted_connectors or status in {
+            "attempted", "attempted_unresolved", "in_progress", "retrieval_requested",
+        }:
+            bucket = "Attempted but unanswered"
+        else:
+            bucket = "Planned"
+        buckets[bucket].append(request)
+    return tuple(
+        (label, tuple(items))
+        for label, items in buckets.items()
+        if items
+    )
+
+
+def _is_scope_mismatch(scope_status: str, reason: str) -> bool:
+    normalized = f"{scope_status} {reason}".casefold()
+    return any(token in normalized for token in (
+        "scope_mismatch",
+        "scope mismatch",
+        "outside the security",
+        "off-target",
+        "off target",
+        "unrelated to the issuer",
+        "wrong company",
+        "targets another security",
+    ))
+
+
+def _normalize_display_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFC", str(value or ""))
+    replacements = {
+        "â€™": "’",
+        "â€˜": "‘",
+        "â€œ": "“",
+        "â€�": "”",
+        "â€“": "–",
+        "â€”": "—",
+        "â€¦": "…",
+        "Â·": "·",
+        "鈥?": "—",
+        "鈥�": "—",
+    }
+    for broken, repaired in replacements.items():
+        normalized = normalized.replace(broken, repaired)
+    return " ".join(normalized.split())
+
+
+def _duration_label(seconds: float) -> str:
+    total = max(0, int(seconds or 0))
+    minutes, remainder = divmod(total, 60)
+    if minutes:
+        return f"{minutes}m {remainder:02d}s"
+    return f"{remainder}s"
 
 
 def build_durable_run_timeline_view_model(
@@ -427,7 +1243,12 @@ def build_durable_run_timeline_view_model(
     )
 
 
-def build_decision_brief_view_model(result: Any) -> DecisionBriefViewModel:
+def build_decision_brief_view_model(
+    result: Any,
+    *,
+    minimum_expected_return_pct: float = 10.0,
+    minimum_evidence_score: int = 60,
+) -> DecisionBriefViewModel:
     identity = result.identity
     brief = getattr(result, "ic_decision_brief", None)
     valuation = getattr(result, "valuation", None)
@@ -502,15 +1323,44 @@ def build_decision_brief_view_model(result: Any) -> DecisionBriefViewModel:
         f"{getattr(data_quality, 'status', 'Unknown')} ({getattr(data_quality, 'score', 0)}/100)"
         if data_quality else str(getattr(brief, "evidence_status", "Unknown"))
     )
+    # Re-evaluate the public action using the explicit advanced policy.  The
+    # candidate hypothesis stored in an older artifact remains immutable, but
+    # it must never bypass a stricter actionability threshold selected here.
+    recommendation = build_decision_recommendation(
+        brief,
+        top_idea,
+        valuation,
+        data_quality,
+        getattr(result, "thesis_validation", None),
+        hybrid,
+        minimum_expected_return_pct=minimum_expected_return_pct,
+        minimum_evidence_score=minimum_evidence_score,
+    )
+    verdict = _without_raw_ids(
+        str(getattr(brief, "verdict", "") or "Research result available")
+    )
+    raw_stage = str(
+        getattr(brief, "stage", "")
+        or getattr(top_idea, "stage", "Unclassified")
+    )
+    public_stage = (
+        "Thesis not established"
+        if "no convincing thesis" in verdict.casefold()
+        else raw_stage
+    )
     return DecisionBriefViewModel(
         ticker=str(identity.ticker),
         company_name=str(identity.name),
         run_status="Frozen demo" if getattr(result, "demo_case", None) else "Completed",
         freshness=overall_freshness,
         evidence_quality=evidence_quality,
-        verdict=_without_raw_ids(str(getattr(brief, "verdict", "") or "Research result available")),
-        stage=str(getattr(brief, "stage", "") or getattr(top_idea, "stage", "Unclassified")),
-        direction=str(getattr(brief, "direction", "") or getattr(top_idea, "direction", "Watch")),
+        verdict=verdict,
+        stage=public_stage,
+        direction=str(getattr(recommendation, "recommendation", "No position / Watch")),
+        candidate_direction=str(getattr(recommendation, "candidate_direction", "Watch")),
+        recommendation_reason=_without_raw_ids(
+            str(getattr(recommendation, "rationale", "") or "")
+        ),
         confidence=str(getattr(brief, "confidence", "") or "Low"),
         thesis=_limit_paragraphs(_without_raw_ids(str(getattr(brief, "thesis", "") or "No thesis established."))),
         why_now=why_now,
@@ -634,11 +1484,120 @@ def build_research_route_view_model(
     )
 
 
-def build_integrity_timeline_view_model(result: Any) -> IntegrityTimelineViewModel:
+def build_research_session_view_model(
+    result: Any,
+    route: ResearchSubroute | str,
+) -> ResearchSessionViewModel | None:
+    hybrid = getattr(result, "hybrid_research", None)
+    sessions = list(
+        getattr(hybrid, "agent_research_sessions", []) or []
+    )
+    if not sessions and getattr(hybrid, "agent_research_session", None):
+        sessions = [hybrid.agent_research_session]
+    session = next((
+        item for item in sessions
+        if str(getattr(item, "role", "")) == "primary_research_agent"
+    ), sessions[0] if sessions else None)
+    if session is None:
+        return None
+    selected = ResearchSubroute(route)
+    domain_tokens = {
+        ResearchSubroute.THESIS_DRIVERS: {
+            "business", "operating", "catalyst", "counter", "management",
+            "monitoring", "macro", "external",
+        },
+        ResearchSubroute.MODEL_VALUATION: {
+            "financial", "cash", "balance", "credit", "valuation", "fcf", "dcf",
+            "capital", "contracts",
+        },
+        ResearchSubroute.EXPECTATIONS_REACTION: {
+            "market", "expectation", "consensus", "catalyst", "reaction", "priced",
+            "regulatory", "legal",
+        },
+        ResearchSubroute.ANALOGS_PEERS: {
+            "analog", "playbook", "peer", "read-through", "history",
+        },
+    }[selected]
+    agenda_items = list(getattr(getattr(session, "agenda", None), "items", []) or [])
+    matched = [
+        item for item in agenda_items
+        if any(
+            token in f"{getattr(item, 'domain', '')} {getattr(item, 'title', '')}".casefold()
+            for token in domain_tokens
+        )
+    ]
+    if not matched:
+        matched = agenda_items
+    selected_question_id = str(
+        getattr(getattr(session, "agenda", None), "selected_question_id", "")
+        or ""
+    )
+    matched.sort(key=lambda item: (
+        str(getattr(item, "question_id", "")) != selected_question_id,
+        str(getattr(item, "status", "")) == "planned",
+        -int(getattr(item, "priority", 0) or 0),
+    ))
+    questions = []
+    for item in matched:
+        answer = getattr(item, "answer", None)
+        questions.append(ResearchQuestionAnswerViewModel(
+            question_id=str(getattr(item, "question_id", "") or ""),
+            domain=_normalize_display_text(str(getattr(item, "domain", "") or "Research")),
+            title=_normalize_display_text(str(getattr(item, "title", "") or getattr(item, "objective", "") or "Research question")),
+            status=str(getattr(item, "status", "planned") or "planned"),
+            answer=_normalize_display_text(str(getattr(answer, "answer", "") or "")),
+            confidence=str(getattr(answer, "confidence", "Unknown") or "Unknown"),
+            evidence_count=len({
+                *list(getattr(answer, "evidence_ids", []) or []),
+                *list(getattr(answer, "contrary_evidence_ids", []) or []),
+            }) if answer is not None else 0,
+            strongest_limitation=_normalize_display_text(str(
+                getattr(answer, "strongest_limitation", "") or ""
+            )),
+            remaining_work=tuple(
+                _normalize_display_text(str(value))
+                for value in list(getattr(answer, "remaining_work", []) or [])
+                if value
+            ),
+        ))
+    return ResearchSessionViewModel(
+        session_status=str(getattr(session, "status", "unknown") or "unknown"),
+        role=str(getattr(session, "role", "primary_research_agent") or "primary_research_agent"),
+        provider_label=" · ".join(
+            value for value in (
+                str(getattr(session, "provider", "") or ""),
+                str(getattr(session, "model", "") or ""),
+            ) if value
+        ),
+        budget_label=str(getattr(getattr(session, "budget", None), "label", "Bounded research") or "Bounded research"),
+        answered_count=sum(item.status == "answered" for item in questions),
+        partial_count=sum(item.status == "partially_answered" for item in questions),
+        total_count=len(questions),
+        stopping_reason=str(getattr(session, "stopping_reason", "") or ""),
+        questions=tuple(questions),
+    )
+
+
+def build_integrity_timeline_view_model(
+    result: Any,
+    *,
+    displayed_context: Any | None = None,
+) -> IntegrityTimelineViewModel:
     qa = getattr(result, "independent_research_qa", None)
     graph = getattr(result, "evidence_graph", None)
     hybrid = getattr(result, "hybrid_research", None)
     events: list[IntegrityTimelineEventViewModel] = []
+    if displayed_context is not None and str(
+        getattr(displayed_context, "operation_label", "") or ""
+    ):
+        events.append(IntegrityTimelineEventViewModel(
+            label="Displayed investigation",
+            status="Derived revision" if bool(
+                getattr(displayed_context, "is_derived_revision", False)
+            ) else "Saved result",
+            summary=str(getattr(displayed_context, "operation_label", "") or ""),
+            origin="Saved research context",
+        ))
     events.append(IntegrityTimelineEventViewModel(
         label="Deterministic preflight",
         status="Completed" if graph else "Unavailable",
@@ -770,6 +1729,23 @@ def build_publication_readiness_view_model(
         or getattr(hybrid, "repair_actions", ())
         or ()
     )
+    actions = _repair_actions_in_dependency_order(actions)
+    closure_round = next((
+        item for item in reversed(list(getattr(hybrid, "rounds", []) or []))
+        if str(getattr(item, "role", "") or "") == "closure_checker"
+    ), None)
+    closure_message = str(getattr(closure_round, "message", "") or "")
+    closure_round_status = str(
+        getattr(closure_round, "status", "") or ""
+    ).casefold()
+    closure_timed_out = bool(
+        closure_round is not None
+        and (
+            closure_round_status in {"timeout", "timed_out", "deadline_exceeded"}
+            or "timed out" in closure_message.casefold()
+            or "exceeded" in closure_message.casefold()
+        )
+    )
     failures_by_id = {
         str(getattr(item, "failure_id", "")): item
         for item in getattr(evaluation, "failures", ()) or ()
@@ -784,13 +1760,21 @@ def build_publication_readiness_view_model(
             ),
             None,
         )
+        repair_kind = str(getattr(action, "repair_kind", "") or "")
+        is_closure_retry = (
+            closure_timed_out and repair_kind == "rerun_closure"
+        )
         cards.append(RepairActionCardViewModel(
             action_id=str(getattr(action, "action_id", "") or ""),
             title=_without_raw_ids(str(
                 getattr(failure, "summary", "")
                 or getattr(action, "objective", "Repair publication blocker")
             )),
-            status=str(getattr(action, "status", "planned") or "planned").replace("_", " ").title(),
+            status=(
+                "Ready to retry"
+                if is_closure_retry else
+                str(getattr(action, "status", "planned") or "planned").replace("_", " ").title()
+            ),
             why_it_matters=_without_raw_ids(str(
                 getattr(failure, "blocking_rule", "")
                 or "The result cannot be presented as publication-quality until this is resolved."
@@ -800,11 +1784,15 @@ def build_publication_readiness_view_model(
             )),
             source_families=tuple(getattr(action, "required_source_families", ()) or ()),
             attempts=int(getattr(action, "attempts", 0) or 0),
-            result_or_blocker=_without_raw_ids(str(
-                getattr(action, "resolution_summary", "")
-                or getattr(action, "stopping_reason", "")
-                or ""
-            )),
+            result_or_blocker=(
+                "Independent QA closure timed out before returning a decision."
+                if is_closure_retry else
+                _without_raw_ids(str(
+                    getattr(action, "resolution_summary", "")
+                    or getattr(action, "stopping_reason", "")
+                    or ""
+                ))
+            ),
         ))
     validation = str(
         getattr(hybrid, "deterministic_validation_status", "")
@@ -816,6 +1804,8 @@ def build_publication_readiness_view_model(
         or getattr(qa, "status", "")
         or "Independent QA not run"
     )
+    if closure_timed_out:
+        qa_status = "Closure timed out · ready to retry"
     quality_history = list(getattr(hybrid, "semantic_quality_history", []) or [])
     quality = quality_history[-1] if quality_history else None
     quality_label = (
@@ -843,6 +1833,12 @@ def build_publication_readiness_view_model(
         )
     elif eligible:
         summary = "This result passed the active validation, Independent QA, and publication-quality gates."
+    elif closure_timed_out:
+        summary = (
+            "Research revision and deterministic validation are complete. "
+            "Independent QA closure timed out before returning a decision; "
+            "retrying closure will not rerun primary research."
+        )
     elif cards:
         summary = (
             "Research is available, but this result is not ready for publication. "
@@ -857,6 +1853,23 @@ def build_publication_readiness_view_model(
         str(getattr(item, "status", "")).casefold() in {"completed", "resolved"}
         for item in actions
     )
+    repair_progress = (
+        (
+            RepairProgressStageViewModel(
+                "Research revision", "Reused"
+            ),
+            RepairProgressStageViewModel(
+                "Deterministic validation", "Reused"
+            ),
+            RepairProgressStageViewModel(
+                "Independent QA closure", "Ready to retry"
+            ),
+            RepairProgressStageViewModel(
+                "Publication evaluation", "Pending"
+            ),
+        )
+        if closure_timed_out else ()
+    )
     return PublicationReadinessViewModel(
         research_status=research_status,
         validation_status=validation.replace("_", " ").title(),
@@ -870,7 +1883,48 @@ def build_publication_readiness_view_model(
         can_repair=bool(cards and hybrid is not None),
         publication_eligible=eligible,
         qualification_summaries=qualifications,
+        repair_progress=repair_progress,
+        primary_action_label=(
+            "Retry Independent QA closure"
+            if closure_timed_out else "Repair and recheck"
+        ),
+        execution_note=(
+            "Hosted GPT-5.6 Sol may take up to about 15 minutes. Primary "
+            "research, retrieval, and deterministic validation will be reused."
+            if closure_timed_out else ""
+        ),
     )
+
+
+def _repair_actions_in_dependency_order(actions: list[Any]) -> list[Any]:
+    """Return a stable, readable repair sequence from the repair DAG."""
+
+    pending = list(actions)
+    ordered: list[Any] = []
+    emitted: set[str] = set()
+    all_ids = {
+        str(getattr(item, "action_id", "") or "")
+        for item in pending
+        if str(getattr(item, "action_id", "") or "")
+    }
+    while pending:
+        ready = [
+            item for item in pending
+            if (
+                set(getattr(item, "dependency_action_ids", ()) or ())
+                & all_ids
+            ) <= emitted
+        ]
+        if not ready:
+            ordered.extend(pending)
+            break
+        for item in ready:
+            pending.remove(item)
+            ordered.append(item)
+            action_id = str(getattr(item, "action_id", "") or "")
+            if action_id:
+                emitted.add(action_id)
+    return ordered
 
 
 def _publication_label(evaluation: Any) -> str:
@@ -888,6 +1942,16 @@ def _model_execution_summary(record: Any) -> str:
         return message
     failure_class = str(getattr(record, "failure_class", "") or "").strip()
     status = str(getattr(record, "status", "Unknown") or "Unknown").replace("_", " ")
+    if failure_class == "provider_credit_required":
+        return (
+            "Model stage paused because the selected provider needs additional "
+            "credit. Completed stages remain available for an explicit resume."
+        )
+    if failure_class == "provider_authentication_required":
+        return (
+            "Model stage paused because the selected provider needs "
+            "authentication. Completed stages remain available for an explicit resume."
+        )
     if failure_class:
         return f"Model stage {status}; failure class: {failure_class}."
     return f"Model stage {status}; no additional execution message was recorded."
@@ -1011,8 +2075,23 @@ def _historical_analog_cards(result: Any) -> tuple[HistoricalAnalogCardViewModel
         return ()
     cards: list[HistoricalAnalogCardViewModel] = []
     used_ids: set[str] = set()
+    researched_statuses = {
+        "Audited Research Analog",
+        "Frozen Demo Dossier",
+        "Researched Episode",
+    }
+    assessments_by_id = {
+        str(getattr(item, "analog_id", "") or ""): item
+        for item in list(getattr(report, "assessments", []) or [])
+    }
     for item in list(getattr(report, "dossiers", []) or []):
+        item_status = str(getattr(item, "status", "") or "")
+        candidate_dossier = item_status == "Historical analog candidate"
+        if item_status not in researched_statuses and not candidate_dossier:
+            continue
         analog_id = str(getattr(item, "analog_id", "") or "")
+        if not _dossier_scope_eligible(result, item, assessments_by_id.get(analog_id)):
+            continue
         lessons = list(getattr(item, "lessons", []) or [])
         insight = _first_nonempty(
             lessons,
@@ -1029,8 +2108,12 @@ def _historical_analog_cards(result: Any) -> tuple[HistoricalAnalogCardViewModel
         cards.append(HistoricalAnalogCardViewModel(
             analog_id=analog_id,
             episode=str(getattr(item, "episode", "Historical episode") or "Historical episode"),
-            kind="Researched analog",
-            status=str(getattr(item, "status", "Researched Episode") or "Researched Episode"),
+            kind="Candidate analog" if candidate_dossier else "Researched analog",
+            status=(
+                "Candidate only · not thesis evidence"
+                if candidate_dossier else
+                str(getattr(item, "status", "Researched Episode") or "Researched Episode")
+            ),
             similarity=similarity,
             insight=_without_raw_ids(str(insight)),
             material_difference=_first_nonempty(
@@ -1044,7 +2127,12 @@ def _historical_analog_cards(result: Any) -> tuple[HistoricalAnalogCardViewModel
             ),
             limitation=_first_nonempty(
                 list(getattr(item, "limitations", []) or []),
-                "An analogy does not independently establish the current thesis.",
+                (
+                    "This sourced episode remains quarantined from the thesis and valuation "
+                    "until its transferability and independent provenance pass audit."
+                    if candidate_dossier else
+                    "An analogy does not independently establish the current thesis."
+                ),
             ),
             source_quality=str(getattr(item, "source_quality", "") or "Unknown source quality"),
         ))
@@ -1052,21 +2140,56 @@ def _historical_analog_cards(result: Any) -> tuple[HistoricalAnalogCardViewModel
         if len(cards) >= 2:
             break
 
-    for item in list(getattr(report, "assessments", []) or []):
+    assessments = sorted(
+        list(getattr(report, "assessments", []) or []),
+        key=lambda item: (
+            bool(
+                getattr(item, "source_relevance_score", 0) >= 60
+                and getattr(item, "sources", None)
+            ),
+            int(getattr(item, "applicability_score", 0) or 0),
+            int(getattr(item, "source_relevance_score", 0) or 0),
+        ),
+        reverse=True,
+    )
+    for item in assessments:
         analog_id = str(getattr(item, "analog_id", "") or "")
         if analog_id in used_ids:
             continue
+        applicability = int(
+            getattr(item, "discovery_relevance_score", 0)
+            or getattr(item, "applicability_score", 0)
+            or 0
+        )
+        scope_status = str(getattr(item, "scope_status", "") or "")
+        eligibility_code = str(getattr(item, "eligibility_code", "legacy_unchecked") or "legacy_unchecked")
+        research_state = str(getattr(item, "research_state", "") or "")
+        if (
+            applicability < 60
+            or scope_status not in {"", "in_scope"}
+            or research_state == AnalogResearchState.SCOPE_REJECTED.value
+            or eligibility_code in {
+                "issuer_scope_violation", "archetype_scope_violation",
+                "mechanism_scope_violation", "core_mechanism_unresolved",
+                "security_profile_unresolved", "scope_not_evaluated",
+            }
+        ):
+            continue
+        source_backed = bool(
+            int(getattr(item, "source_relevance_score", 0) or 0) >= 60
+            and list(getattr(item, "sources", []) or [])
+        )
         score = getattr(item, "similarity_score", None)
         similarity = (
-            f"{score}/100 similarity"
+            f"{score}/100 audited similarity"
             if score is not None
-            else f"{getattr(item, 'similarity_band', 'Unscored')}; score withheld pending audit"
+            else "Mechanism-scoped candidate · audit pending"
         )
         cards.append(HistoricalAnalogCardViewModel(
             analog_id=analog_id,
             episode=str(getattr(item, "episode", "Candidate episode") or "Candidate episode"),
-            kind="Candidate analog",
-            status=str(getattr(item, "status", "Exploratory Candidate") or "Exploratory Candidate"),
+            kind="Investigated candidate" if source_backed else "Candidate to investigate",
+            status="Research lead · not thesis evidence",
             similarity=similarity,
             insight=_without_raw_ids(str(
                 getattr(item, "what_it_suggests", "")
@@ -1076,16 +2199,16 @@ def _historical_analog_cards(result: Any) -> tuple[HistoricalAnalogCardViewModel
                 list(getattr(item, "material_differences", []) or []),
                 "Material differences have not been fully researched.",
             ),
-            monitor=_first_nonempty(
-                list(getattr(item, "confirm_kpis", []) or []),
-                list(getattr(item, "reject_kpis", []) or []),
-                "No current-case test has been defined.",
-            ),
+            monitor=_analog_monitor(item),
             limitation=str(
                 getattr(item, "what_it_cannot_establish", "")
                 or "Candidate metadata cannot support the current conclusion until admitted."
             ),
-            source_quality=str(getattr(item, "source_quality", "") or "Exploratory"),
+            source_quality=(
+                str(getattr(item, "source_quality", "") or "Source-backed research lead")
+                if source_backed
+                else "Episode evidence not admitted"
+            ),
         ))
         if len(cards) >= 3:
             break
@@ -1093,6 +2216,41 @@ def _historical_analog_cards(result: Any) -> tuple[HistoricalAnalogCardViewModel
 
 
 def _story_lens_cards(result: Any) -> tuple[StoryLensViewModel, ...]:
+    profile = getattr(result, "security_research_profile", None)
+    if profile is None and getattr(result, "identity", None) is not None:
+        profile = SecurityResearchProfileResolver().resolve(result.identity)
+    if profile is not None:
+        assessments = (
+            getattr(result, "causal_bridge_assessment", None),
+            getattr(result, "equity_lens_assessment", None),
+            getattr(result, "credit_lens_assessment", None),
+        )
+        if not all(item is not None for item in assessments):
+            assessments = build_research_assessments(
+                profile,
+                list(getattr(result, "metrics", []) or []),
+                list(getattr(result, "events", []) or []),
+                one_pager=getattr(result, "ic_one_pager", None),
+                credit_lens=getattr(result, "credit_lens", None),
+            )
+        causal, equity, credit = assessments
+        return tuple(
+            StoryLensViewModel(
+                title=title,
+                status=assessment.status.value,
+                insight=_without_raw_ids(
+                    assessment.direct_conclusion
+                    + (f" Limitation: {assessment.strongest_limitation}" if assessment.strongest_limitation else "")
+                ),
+                next_action=assessment.next_action,
+                evidence_count=len(assessment.evidence_ids),
+            )
+            for title, assessment in (
+                ("Causal Bridge", causal),
+                ("Equity Lens", equity),
+                ("Credit Lens", credit),
+            )
+        )
     cards = list(getattr(result, "story_cards", []) or [])
     if not cards:
         return ()
@@ -1123,9 +2281,64 @@ def _story_lens_cards(result: Any) -> tuple[StoryLensViewModel, ...]:
                 or "No decision-relevant synthesis was produced."
             )),
             next_action=_without_raw_ids(str(getattr(item, "next_action", "") or "")),
-            evidence_count=len(getattr(item, "evidence", []) or []),
+            evidence_count=(
+                int(getattr(item, "evidence_count"))
+                if getattr(item, "evidence_count", None) is not None
+                else len(getattr(item, "evidence", []) or [])
+            ),
         )
         for item in selected[:4]
+    )
+
+
+def _dossier_scope_eligible(result: Any, dossier: Any, assessment: Any | None) -> bool:
+    if assessment is not None:
+        scope = str(getattr(assessment, "scope_status", "") or "")
+        code = str(getattr(assessment, "eligibility_code", "") or "")
+        if scope not in {"", "in_scope"} or code.endswith("scope_violation"):
+            return False
+    status = str(getattr(dossier, "status", "") or "")
+    if status != "Historical analog candidate":
+        return True
+    identity = getattr(result, "identity", None)
+    current_name_tokens = _meaningful_company_tokens(str(getattr(identity, "name", "") or ""))
+    company_tokens = set().union(*(
+        _meaningful_company_tokens(str(value))
+        for value in list(getattr(dossier, "companies", []) or [])
+    )) if list(getattr(dossier, "companies", []) or []) else set()
+    if current_name_tokens and company_tokens and not (current_name_tokens & company_tokens):
+        return bool(
+            assessment is not None
+            and str(getattr(assessment, "current_mechanism_id", "") or "")
+            and str(getattr(assessment, "transfer_dimension", "") or "")
+        )
+    return True
+
+
+def _meaningful_company_tokens(value: str) -> set[str]:
+    ignored = {"inc", "corp", "corporation", "company", "limited", "holdings", "group", "plc"}
+    return {
+        token for token in re.findall(r"[a-z0-9]+", value.casefold())
+        if len(token) > 2 and token not in ignored
+    }
+
+
+def _analog_monitor(item: Any) -> str:
+    mechanism = str(getattr(item, "current_mechanism_id", "") or "")
+    if mechanism == "cloud_ai_investment_cycle":
+        return (
+            "Cloud revenue, capacity utilization, segment EBITA, capex intensity, "
+            "depreciation, commitments, and free cash flow."
+        )
+    if mechanism == "aum_fee_earnings_conversion":
+        return (
+            "Net flows, market/FX AUM effects, organic base-fee growth, fee rate, "
+            "adjusted operating margin, and diluted shares."
+        )
+    return _first_nonempty(
+        list(getattr(item, "confirm_kpis", []) or []),
+        list(getattr(item, "reject_kpis", []) or []),
+        "No mechanism-specific monitor has been defined.",
     )
 
 
@@ -1133,7 +2346,8 @@ def _debate_view_model(result: Any) -> DebateViewModel | None:
     panel = getattr(result, "bull_bear_judge", None)
     if panel is None:
         return None
-    queue = list(getattr(result, "prioritized_research_queue", []) or [])
+    canonical = _canonical_investigation_actions(result)
+    queue = list(canonical.actions)
     rank_by_id = {
         str(getattr(item, "action_id", "") or ""): int(
             getattr(item, "rank", 0) or 0
@@ -1143,7 +2357,9 @@ def _debate_view_model(result: Any) -> DebateViewModel | None:
     }
     action_references = []
     for item in list(getattr(panel, "resolution_plan", []) or []):
-        rank = rank_by_id.get(str(getattr(item, "action_id", "") or ""), 0)
+        reference = str(getattr(item, "action_id", "") or "")
+        canonical_id = canonical.resolve_action_id(reference) or reference
+        rank = rank_by_id.get(canonical_id, 0)
         if rank:
             action_references.append(f"Action {rank}")
     return DebateViewModel(
@@ -1169,7 +2385,7 @@ def _investigation_action_view_models(
     limit: int | None = 3,
 ) -> tuple[InvestigationActionViewModel, ...]:
     rows = []
-    for item in list(getattr(result, "prioritized_research_queue", []) or []):
+    for item in _canonical_investigation_actions(result).actions:
         status = str(getattr(item, "status", "Open") or "Open")
         if status.casefold() in {"resolved", "closed", "not_needed"}:
             continue
@@ -1184,12 +2400,7 @@ def _investigation_action_view_models(
             else "execute_action" if auto_resolvable
             else "configure_source"
         )
-        primary_cta = (
-            "Retry attribution" if action_kind == "market_event_attribution"
-            else "Set up source, then rerun"
-            if intent_type == "configure_source"
-            else "Run investigation"
-        )
+        primary_cta = "Select investigation"
         rows.append(InvestigationActionViewModel(
             rank=int(getattr(item, "rank", len(rows) + 1) or len(rows) + 1),
             action_id=str(getattr(item, "action_id", "") or f"action-{len(rows) + 1}"),
@@ -1222,7 +2433,7 @@ def _investigation_action_view_models(
             ),
             setup_steps=(
                 "Set up an eligible source.",
-                "Run / Refresh Research to create an updated live result.",
+                "Confirm the selected investigation in the sidebar.",
             ) if intent_type == "configure_source" else (),
             primary_cta=primary_cta,
             intent_type=intent_type,
@@ -1231,6 +2442,15 @@ def _investigation_action_view_models(
         if limit is not None and len(rows) >= limit:
             break
     return tuple(rows)
+
+
+def _canonical_investigation_actions(result: Any):
+    identity = getattr(result, "identity", None)
+    ticker = str(getattr(identity, "ticker", "") or "")
+    return canonicalize_investigation_actions(
+        ticker,
+        list(getattr(result, "prioritized_research_queue", []) or []),
+    )
 
 
 def build_investigation_action_view_models(
@@ -1378,7 +2598,7 @@ def _evidence_references(event: Any) -> tuple[EvidenceReferenceViewModel, ...]:
 
 def _next_actions(result: Any, brief: Any) -> tuple[str, ...]:
     values: list[str] = []
-    for item in list(getattr(result, "prioritized_research_queue", []) or []):
+    for item in _canonical_investigation_actions(result).actions:
         title = str(getattr(item, "title", "") or "").strip()
         if title:
             values.append(title)
@@ -1433,6 +2653,82 @@ def _money(value: float | None, currency: str) -> str:
         return "Not established"
     symbol = "$" if currency.upper() == "USD" else f"{currency.upper()} "
     return f"{symbol}{value:,.2f}"
+
+
+def _money_compact(value: float | None, currency: str = "USD") -> str:
+    if value is None:
+        return "Not disclosed"
+    absolute = abs(value)
+    if absolute >= 1_000_000_000:
+        scaled, suffix = value / 1_000_000_000, "B"
+    elif absolute >= 1_000_000:
+        scaled, suffix = value / 1_000_000, "M"
+    else:
+        scaled, suffix = value, ""
+    symbol = "$" if currency.upper() == "USD" else f"{currency.upper()} "
+    return f"{symbol}{scaled:,.1f}{suffix}"
+
+
+def _cash_conversion_answer_views(
+    bridge: Any,
+    *,
+    expected_cutoff: str = "",
+) -> tuple[
+    tuple[dict[str, str], ...],
+    tuple[tuple[str, tuple[dict[str, str], ...]], ...],
+]:
+    if not validate_cash_conversion_recurrence_bridge(
+        bridge,
+        expected_cutoff=expected_cutoff,
+    ).valid:
+        return (), ()
+    periods = tuple(getattr(bridge, "periods", ()) or ())
+    comparison = tuple({
+        "Period": str(getattr(item, "period_end", "") or "Unknown"),
+        "Net income": _money_compact(getattr(item, "net_income", None)),
+        "Operating cash flow": _money_compact(
+            getattr(item, "operating_cash_flow", None)
+        ),
+        "OCF / NI": (
+            f"{getattr(item, 'operating_cash_flow_to_net_income') * 100:.1f}%"
+            if getattr(item, "operating_cash_flow_to_net_income", None) is not None
+            else "Not established"
+        ),
+        "Capex": _money_compact(getattr(item, "capital_expenditure", None)),
+        "Free cash flow": _money_compact(getattr(item, "free_cash_flow", None)),
+    } for item in periods)
+    current = periods[0] if periods else None
+    if current is None:
+        return comparison, ()
+
+    def row(label: str, field: str) -> dict[str, str]:
+        value = getattr(current, field, None)
+        return {
+            "Component": label,
+            "Current TTM": _money_compact(value),
+            "Status": "Available" if value is not None else "Not disclosed",
+        }
+
+    sections = (
+        ("Earnings-to-cash drivers", (
+            row("Net income", "net_income"),
+            row("Working-capital contribution", "working_capital_change"),
+            row("Cash taxes", "cash_taxes"),
+            row("Operating cash flow", "operating_cash_flow"),
+        )),
+        ("Reinvestment and free cash flow", (
+            row("Capital expenditure", "capital_expenditure"),
+            row("Free cash flow", "free_cash_flow"),
+        )),
+        ("Financing and capital returns", (
+            row("Debt issued", "debt_issued"),
+            row("Debt repaid", "debt_repaid"),
+            row("Dividends", "dividends"),
+            row("Repurchases", "repurchases"),
+            row("Cash after dividends and repurchases", "cash_after_dividends_and_repurchases"),
+        )),
+    )
+    return comparison, sections
 
 
 def _percent(value: float | None) -> str:

@@ -180,8 +180,126 @@ def test_quality_first_sequence_preserves_frozen_audit_before_scout_and_closure_
         "description": "AAPL regulatory disclosures"
     }
     assert closure_prompt["role"] == "closure_checker"
+    assert closure_prompt["searchable_evidence_index"] == []
+    assert closure_prompt["evidence_projection_status"]["status"] == (
+        "closure_scoped"
+    )
+    assert "evidence_catalog" not in closure_prompt["current_context"]
+    assert closure_prompt["_output_schema"]["required"] == [
+        "summary",
+        "closure_state",
+        "audit_decision",
+    ]
+    assert set(closure_prompt["audit_artifact"]) <= {
+        "summary",
+        "findings",
+        "unsupported_claims",
+        "missing_contradictions",
+        "hidden_risks",
+    }
+    assert set(closure_prompt["reconciled_draft"]) <= {
+        "summary",
+        "verdict",
+        "leading_thesis",
+        "claims",
+        "established_observations",
+        "findings",
+        "primary_responses",
+        "historical_analog_dossiers",
+        "publication_scope",
+        "limitations",
+    }
     assert run.status == "completed"
     assert run.final_artifact.payload["closure_state"] == "closed_with_residual_risk"
+
+
+def test_revision_and_closure_only_bypasses_agent_runtime_and_retrieval() -> None:
+    context = _context()
+    context["repair_execution_mode"] = "revision_and_closure_only"
+    context["_research_tool_gateway"] = object()
+    context["quality_first_execution"] = {
+        "max_investigation_cycles": 2,
+        "focused_mapping_escalation_limit": 1,
+    }
+    retriever = IncrementingRetriever()
+    context["_retrieval_engine"] = retriever
+    primary = RecordingProvider(
+        "deepseek",
+        "deepseek-v4-pro",
+        [
+            {"summary": "Replayed plan."},
+            {"summary": "Replayed primary.", "evidence_ids": ["e1"]},
+            {
+                "summary": "Narrow revision for the frozen finding.",
+                "evidence_ids": ["e1"],
+                "audit_finding_responses": [{
+                    "finding_id": "repair-finding",
+                    "status": "accepted",
+                    "rationale": "The conclusion now preserves the risk.",
+                }],
+            },
+        ],
+    )
+    auditor = RecordingProvider(
+        "codex_local",
+        "gpt-5.6-sol",
+        [
+            {
+                "summary": "Replayed frozen audit.",
+                "findings": [{
+                    "finding_id": "repair-finding",
+                    "severity": "High",
+                    "summary": "Preserve the combined material risk.",
+                }],
+            },
+            {"summary": "Replayed scout."},
+            {
+                "summary": "Repair closure passed.",
+                "closure_state": "closed_with_residual_risk",
+                "audit_decision": {"status": "passed"},
+            },
+        ],
+    )
+
+    run = run_quality_first_research(
+        context,
+        primary_provider=primary,
+        auditor_provider=auditor,
+    )
+
+    assert retriever.calls == 0
+    assert [item["role"] for item in primary.prompts] == [
+        "research_planner",
+        "primary_investment_analyst",
+        "primary_revision",
+    ]
+    assert [item["role"] for item in auditor.prompts] == [
+        "independent_research_auditor",
+        "adversarial_evidence_scout",
+        "closure_checker",
+    ]
+    revision = next(
+        item.artifact.payload for item in run.rounds
+        if item.role == "primary_revision"
+    )
+    assert revision["primary_responses"][0] == {
+        "finding_id": "repair-finding",
+        "status": "accepted",
+        "rationale": "The conclusion now preserves the risk.",
+        "state": "accepted",
+        "explanation": "The conclusion now preserves the risk.",
+        "change_summary": "The conclusion now preserves the risk.",
+    }
+    finding = next(
+        item for item in run.audit_findings
+        if item.finding_id == "repair-finding"
+    )
+    assert finding.primary_response_state == "accepted"
+    assert finding.primary_response_summary == (
+        "The conclusion now preserves the risk."
+    )
+    assert finding.resolved is True
+    assert run.status == "completed"
 
 
 def test_missing_optional_auditor_preserves_primary_result_and_labels_qa_not_run() -> None:

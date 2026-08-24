@@ -79,6 +79,9 @@ SOURCE_TYPE_ALIASES = {
     "issuer_newsroom": "issuer_announcement",
     "issuer_release": "issuer_announcement",
     "company_announcement": "issuer_announcement",
+    "issuer_ir_report": "issuer_ir",
+    "issuer_report": "issuer_ir",
+    "earnings_release": "issuer_ir",
     "sec_archive": "historical_filing",
     "sec_historical_filing": "historical_filing",
     "historical_sec_filing": "historical_filing",
@@ -383,6 +386,7 @@ class AuditableEvidenceRetriever:
         price_client: Any | None = None,
         filings: Iterable[FilingRecord] = (),
         metrics: Iterable[FinancialMetric] = (),
+        company_facts: dict[str, Any] | None = None,
         catalog: Iterable[dict[str, Any]] = (),
         fetch_text: Callable[[str], str | bytes] | None = None,
         registered_source_catalog: Iterable[
@@ -394,6 +398,10 @@ class AuditableEvidenceRetriever:
         self.price_client = price_client
         self.filings = list(filings)
         self.metrics = list(metrics)
+        # Keep the complete SEC Company Facts snapshot behind the application
+        # tool boundary.  Models receive admitted observations, never this raw
+        # provider payload.
+        self.company_facts = dict(company_facts or {})
         self.catalog = [dict(item) for item in catalog]
         self.records = normalize_catalog_source_records(identity, self.catalog)
         self.fetch_text = fetch_text
@@ -444,13 +452,16 @@ class AuditableEvidenceRetriever:
                 records, status, failure = self._retrieve_registered_documents(
                     canonical, query, period, result_limit
                 )
-            elif canonical in {
-                "quantitative_historical_price",
-                "macro_market",
-            }:
+            elif canonical == "quantitative_historical_price":
                 records, status, failure = self._retrieve_prices(
                     query, period, result_limit
                 )
+            elif canonical == "macro_market":
+                records = self._catalog_records(
+                    canonical, query, period, result_limit
+                )
+                status = "catalog_match" if records else "unavailable"
+                failure = "" if records else "source_unavailable"
             else:
                 records = self._catalog_records(
                     canonical, query, period, result_limit
@@ -970,6 +981,9 @@ def build_historical_financial_paths(
     fcf_path = _build_ttm_fcf_path(ticker, grouped)
     if fcf_path:
         paths.append(fcf_path)
+    cash_conversion_path = _build_cash_conversion_bridge_path(ticker, grouped)
+    if cash_conversion_path:
+        paths.append(cash_conversion_path)
     return paths
 
 
@@ -1485,9 +1499,15 @@ def _legacy_publication_blocker(
     if code in {"deterministic_validation_not_run", "deterministic_validation_partial"}:
         return "Deterministic validation did not pass."
     if code == "final_closure_not_passed":
-        return "DeepSeek-led dossier did not pass the final Sol audit."
+        return (
+            "The revised dossier does not yet contain an eligible final "
+            "Independent QA closure."
+        )
     if code == "semantic_quality_below_threshold":
-        threshold = policy.ticker_minimum_scores.get(ticker, 85)
+        threshold = policy.ticker_minimum_scores.get(
+            ticker,
+            policy.minimum_publishable_score,
+        )
         return (
             f"{ticker} DeepSeek-led dossier did not pass the {threshold}/100 "
             "semantic quality gate without critical failures."
@@ -1574,6 +1594,202 @@ def _build_ttm_fcf_path(
         source_ids=[ocf_ttm[3], capex_ttm[3]],
         no_lookahead_safe=True,
     )
+
+
+def _build_cash_conversion_bridge_path(
+    ticker: str,
+    grouped: dict[str, list[FinancialMetric]],
+) -> HistoricalFinancialPath | None:
+    """Build the accounting bridge an LLM should reason over, not reconstruct.
+
+    A successful filing retrieval is not the same as answering whether cash
+    conversion recurs. This path makes current-period arithmetic, component
+    coverage, and the missing comparable-period evidence explicit in the
+    shared research context.
+    """
+
+    component_aliases = {
+        "operating_cash_flow": (
+            "operating cash flow",
+            "net cash provided by operating activities",
+        ),
+        "net_income": ("net income", "net earnings"),
+        "capital_expenditure": (
+            "capital expenditure",
+            "payments to acquire property plant and equipment",
+        ),
+        "dividends_paid": ("dividends paid", "payments of dividends"),
+        "share_repurchases": (
+            "repurchases",
+            "payments for repurchase of common stock",
+        ),
+        "cash_taxes": (
+            "cash paid for income taxes",
+            "income taxes paid",
+        ),
+        "debt_issued": (
+            "proceeds from issuance of debt",
+            "proceeds from issuance of long term debt",
+        ),
+        "debt_repaid": (
+            "repayments of debt",
+            "repayments of long term debt",
+        ),
+        "working_capital_change": (
+            "change in working capital",
+            "changes in operating assets and liabilities",
+        ),
+    }
+    components: dict[str, tuple[str, float, str, str, str]] = {}
+    for key, aliases in component_aliases.items():
+        value = _latest_validated_ttm(_metric_group(grouped, *aliases))
+        if value is not None:
+            components[key] = value
+
+    required = {"operating_cash_flow", "net_income", "capital_expenditure"}
+    if not required.intersection(components):
+        return None
+    missing_core = sorted(required - set(components))
+    if missing_core:
+        return HistoricalFinancialPath(
+            ticker=ticker.upper(),
+            metric="Cash Conversion Bridge TTM",
+            status="unavailable",
+            formula=(
+                "Operating cash flow / net income; free cash flow = operating "
+                "cash flow - abs(capex)"
+            ),
+            source_ids=list(dict.fromkeys(
+                item[3] for item in components.values()
+            )),
+            data_gaps=[
+                "Missing validated TTM component: "
+                + item.replace("_", " ")
+                for item in missing_core
+            ],
+        )
+
+    core_periods = {components[key][0] for key in required}
+    if len(core_periods) != 1:
+        return HistoricalFinancialPath(
+            ticker=ticker.upper(),
+            metric="Cash Conversion Bridge TTM",
+            status="unavailable",
+            formula=(
+                "Operating cash flow / net income; free cash flow = operating "
+                "cash flow - abs(capex)"
+            ),
+            source_ids=list(dict.fromkeys(
+                item[3] for item in components.values()
+            )),
+            data_gaps=[
+                "Operating cash flow, net income, and capex do not share the same trailing-period end date."
+            ],
+        )
+
+    period = next(iter(core_periods))
+    misaligned_optional = {
+        key for key, value in components.items()
+        if key not in required and value[0] != period
+    }
+    components = {
+        key: value for key, value in components.items()
+        if key in required or value[0] == period
+    }
+
+    ocf = components["operating_cash_flow"]
+    net_income = components["net_income"]
+    capex = components["capital_expenditure"]
+    fcf = ocf[1] - abs(capex[1])
+    conversion = ocf[1] / net_income[1] if net_income[1] else None
+    dividends = components.get("dividends_paid")
+    repurchases = components.get("share_repurchases")
+    residual_after_returns = (
+        fcf - abs(dividends[1]) - abs(repurchases[1])
+        if dividends is not None and repurchases is not None
+        else None
+    )
+    filed = max(item[4] for item in components.values())
+    data_gaps: list[str] = []
+    if not _has_prior_ttm_comparable(grouped, component_aliases):
+        data_gaps.append(
+            "A prior same-duration TTM bridge is required to establish recurrence."
+        )
+    if "working_capital_change" not in components:
+        data_gaps.append(
+            "The working-capital contribution to operating cash flow was not separately aligned."
+        )
+    if "cash_taxes" not in components:
+        data_gaps.append(
+            "Cash taxes were not aligned; income-tax expense is not a substitute for cash paid."
+        )
+    if not {"debt_issued", "debt_repaid"}.intersection(components):
+        data_gaps.append(
+            "Debt issuance and repayment cash flows were not aligned; debt balances do not replace financing flows."
+        )
+    if dividends is None or repurchases is None:
+        data_gaps.append(
+            "Dividends and repurchases were not both aligned for the capital-return bridge."
+        )
+    if misaligned_optional:
+        data_gaps.append(
+            "Excluded components with a different trailing-period end: "
+            + ", ".join(sorted(
+                item.replace("_", " ") for item in misaligned_optional
+            ))
+            + "."
+        )
+    recurrence = (
+        "partially_supported"
+        if not any("prior same-duration" in item.casefold() for item in data_gaps)
+        else "insufficient_history"
+    )
+    return HistoricalFinancialPath(
+        ticker=ticker.upper(),
+        metric="Cash Conversion Bridge TTM",
+        status="available" if not data_gaps else "partial",
+        observations=[{
+            "period": period,
+            "value": fcf,
+            "unit": ocf[2],
+            "filed": filed,
+            "basis": "derived_ttm_cash_conversion_bridge",
+            "components": {
+                key: value[1] for key, value in components.items()
+            },
+            "operating_cash_flow_to_net_income": conversion,
+            "free_cash_flow": fcf,
+            "cash_after_dividends_and_repurchases": residual_after_returns,
+            "recurrence_assessment": recurrence,
+            "period_aligned": True,
+            "no_lookahead_safe": True,
+        }],
+        formula=(
+            "FCF = operating cash flow - abs(capex); residual after capital "
+            "returns = FCF - abs(dividends) - abs(repurchases)"
+        ),
+        source_ids=list(dict.fromkeys(
+            item[3] for item in components.values()
+        )),
+        no_lookahead_safe=True,
+        data_gaps=data_gaps,
+    )
+
+
+def _has_prior_ttm_comparable(
+    grouped: dict[str, list[FinancialMetric]],
+    component_aliases: dict[str, tuple[str, ...]],
+) -> bool:
+    period_sets = []
+    for key in ("operating_cash_flow", "net_income", "capital_expenditure"):
+        period_sets.append({
+            str(metric.trailing_period_end)
+            for metric in _metric_group(grouped, *component_aliases[key])
+            if metric.trailing_twelve_month_value is not None
+            and metric.trailing_period_end
+        })
+    common_periods = set.intersection(*period_sets) if period_sets else set()
+    return len(common_periods) >= 2
 
 
 def _latest_validated_ttm(

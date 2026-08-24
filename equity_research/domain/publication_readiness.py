@@ -51,6 +51,10 @@ class PublicationFailureCode(str, Enum):
     PROVIDER_OR_CONNECTOR_UNAVAILABLE = "provider_or_connector_unavailable"
     ARTIFACT_SCHEMA_INCOMPATIBLE = "artifact_schema_incompatible"
     PUBLICATION_POLICY_CHANGED = "publication_policy_changed"
+    SECURITY_PROFILE_UNRESOLVED = "security_profile_unresolved"
+    CORE_MECHANISM_UNMAPPED = "core_mechanism_unmapped"
+    LENS_STATUS_MISLEADING = "lens_status_misleading"
+    HISTORICAL_ANALOG_SCOPE_INTEGRITY = "historical_analog_scope_integrity"
 
 
 class RepairKind(str, Enum):

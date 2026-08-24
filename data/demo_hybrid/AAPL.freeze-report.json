@@ -7,15 +7,15 @@
   "sanitization_status": "passed_decision_metadata_only",
   "candidates": [
     {
-      "source_run_id": "4c30fc98-656a-46f7-b812-ccc8f2cc2d20",
-      "source_run_completed_at": "2026-08-10T18:59:34.097783+00:00",
+      "source_run_id": "4bbeac1f-fb11-4563-84ad-bb99210fda18",
+      "source_run_completed_at": "2026-08-14T02:00:53.801844+00:00",
       "status": "pass_with_residual_diligence",
       "allowed": true,
       "publication_label": "Research completed with residual diligence",
-      "canonical_revision_id": "canonical-analog-candidate-revision-33add5214aecdde4a0ff",
+      "canonical_revision_id": "canonical-analog-candidate-revision-56ff95adcf1f1e1f8355",
       "validation_status": "passed",
       "qa_closure_state": "closed_with_residual_risk",
-      "evidence_hash": "c0bb9d24943f6f6315e3ae9b8105c3b37b8423aacac558fca2e334a658477779",
+      "evidence_hash": "9d7f234a7d15b4c7c988eb12ee369e1025e17253d6dafa80e228f5700b1365f6",
       "policy_version": "demo-quality-policy-v3",
       "failure_codes": [],
       "qualification_codes": [

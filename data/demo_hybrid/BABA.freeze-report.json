@@ -1,0 +1,33 @@
+{
+  "ticker": "BABA",
+  "status": "published",
+  "policy_version": "demo-quality-policy-v3",
+  "candidate_count": 1,
+  "selection_policy": "newest_completed_closed_and_gate_passing",
+  "sanitization_status": "passed_decision_metadata_only",
+  "candidates": [
+    {
+      "source_run_id": "0f2b8dd5-8bc5-4f85-bbad-77de46c0538b",
+      "source_run_completed_at": "2026-08-21T22:19:32.035057+00:00",
+      "status": "pass_with_residual_diligence",
+      "allowed": true,
+      "publication_label": "Research completed with residual diligence",
+      "canonical_revision_id": "",
+      "validation_status": "passed",
+      "qa_closure_state": "closed_with_residual_risk",
+      "evidence_hash": "66c6fd8cbc576d70850bdb44b08ab9598052d9b5e6a9c75a1c9af1b7c29da396",
+      "policy_version": "demo-quality-policy-v3",
+      "failure_codes": [],
+      "qualification_codes": [
+        "closure_with_residual_risk"
+      ],
+      "repair_kinds": [],
+      "blockers": [],
+      "next_actions": []
+    }
+  ],
+  "published_artifact_preserved": true,
+  "built_in_fallback_available": true,
+  "provider_action_required": null,
+  "repair_stages": []
+}

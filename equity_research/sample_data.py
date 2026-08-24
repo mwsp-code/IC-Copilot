@@ -42,6 +42,7 @@ from .decision_intelligence import (
     build_decision_snapshot,
     build_ic_implied_expectations_snapshot,
     build_prioritized_research_queue,
+    reconcile_investigation_actions_with_answers,
 )
 from .news_research import build_news_intelligence_report
 from .metric_intelligence import build_metric_change_assessments
@@ -128,6 +129,11 @@ from .causal_thesis_graph import build_causal_thesis_graphs
 from .source_planner import build_source_plan
 from .source_context import latest_admitted_market_price
 from .storytelling import build_story_presentation, demo_case_for
+from .domain.research_ontology import (
+    RESEARCH_MECHANISMS,
+    SecurityResearchProfileResolver,
+    build_research_assessments,
+)
 
 
 class _DemoConsensus(ConsensusAdapter):
@@ -354,6 +360,7 @@ def _demo_citation_matching(citations: dict, *tokens: str) -> tuple[str, dict]:
 
 _DEMO_COMPANIES = {
     "AAPL": ("0000320193", "Apple Inc.", "Active US reporting issuer"),
+    "BLK": ("0002012383", "BlackRock, Inc.", "Active US reporting issuer"),
     "BABA": ("0001577552", "Alibaba Group Holding Limited", "US-listed ADR / foreign private issuer"),
     "TSLA": ("0001318605", "Tesla, Inc.", "Active US reporting issuer"),
     "GS": ("0000886982", "The Goldman Sachs Group, Inc.", "Active US reporting issuer"),
@@ -455,6 +462,160 @@ _DEMO_PROFILES: dict[str, dict[str, object]] = {
         "price": (200.0, 203.0),
         "targets": (236.0, 232.0, 285.0, 185.0, 34),
         "management": "Services mix, installed-base monetization, and disciplined capital return remain the principal earnings and valuation bridges.",
+    },
+    "BLK": {
+        "exchange": "NYSE",
+        "currency": "USD",
+        "period_end": "2026-06-30",
+        "filed": "2026-07-15",
+        "fiscal_period": "Q2",
+        "current_form": "8-K",
+        "previous_form": "8-K",
+        "previous_period_end": "2025-06-30",
+        "previous_filing_date": "2025-07-15",
+        "primary_source_name": "BlackRock Q2 2026 earnings release",
+        "primary_source_url": (
+            "https://s24.q4cdn.com/856567660/files/doc_financials/2026/Q2/"
+            "BLK-2Q26-Earnings-Release.pdf"
+        ),
+        "metrics": [
+            (
+                "Revenue", 7_084_000_000, 5_423_000_000, 30.6, "USD",
+                {"period_start": "2026-04-01", "duration_days": 91},
+            ),
+            (
+                "Operating Income", 2_461_000_000, 1_731_000_000, 42.2, "USD",
+                {"period_start": "2026-04-01", "duration_days": 91},
+            ),
+            (
+                "Net Income", 1_914_000_000, 1_593_000_000, 20.2, "USD",
+                {"period_start": "2026-04-01", "duration_days": 91},
+            ),
+            ("Operating Margin", 34.7, 31.9, 8.8, "%"),
+            ("Adjusted Operating Margin", 45.9, 43.3, 6.0, "%"),
+            ("Assets Under Management", 15_344_624_000_000, 12_527_590_000_000, 22.5, "USD"),
+            ("Quarterly Net Inflows", 192_000_000_000, None, None, "USD"),
+            ("Last-Twelve-Month Net Inflows", 868_000_000_000, None, None, "USD"),
+            ("Organic Base Fee Growth", 10.0, None, None, "%"),
+            ("Technology Services Revenue Growth", 13.0, None, None, "%"),
+            ("Cash", 10_492_000_000, None, None, "USD"),
+            ("Long-term Debt", 12_700_000_000, None, None, "USD"),
+            ("Diluted Shares", 164_600_000, 156_300_000, 5.3, "shares"),
+            ("Share Repurchases", 450_000_000, None, None, "USD"),
+        ],
+        "events": [
+            (
+                "financial_kpi",
+                "AUM and net inflows reached new highs",
+                (
+                    "AUM reached 15.3T USD and quarterly net inflows were 192B USD. "
+                    "The investment question is whether flows and organic base-fee growth remain durable "
+                    "after separating market appreciation and acquired assets."
+                ),
+                "positive",
+                5,
+                "AUM, net flows, and organic base-fee growth",
+                (
+                    "AUM was 15.345T USD, second-quarter net inflows were 192B USD, "
+                    "and last-twelve-month net inflows were 868B USD."
+                ),
+                {
+                    "metric_name": "Assets Under Management",
+                    "current_value": 15_344_624_000_000,
+                    "previous_value": 12_527_590_000_000,
+                    "yoy_change_pct": 22.5,
+                    "unit": "USD",
+                    "current_period": "2026-06-30",
+                    "previous_period": "2025-06-30",
+                    "driver_family": "assets_under_management",
+                    "direction_rationale": (
+                        "AUM, net inflows, and organic base-fee growth increased, but the durable "
+                        "earnings mechanism depends on fee realization and independently measured organic flows."
+                    ),
+                    "counter_thesis": (
+                        "Market appreciation and acquisitions contributed to reported growth, and the diluted "
+                        "share count increased; headline AUM growth may overstate per-share organic economics."
+                    ),
+                    "counter_excerpt": (
+                        "Revenue growth reflected markets, organic base-fee growth and acquired businesses; "
+                        "diluted weighted-average shares increased to 164.6M from 156.3M."
+                    ),
+                    "counter_section": "Financial results and non-GAAP reconciliations",
+                },
+            ),
+            (
+                "margin",
+                "Operating income grew faster than revenue",
+                (
+                    "Revenue rose 30.6% and GAAP operating income rose 42.2%, lifting the GAAP operating "
+                    "margin to 34.7% from 31.9%. Acquisition-related adjustments and compensation must be "
+                    "separated before treating the improvement as a normalized margin."
+                ),
+                "neutral",
+                5,
+                "Revenue, operating income, and margin",
+                (
+                    "Revenue was 7.084B USD, GAAP operating income was 2.461B USD, "
+                    "and GAAP operating margin was 34.7%."
+                ),
+                {
+                    "metric_name": "Operating Margin",
+                    "current_value": 34.7,
+                    "previous_value": 31.9,
+                    "change_value": 2.8,
+                    "unit": "%",
+                    "current_period": "2026-06-30",
+                    "previous_period": "2025-06-30",
+                    "driver_family": "margin",
+                    "direction_rationale": (
+                        "Operating income grew faster than revenue, but acquisition accounting, deferred "
+                        "compensation, performance fees, and market levels affect normalization."
+                    ),
+                },
+            ),
+            (
+                "capital_allocation",
+                "Per-share growth lagged reported operating growth",
+                (
+                    "Diluted EPS increased 20% while diluted shares increased 5.3%. The research must test "
+                    "whether acquisitions and the higher share base create enough durable fee earnings to "
+                    "offset dilution despite a higher planned repurchase rate."
+                ),
+                "neutral",
+                4,
+                "Diluted EPS, share count, and repurchases",
+                (
+                    "Diluted EPS was 12.19 USD, diluted weighted-average shares were 164.6M, "
+                    "and second-quarter repurchases were 450M USD."
+                ),
+                {
+                    "metric_name": "Diluted Shares",
+                    "current_value": 164_600_000,
+                    "previous_value": 156_300_000,
+                    "yoy_change_pct": 5.3,
+                    "unit": "shares",
+                    "current_period": "2026-06-30",
+                    "previous_period": "2025-06-30",
+                    "driver_family": "capital_allocation",
+                    "direction_rationale": (
+                        "Higher earnings must be evaluated on a per-share basis after acquisition-related "
+                        "issuance, repurchases, and ongoing capital requirements."
+                    ),
+                },
+            ),
+        ],
+        "price": (1_072.20, 1_139.82),
+        "price_source": "Sanitized historical close; live research refresh required",
+        "targets": (1_250.0, 1_240.0, 1_400.0, 950.0, 18),
+        "target_source": "Sanitized Premium consensus fixture",
+        "recommendations": (7, 9, 4, 0, 0, "Buy"),
+        "eps_estimate": ("2027-12-31", 58.0, 64.0, 50.0, 18),
+        "consensus_history": False,
+        "management": (
+            "The decisive bridge is from independently measured organic flows to base-fee growth, "
+            "normalized operating margin, acquisition integration, and per-share value after dilution "
+            "and capital return."
+        ),
     },
     "ORCL": {
         "exchange": "NYSE",
@@ -699,8 +860,23 @@ _DEMO_PROFILES: dict[str, dict[str, object]] = {
 }
 
 
+# The SPCX/SPXC teaching case intentionally enters the pipeline with synthetic
+# financial rows so the entity-resolution guardrail can stop them before use.
+# Keep that exception explicit; an arbitrary ticker must never inherit another
+# issuer's fixture through a default dictionary lookup.
+_REGISTERED_DIAGNOSTIC_PROFILE_ALIASES = {"SPCX": "AAPL"}
+
+
 def _demo_profile(ticker: str) -> dict[str, object]:
-    return _DEMO_PROFILES.get(ticker, _DEMO_PROFILES["AAPL"])
+    profile_ticker = _REGISTERED_DIAGNOSTIC_PROFILE_ALIASES.get(ticker, ticker)
+    try:
+        return _DEMO_PROFILES[profile_ticker]
+    except KeyError as exc:
+        raise ValueError(
+            f"No registered deterministic demo profile exists for {ticker}. "
+            "Run live research or add a source-backed demo profile; another issuer's "
+            "fixture will not be reused."
+        ) from exc
 
 
 def _demo_metrics(profile: dict[str, object]) -> list[FinancialMetric]:
@@ -796,6 +972,22 @@ _DEMO_RESEARCH_CONTEXT: dict[str, dict[str, str]] = {
         "bear": "Outside research questions hardware replacement cadence, China exposure, and whether richer mix is already reflected in valuation.",
         "driver": "Services mix and capital return",
     },
+    "BLK": {
+        "macro_title": "Asset markets, rates, flows, and private-markets fundraising context",
+        "macro_summary": (
+            "Official market, rate, credit, and fund-flow series frame market-sensitive AUM, "
+            "organic fee growth, fundraising conditions, and performance-fee durability."
+        ),
+        "bull": (
+            "Outside research emphasizes platform breadth, ETF and active inflows, Aladdin, "
+            "private-markets scale, and operating leverage from durable organic base-fee growth."
+        ),
+        "bear": (
+            "Outside research focuses on market-sensitive AUM, fee-rate mix, acquisition integration, "
+            "private-asset fundraising and realization risk, and dilution from transaction financing."
+        ),
+        "driver": "Organic flows, fee realization, normalized margin, and per-share acquisition returns",
+    },
     "NVDA": {
         "macro_title": "Rates, power investment, and data-center cycle context",
         "macro_summary": "Official rates and investment indicators frame the cost of capital and the durability of AI infrastructure spending.",
@@ -855,7 +1047,12 @@ def _demo_historical_filings(
     base_filed = date.fromisoformat(str(profile["filed"]))
     quarter_form = "6-K" if ticker == "BABA" else "10-Q"
     annual_form = "20-F" if ticker == "BABA" else "10-K"
-    cik = _DEMO_COMPANIES.get(ticker, ("0000000000", "", ""))[0] or "0000000000"
+    try:
+        cik = _DEMO_COMPANIES[ticker][0] or "0000000000"
+    except KeyError as exc:
+        raise ValueError(
+            f"No registered demo company identity exists for {ticker}."
+        ) from exc
     existing_quarters = sum(
         1 for item in rows
         if item.form == "10-Q" or (item.form == "6-K" and "result" in (item.description or "").lower())
@@ -1199,6 +1396,23 @@ _DEMO_PEER_METRICS: dict[str, tuple[str, list[tuple[str, list[tuple[str, float, 
         ("MSFT", [("Revenue", 82_900_000_000, 70_100_000_000, 18.3, "USD"), ("Gross Profit", 56_100_000_000, 48_200_000_000, 16.4, "USD"), ("Operating Cash Flow", 46_700_000_000, 37_100_000_000, 25.9, "USD")]),
         ("GOOGL", [("Revenue", 90_200_000_000, 80_500_000_000, 12.0, "USD"), ("Operating Income", 39_700_000_000, 30_600_000_000, 29.7, "USD"), ("Capital Expenditure", 35_700_000_000, 17_200_000_000, 107.6, "USD")]),
     ]),
+    "BLK": ("asset_management", [
+        ("TROW", [
+            ("Assets Under Management", 1_760_000_000_000, 1_570_000_000_000, 12.1, "USD"),
+            ("Net Flows", -7_000_000_000, -3_700_000_000, -89.2, "USD"),
+            ("Operating Margin", 47.0, 46.0, 2.2, "%"),
+        ]),
+        ("BX", [
+            ("Assets Under Management", 1_200_000_000_000, 1_100_000_000_000, 9.1, "USD"),
+            ("Fee-Earning AUM", 870_000_000_000, 800_000_000_000, 8.8, "USD"),
+            ("Fee-Related Earnings", 1_500_000_000, 1_300_000_000, 15.4, "USD"),
+        ]),
+        ("KKR", [
+            ("Assets Under Management", 720_000_000_000, 600_000_000_000, 20.0, "USD"),
+            ("Fee-Paying AUM", 590_000_000_000, 490_000_000_000, 20.4, "USD"),
+            ("Fee-Related Earnings", 1_000_000_000, 850_000_000, 17.6, "USD"),
+        ]),
+    ]),
     "NVDA": ("semiconductor_demand", [
         ("TSM", [("Revenue", 839_000_000_000, 673_500_000_000, 24.6, "TWD"), ("Gross Margin", 58.8, 53.1, 10.7, "%"), ("Capital Expenditure", 317_000_000_000, 252_000_000_000, 25.8, "TWD")]),
         ("AMD", [("Revenue", 9_200_000_000, 6_800_000_000, 35.3, "USD"), ("Gross Profit", 4_900_000_000, 3_600_000_000, 36.1, "USD"), ("Inventory", 7_100_000_000, 5_000_000_000, 42.0, "USD")]),
@@ -1378,16 +1592,19 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
     demo_case = demo_case_for(ticker)
     demo_as_of = demo_case.refreshed_at if demo_case else "2026-07-16"
     observed_at = f"{demo_as_of}T00:00:00+00:00"
-    cik, company_name, listing_status = _DEMO_COMPANIES.get(
-        ticker,
-        ("0000320193", f"{ticker} Demo Company", "Demo US-listed reporting issuer"),
-    )
+    try:
+        cik, company_name, listing_status = _DEMO_COMPANIES[ticker]
+    except KeyError as exc:
+        raise ValueError(
+            f"No registered demo company identity exists for {ticker}."
+        ) from exc
     identity = CompanyIdentity(
         ticker=ticker,
         cik=cik,
         name=company_name,
         exchange=str(profile["exchange"]),
     )
+    security_research_profile = SecurityResearchProfileResolver().resolve(identity)
     filing_url = f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0') or '0000000'}/"
     annual_form = str(profile["current_form"])
     previous_form = str(profile["previous_form"])
@@ -1442,9 +1659,10 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         events,
         demo_peer_universe,
         manual_data_status,
+        security_research_profile,
     )
-    credit_lens = build_credit_lens(identity, metrics)
-    attach_economic_context(events, company_economics)
+    credit_lens = build_credit_lens(identity, metrics, security_research_profile)
+    attach_economic_context(events, company_economics, security_research_profile)
     validated_claims, llm_extraction_manifest = validate_events(identity, events)
     start_price, latest_price = profile["price"]
     price = PriceReaction(
@@ -1706,7 +1924,9 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
             f"Published research-cutoff adjusted close from {admitted_price.source}; "
             "load live research for a newer quote."
         )
-    valuation = build_valuation(identity, metrics, consensus, price.latest_price)
+    valuation = build_valuation(
+        identity, metrics, consensus, price.latest_price, security_research_profile,
+    )
     ideas = generate_trade_ideas(
         identity, events, price, _DemoConsensus(), metrics=metrics,
         price_reactions={filed: price},
@@ -1949,7 +2169,7 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         ],
     )
     metric_assessments = build_metric_change_assessments(
-        events, metrics, historical_research.selected_event_ids,
+        events, metrics, historical_research.selected_event_ids, security_research_profile,
     )
     playbook_portfolio = build_playbook_portfolio(
         identity, company_economics, events, management_sources,
@@ -2052,6 +2272,7 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         historical_research=historical_research,
         frozen_dossiers=frozen_demo_episode_dossiers(identity),
         frozen_fixture=True,
+        security_profile=security_research_profile,
     )
     hybrid_research = published_hybrid_research or frozen_fixture_hybrid_run(
         ticker,
@@ -2068,6 +2289,17 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
             else f"{filed}T00:00:00+00:00"
         ),
     )
+    hybrid_research.security_profile_id = security_research_profile.profile_id
+    hybrid_research.core_mechanism_ids = list(dict.fromkeys([
+        *list(security_research_profile.applicable_mechanisms[:1]),
+        *[
+            str(event.metrics.get("research_mechanism_id") or event.metrics.get("driver_family") or "")
+            for event in events
+            if str(event.metrics.get("research_mechanism_id") or event.metrics.get("driver_family") or "")
+            in RESEARCH_MECHANISMS
+        ],
+    ]))
+    hybrid_research.research_ontology_version = security_research_profile.schema_version
     historical_analogs = apply_hybrid_analog_results(
         historical_analogs, hybrid_research
     )
@@ -2169,6 +2401,13 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         events=events,
         valuation=valuation,
         limit=20,
+    )
+    reconcile_investigation_actions_with_answers(
+        prioritized_research_queue,
+        cash_conversion_recurrence=(
+            hybrid_research.cash_conversion_recurrence
+            if hybrid_research else None
+        ),
     )
     thesis_synthesis = synthesize_ic_thesis(
         identity,
@@ -2295,6 +2534,20 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         ticker=ticker,
         demo_case=demo_case,
     )
+    causal_bridge_assessment, equity_lens_assessment, credit_lens_assessment = (
+        build_research_assessments(
+            security_research_profile,
+            metrics,
+            events,
+            one_pager=ic_one_pager,
+            credit_lens=credit_lens,
+        )
+    )
+    hybrid_research.lens_assessment_statuses = {
+        "causal_bridge": causal_bridge_assessment.status.value,
+        "equity": equity_lens_assessment.status.value,
+        "credit": credit_lens_assessment.status.value,
+    }
     return ResearchResult(
         identity=identity,
         filings=filings,
@@ -2397,7 +2650,15 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
         dual_model_research=dual_model_research,
         evidence_graph=demo_evidence_graph,
         independent_research_qa=independent_research_qa,
+        cash_conversion_recurrence=(
+            hybrid_research.cash_conversion_recurrence
+            if hybrid_research else None
+        ),
         research_freshness=research_freshness,
+        security_research_profile=security_research_profile,
+        causal_bridge_assessment=causal_bridge_assessment,
+        equity_lens_assessment=equity_lens_assessment,
+        credit_lens_assessment=credit_lens_assessment,
         **build_story_presentation(
             identity=identity,
             ideas=ideas,
@@ -2419,5 +2680,8 @@ def demo_result(ticker: str = "AAPL") -> ResearchResult:
             recent_market_context=recent_market_context,
             decision_delta=decision_delta,
             catalyst_clock=catalyst_clock,
+            causal_bridge_assessment=causal_bridge_assessment,
+            equity_lens_assessment=equity_lens_assessment,
+            credit_lens_assessment=credit_lens_assessment,
         ),
     )

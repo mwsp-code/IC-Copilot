@@ -62,6 +62,7 @@ class ResearchRunCommand:
     investigation_action_kind: str = ""
     investigation_objective: str = ""
     investigation_semantic_key: str = ""
+    research_intent_id: str = ""
     investigation_source_families: tuple[str, ...] = ()
     investigation_preferred_connectors: tuple[str, ...] = ()
     operation_kind: str = "full_research"
@@ -71,9 +72,15 @@ class ResearchRunCommand:
     parent_run_id: str = ""
     parent_evidence_hash: str = ""
     repair_action_ids: tuple[str, ...] = ()
+    repair_retry_stages: tuple[str, ...] = ()
     workspace_scope: str = "local"
     credential_lease_ids: tuple[str, ...] = ()
-    command_version: str = "research-run-command-v3"
+    operation_fingerprint: str = ""
+    launch_attempt_id: str = ""
+    launch_origin: str = ""
+    parent_artifact_id: str = ""
+    agent_research_effort: str = "answer_oriented"
+    command_version: str = "research-run-command-v5"
 
     def __post_init__(self) -> None:
         ticker = self.ticker.strip().upper()
@@ -92,6 +99,10 @@ class ResearchRunCommand:
             raise ValueError(f"Unsupported execution mode: {self.execution_mode}.")
         if self.result_route not in {"Decision", "Research", "Evidence", "Audit"}:
             raise ValueError(f"Unsupported result route: {self.result_route}.")
+        if self.agent_research_effort not in {"answer_oriented", "maximum"}:
+            raise ValueError(
+                f"Unsupported agent research effort: {self.agent_research_effort}."
+            )
         if self.execution_mode == "repair_and_recheck" and not self.parent_run_id:
             raise ValueError("Repair and recheck requires a parent run ID.")
         object.__setattr__(self, "ticker", ticker)
@@ -171,6 +182,18 @@ class ResearchJobRepository(Protocol):
 
     def events(self, run_id: str) -> list[ResearchRunEvent]: ...
 
+    def create_if_absent(
+        self,
+        snapshot: ResearchRunSnapshot,
+    ) -> tuple[ResearchRunSnapshot, bool]: ...
+
+    def find_latest_by_operation_fingerprint(
+        self,
+        operation_fingerprint: str,
+        *,
+        workspace_scope: str,
+    ) -> ResearchRunSnapshot | None: ...
+
 
 class ResearchRunner(Protocol):
     def submit(self, run_id: str, command: ResearchRunCommand) -> None: ...
@@ -190,8 +213,29 @@ class ResearchRunService:
         self.runner = runner
 
     def start(self, command: ResearchRunCommand) -> ResearchRunSnapshot:
+        snapshot, _ = self.start_or_reuse(command)
+        return snapshot
+
+    def start_or_reuse(
+        self,
+        command: ResearchRunCommand,
+    ) -> tuple[ResearchRunSnapshot, bool]:
         now = _utc_now()
-        run_id = str(uuid.uuid4())
+        run_id = (
+            str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    "ic-copilot:"
+                    + command.workspace_scope
+                    + ":"
+                    + command.operation_fingerprint
+                    + ":"
+                    + command.launch_attempt_id,
+                )
+            )
+            if command.operation_fingerprint and command.launch_attempt_id
+            else str(uuid.uuid4())
+        )
         snapshot = ResearchRunSnapshot(
             run_id=run_id,
             command=command,
@@ -201,7 +245,17 @@ class ResearchRunService:
             updated_at=now,
             lifecycle_state=ResearchLifecycleState.RESEARCH_RUNNING.value,
         )
-        self.repository.create(snapshot)
+        create_if_absent = getattr(self.repository, "create_if_absent", None)
+        if callable(create_if_absent):
+            snapshot, created = create_if_absent(snapshot)
+        else:
+            existing = self.repository.get(run_id)
+            if existing is not None:
+                return existing, False
+            self.repository.create(snapshot)
+            created = True
+        if not created:
+            return snapshot, False
         self.record_event(
             run_id,
             stage="preflight",
@@ -214,12 +268,36 @@ class ResearchRunService:
                 "investigation_action_id": command.investigation_action_id,
                 "investigation_action_kind": command.investigation_action_kind,
                 "investigation_semantic_key": command.investigation_semantic_key,
+                "research_intent_id": command.research_intent_id,
                 "result_route": command.result_route,
+                "operation_fingerprint": command.operation_fingerprint,
+                "launch_attempt_id": command.launch_attempt_id,
+                "launch_origin": command.launch_origin,
             },
         )
         if self.runner is not None:
             self.runner.submit(run_id, command)
-        return self.inspect(run_id) or snapshot
+        return self.inspect(run_id) or snapshot, True
+
+    def find_latest_by_operation_fingerprint(
+        self,
+        operation_fingerprint: str,
+        *,
+        workspace_scope: str,
+    ) -> ResearchRunSnapshot | None:
+        if not operation_fingerprint:
+            return None
+        finder = getattr(
+            self.repository,
+            "find_latest_by_operation_fingerprint",
+            None,
+        )
+        if not callable(finder):
+            return None
+        return finder(
+            operation_fingerprint,
+            workspace_scope=workspace_scope,
+        )
 
     def inspect(self, run_id: str) -> ResearchRunSnapshot | None:
         return self.repository.get(run_id)
