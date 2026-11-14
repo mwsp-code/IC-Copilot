@@ -1,7 +1,5 @@
 import unittest
-from scripts.export_weekly_alpha_candidate import create_event
 from scripts.dispatch_weekly_alpha_candidate import deliver,prepare,ENDPOINT
-from tests.test_weekly_alpha_forecast_export import input_row
 
 class DummyResponse:
     status=204
@@ -10,8 +8,7 @@ class DummyResponse:
 
 class DispatchTests(unittest.TestCase):
     def event(self):
-        return create_event(input_row(),cutoff_utc="2026-11-14T16:00:00Z",
-                            producer_commit_sha="b"*40,forecast_id="SYN-1")
+        return {"schema_version":"weekly-alpha-ic-event-v1","producer_repo":"mwsp-code/IC-Copilot","kind":"prospective_forecast","version":1,"record":{"source_sha256":"a"*64}}
     def test_no_network_default(self):
         def fail(*args,**kwargs):raise AssertionError("should never call network")
         r=deliver(self.event(),token=None,opener=fail)
