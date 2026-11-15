@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Python 3.9 is not on ubuntu-latest Ubuntu 26.04 runner image as of Nov 14 2026.
+    # Use the supported 24.04 toolcache to preserve the advertised Python 3.9 matrix.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
