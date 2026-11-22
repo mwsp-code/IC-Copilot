@@ -53,3 +53,11 @@ by the IC Copilot GitHub repository or by these tests.
 
 All cloud API enablement, production query/cache changes, billing inquiry,
 registry deletion, deployment, merge, and trading gates remain closed.
+
+## GitHub Actions legacy interpreter support
+
+At the November 2026 runner transition, `ubuntu-latest` resolved to Ubuntu
+26.04, and `actions/setup-python@v5` could not provision Python 3.9 on that
+image. The test matrix is therefore pinned to `ubuntu-24.04` while preserving
+all three Python-version checks. This is a CI environment fix, not a claim
+of application correctness until the full exact-head workflow passes.
