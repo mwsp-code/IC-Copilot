@@ -38,6 +38,7 @@ def attach_revision_history(
                     (today - timedelta(days=days)).isoformat(),
                     today.isoformat(),
                     estimate.source,
+                    estimate.period_type,
                 )
             )
 

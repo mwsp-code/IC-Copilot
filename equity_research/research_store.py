@@ -987,7 +987,7 @@ class ResearchStore:
             params.append(provider)
         with self.connect() as db:
             row = db.execute(
-                f"SELECT * FROM consensus_snapshots WHERE {where} ORDER BY as_of DESC LIMIT 1",
+                f"SELECT * FROM consensus_snapshots WHERE {where} ORDER BY as_of DESC, provider ASC LIMIT 1",
                 params,
             ).fetchone()
         return _target_from_row(row) if row else None
@@ -1069,17 +1069,19 @@ class ResearchStore:
         if not latest:
             return []
         results: list[RevisionWindow] = []
-        earliest, _ = self.target_snapshot_bounds(ticker, provider)
+        # Provider-free requests select a latest source, then compare only
+        # older observations from that same source.
+        provider_name = provider or latest.source
+        earliest, _ = self.target_snapshot_bounds(ticker, provider_name)
         latest_date = _parse_date(latest.as_of)
         metric_name = f"price_target_{latest.target_kind}"
         latest_value = _target_primary_value(latest)
-        provider_name = provider or latest.source
         for days in windows:
             cutoff = (latest_date - timedelta(days=days)).isoformat()
             start = self.target_at_or_before(
                 ticker,
                 cutoff,
-                provider,
+                provider_name,
             )
             start_value = _target_primary_value(start) if start else None
             status, reason = _revision_status_and_reason(
@@ -1118,30 +1120,43 @@ class ResearchStore:
         start: str,
         end: str,
         provider: str | None = None,
+        period_type: str | None = None,
     ) -> RevisionWindow:
+        # Resolve the end observation first, then pin its provider and fiscal
+        # period type for the comparison. A different source or fiscal period
+        # must never supply a missing historical value.
         provider_clause = " AND provider=?" if provider else ""
-        start_params: list[object] = [ticker.upper(), metric, period_end, start]
+        period_clause = " AND period_type=?" if period_type else ""
         end_params: list[object] = [ticker.upper(), metric, period_end, end]
         if provider:
-            start_params.append(provider)
             end_params.append(provider)
+        if period_type:
+            end_params.append(period_type)
         with self.connect() as db:
-            start_row = db.execute(
-                f"""SELECT * FROM estimate_snapshots
-                WHERE ticker=? AND metric=? AND period_end=? AND as_of<=?{provider_clause}
-                ORDER BY as_of DESC LIMIT 1""",
-                start_params,
-            ).fetchone()
             end_row = db.execute(
                 f"""SELECT * FROM estimate_snapshots
-                WHERE ticker=? AND metric=? AND period_end=? AND as_of<=?{provider_clause}
-                ORDER BY as_of DESC LIMIT 1""",
+                WHERE ticker=? AND metric=? AND period_end=? AND as_of<=?{provider_clause}{period_clause}
+                ORDER BY as_of DESC, provider ASC, period_type ASC LIMIT 1""",
                 end_params,
             ).fetchone()
+            resolved_provider = end_row["provider"] if end_row else provider
+            resolved_period = end_row["period_type"] if end_row else period_type
+            start_row = (
+                db.execute(
+                    """SELECT * FROM estimate_snapshots
+                    WHERE ticker=? AND metric=? AND period_end=? AND as_of<=?
+                      AND provider=? AND period_type=?
+                    ORDER BY as_of DESC LIMIT 1""",
+                    [ticker.upper(), metric, period_end, start, resolved_provider, resolved_period],
+                ).fetchone()
+                if end_row else None
+            )
         start_value = start_row["average"] if start_row else None
         end_value = end_row["average"] if end_row else None
-        provider_name = provider or (end_row["provider"] if end_row else start_row["provider"] if start_row else "")
-        earliest_date = self._earliest_estimate_snapshot_date(ticker, metric, period_end, provider)
+        provider_name = resolved_provider or ""
+        earliest_date = self._earliest_estimate_snapshot_date(
+            ticker, metric, period_end, resolved_provider, resolved_period
+        )
         status, reason = _revision_status_and_reason(
             start_value=start_value,
             end_value=end_value,
@@ -1173,15 +1188,19 @@ class ResearchStore:
         metric: str,
         period_end: str,
         provider: str | None = None,
+        period_type: str | None = None,
     ) -> str | None:
         provider_clause = " AND provider=?" if provider else ""
+        period_clause = " AND period_type=?" if period_type else ""
         params: list[object] = [ticker.upper(), metric, period_end]
         if provider:
             params.append(provider)
+        if period_type:
+            params.append(period_type)
         with self.connect() as db:
             row = db.execute(
                 f"""SELECT as_of FROM estimate_snapshots
-                WHERE ticker=? AND metric=? AND period_end=?{provider_clause}
+                WHERE ticker=? AND metric=? AND period_end=?{provider_clause}{period_clause}
                 ORDER BY as_of ASC LIMIT 1""",
                 params,
             ).fetchone()
@@ -1203,7 +1222,7 @@ class ResearchStore:
             row = db.execute(
                 f"""SELECT * FROM estimate_snapshots
                 WHERE ticker=? AND metric=? AND period_end=? AND as_of<=?{provider_clause}
-                ORDER BY as_of DESC LIMIT 1""",
+                ORDER BY as_of DESC, provider ASC, period_type ASC LIMIT 1""",
                 params,
             ).fetchone()
         return _estimate_from_row(row) if row else None
