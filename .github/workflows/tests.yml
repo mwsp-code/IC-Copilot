@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Python 3.9 is unavailable on ubuntu-latest (Ubuntu 26.04).
+    # Keep the compatibility matrix on a runner with a supported tool cache.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
